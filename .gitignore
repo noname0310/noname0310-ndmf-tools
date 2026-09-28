@@ -1,0 +1,11 @@
+dist/
+ci/
+node_modules/
+.DS_Store
+Thumbs.db
+.idea/
+.vs/
+.vscode/
+*.csproj
+*.sln
+*.user

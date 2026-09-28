@@ -1,0 +1,16 @@
+{
+  "name": "Noname0310 NDMF Tools",
+  "id": "io.github.noname0310.ndmf-tools",
+  "url": "https://noname0310.github.io/noname0310-ndmf-tools/index.json",
+  "author": {
+    "name": "noname0310",
+    "email": "hjnam2014@gmail.com",
+    "url": "https://github.com/noname0310"
+  },
+  "description": "NDMF tools for various avatar modifications.",
+  "infoLink": {
+    "url": "https://github.com/noname0310/noname0310-ndmf-tools",
+    "text": "View source and documentation"
+  },
+  "githubRepos": ["noname0310/noname0310-ndmf-tools"]
+}

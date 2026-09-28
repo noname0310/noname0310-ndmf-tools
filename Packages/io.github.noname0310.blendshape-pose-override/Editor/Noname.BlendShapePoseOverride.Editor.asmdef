@@ -1,0 +1,9 @@
+{
+    "name": "Noname.BlendShapePoseOverride.Editor",
+    "rootNamespace": "Noname.AvatarTools.Editor",
+    "references": ["Noname.BlendShapePoseOverride", "nadena.dev.ndmf", "nadena.dev.ndmf.runtime", "nadena.dev.modular-avatar.core"],
+    "includePlatforms": ["Editor"],
+    "overrideReferences": true,
+    "precompiledReferences": ["System.Collections.Immutable.dll", "VRCSDK3A.dll", "VRCSDKBase.dll"],
+    "autoReferenced": true
+}

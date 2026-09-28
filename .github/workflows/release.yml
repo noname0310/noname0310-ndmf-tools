@@ -1,0 +1,62 @@
+name: Release Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Package to release using its package.json version
+        required: true
+        type: choice
+        options:
+          - normal-field-offset
+          - blendshape-pose-override
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install build dependencies
+        run: npm ci
+      - name: Build package archive
+        id: package
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: node scripts/build-package.js "$PACKAGE" --github-output "$GITHUB_OUTPUT"
+      - name: Publish a new release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.package.outputs.tag }}
+          TITLE: ${{ steps.package.outputs.title }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          NOTES: ${{ steps.package.outputs.notes }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG"; then
+            echo "Tag $TAG already exists. Increment the package version."
+            exit 1
+          fi
+          gh release create "$TAG" "$ARCHIVE" \
+            --target "$GITHUB_SHA" --title "$TITLE" --notes-file "$NOTES"
+
+  publish-listing:
+    needs: release
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/publish.yml

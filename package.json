@@ -1,0 +1,18 @@
+{
+  "name": "noname0310-ndmf-tools",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "NDMF tools for various avatar modifications.",
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build:package": "node scripts/build-package.js",
+    "build": "node scripts/build-package.js normal-field-offset && node scripts/build-package.js blendshape-pose-override"
+  },
+  "devDependencies": {
+    "adm-zip": "0.6.1"
+  }
+}

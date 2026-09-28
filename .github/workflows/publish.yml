@@ -1,0 +1,43 @@
+name: Publish VPM Listing
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check out the official VRChat listing builder
+        uses: actions/checkout@v6
+        with:
+          repository: vrchat-community/package-list-action
+          ref: cb31c3b5d17d1070d7741c61de2ca1b219224039
+          path: ci
+      - name: Build listing from all published package ZIPs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ci/build.cmd BuildMultiPackageListing --root ci --list-publish-directory "$GITHUB_WORKSPACE/Website"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: Website
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+

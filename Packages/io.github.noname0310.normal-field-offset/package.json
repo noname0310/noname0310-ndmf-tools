@@ -1,0 +1,28 @@
+{
+  "name": "io.github.noname0310.normal-field-offset",
+  "displayName": "Noname Normal Field Offset",
+  "version": "0.0.1",
+  "unity": "2022.3",
+  "description": "Offset clothing vertices along a body mesh's surface normal field during NDMF builds and previews.",
+  "author": {
+    "name": "noname0310",
+    "email": "hjnam2014@gmail.com",
+    "url": "https://github.com/noname0310"
+  },
+  "license": "MIT OR Apache-2.0",
+  "licensesUrl": "https://github.com/noname0310/noname0310-ndmf-tools/blob/main/LICENSE.md",
+  "documentationUrl": "https://github.com/noname0310/noname0310-ndmf-tools/tree/main/Packages/io.github.noname0310.normal-field-offset",
+  "changelogUrl": "https://github.com/noname0310/noname0310-ndmf-tools/blob/main/Packages/io.github.noname0310.normal-field-offset/CHANGELOG.md",
+  "url": "https://github.com/noname0310/noname0310-ndmf-tools/releases/download/normal-field-offset-v0.0.1/io.github.noname0310.normal-field-offset-0.0.1.zip",
+  "repo": "https://noname0310.github.io/noname0310-ndmf-tools/index.json",
+  "vpmDependencies": {
+    "nadena.dev.ndmf": ">=1.14.8 <2.0.0-a"
+  },
+  "dependencies": {
+    "com.unity.collections": "2.1.4"
+  },
+  "legacyFolders": {
+    "Assets/Noname/NormalFieldOffset": "a46d982f69c7a9b488beeaaf00e28f3b"
+  },
+  "keywords": ["vrchat", "ndmf", "avatar", "clothing", "mesh"]
+}

@@ -1,0 +1,6 @@
+{
+    "name": "Noname.NormalFieldOffset",
+    "rootNamespace": "Noname.AvatarTools",
+    "references": ["nadena.dev.ndmf.runtime"],
+    "autoReferenced": true
+}

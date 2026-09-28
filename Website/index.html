@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="NDMF tools for various avatar modifications.">
+  <title>Noname0310 NDMF Tools</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 48rem; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.65; }
+    h1, h2 { line-height: 1.2; }
+    h1 { font-size: clamp(2rem, 6vw, 3rem); }
+    a { color: #477ee9; }
+    .install { display: inline-block; padding: .75rem 1.25rem; border-radius: .5rem; background: #2856b6; color: white; text-decoration: none; font-weight: 600; }
+    section { margin-top: 2.5rem; }
+    code { overflow-wrap: anywhere; }
+    footer { margin-top: 3rem; font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Noname0310 NDMF Tools</h1>
+    <p>NDMF tools for various avatar modifications.</p>
+    <p><a class="install" href="vcc://vpm/addRepo?url=https%3A%2F%2Fnoname0310.github.io%2Fnoname0310-ndmf-tools%2Findex.json">Add to VCC</a></p>
+    <p>You can also add this repository URL in VCC under Settings &gt; Packages &gt; Add Repository:<br>
+      <a href="index.json"><code>https://noname0310.github.io/noname0310-ndmf-tools/index.json</code></a></p>
+    <section>
+      <h2>Normal Field Offset</h2>
+      <p>Move clothing vertices along a body mesh's surface normals to adjust the spacing between layered garments. Preview the result in the Scene view and apply it during the avatar build.</p>
+      <a href="https://github.com/noname0310/noname0310-ndmf-tools/tree/main/Packages/io.github.noname0310.normal-field-offset">Usage and documentation</a>
+    </section>
+    <section>
+      <h2>BlendShape Pose Override</h2>
+      <p>Replace selected blendshapes with poses authored in animation clips, using the mesh's current customization as the basis. Includes optional VRC and MMD eye presets.</p>
+      <a href="https://github.com/noname0310/noname0310-ndmf-tools/tree/main/Packages/io.github.noname0310.blendshape-pose-override">Usage and documentation</a>
+    </section>
+    <section>
+      <h2>Dependencies</h2>
+      <p>Use a Unity 2022.3 avatar project with NDMF installed. BlendShape Pose Override also requires Modular Avatar and the VRChat Avatars SDK.</p>
+      <p>Add the <a href="https://modular-avatar.nadena.dev/">Modular Avatar repository</a> to VCC so it can resolve the NDMF and Modular Avatar dependencies.</p>
+    </section>
+  </main>
+  <footer>
+    <a href="https://github.com/noname0310/noname0310-ndmf-tools">Source code</a> &middot;
+    <a href="https://github.com/noname0310/noname0310-ndmf-tools/releases">Releases</a> &middot;
+    <a href="https://github.com/noname0310/noname0310-ndmf-tools/blob/main/LICENSE.md">MIT OR Apache-2.0</a>
+  </footer>
+</body>
+</html>
