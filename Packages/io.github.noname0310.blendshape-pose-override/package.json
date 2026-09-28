@@ -1,7 +1,7 @@
 {
   "name": "io.github.noname0310.blendshape-pose-override",
   "displayName": "Noname BlendShape Pose Override",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "unity": "2022.3",
   "description": "Replace selected blendshapes with animation-authored poses relative to the current mesh customization using NDMF.",
   "author": {
@@ -13,7 +13,7 @@
   "licensesUrl": "https://github.com/noname0310/noname0310-ndmf-tools/blob/main/LICENSE.md",
   "documentationUrl": "https://github.com/noname0310/noname0310-ndmf-tools/tree/main/Packages/io.github.noname0310.blendshape-pose-override",
   "changelogUrl": "https://github.com/noname0310/noname0310-ndmf-tools/blob/main/Packages/io.github.noname0310.blendshape-pose-override/CHANGELOG.md",
-  "url": "https://github.com/noname0310/noname0310-ndmf-tools/releases/download/blendshape-pose-override-v0.0.1/io.github.noname0310.blendshape-pose-override-0.0.1.zip",
+  "url": "https://github.com/noname0310/noname0310-ndmf-tools/releases/download/blendshape-pose-override-v0.0.2/io.github.noname0310.blendshape-pose-override-0.0.2.zip",
   "repo": "https://noname0310.github.io/noname0310-ndmf-tools/index.json",
   "vpmDependencies": {
     "nadena.dev.ndmf": ">=1.14.8 <2.0.0-a",

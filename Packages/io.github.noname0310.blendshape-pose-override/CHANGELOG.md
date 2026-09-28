@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.2
+
+- Reduce build and preview generation cost by replacing only the configured blendshapes while preserving other morph data and indices.
+- Fall back to rebuilding blendshapes when the expected Unity mesh serialization layout is unavailable.
+- Verify partial replacement, GPU buffer updates, and asset serialization with regression tests.
+
 ## 0.0.1
 
 - Initial standalone package for replacing blendshapes with animation-authored poses.

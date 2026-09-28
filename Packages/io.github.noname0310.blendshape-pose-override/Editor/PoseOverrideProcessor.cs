@@ -105,27 +105,10 @@ namespace Noname.AvatarTools.Editor
                 output.vertices = vertices;
                 if (normals.Length == vertices.Length) output.normals = normals;
                 if (tangents.Length == vertices.Length) output.tangents = tangents;
-                output.ClearBlendShapes();
-                var dv = new Vector3[source.vertexCount];
-                var dn = new Vector3[source.vertexCount];
-                var dt = new Vector3[source.vertexCount];
-                for (int shape = 0; shape < source.blendShapeCount; shape++)
-                {
-                    string name = source.GetBlendShapeName(shape);
-                    if (replacements.TryGetValue(name, out var replacement))
-                    {
-                        output.AddBlendShapeFrame(name, 100, replacement.Vertices, replacement.Normals, replacement.Tangents);
-                        defaultWeights[shape] = 0;
-                    }
-                    else
-                    {
-                        for (int frame = 0; frame < source.GetBlendShapeFrameCount(shape); frame++)
-                        {
-                            source.GetBlendShapeFrameVertices(shape, frame, dv, dn, dt);
-                            output.AddBlendShapeFrame(name, source.GetBlendShapeFrameWeight(shape, frame), dv, dn, dt);
-                        }
-                    }
-                }
+                var frames = replacements.Select(pair => new BlendShapeReplacement(
+                    source.GetBlendShapeIndex(pair.Key), pair.Value.Vertices, pair.Value.Normals, pair.Value.Tangents)).ToArray();
+                BlendShapeFrameWriter.Write(output, source, frames);
+                foreach (var frame in frames) defaultWeights[frame.Index] = 0;
                 output.RecalculateBounds();
                 var bounds = output.bounds;
                 bounds.Encapsulate(source.bounds);
