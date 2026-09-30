@@ -21,7 +21,7 @@ namespace Noname.AvatarTools.Editor
             foreach (var entry in component.Overrides)
             {
                 if (entry == null || entry.BlendShapeName == null || !requests.TryGetValue(entry.BlendShapeName, out var pose)) continue;
-                if (entry.Animation != null) report.Preserved++;
+                if (entry.GetAnimations().Any(clip => clip != null)) report.Preserved++;
                 else empty.Add((entry, pose));
             }
             if (empty.Count == 0) return report;
@@ -29,11 +29,10 @@ namespace Noname.AvatarTools.Editor
             foreach (var item in empty)
             {
                 var candidates = found.Candidates[item.pose];
-                int distinctClips = candidates.Select(c => c.Clip).Distinct().Count();
-                if (distinctClips == 0)
-                    report.Warnings.Add($"'{item.entry.BlendShapeName}': No matching pose clip was found under the v2 eye parameters. Assign it manually.");
-                else if (distinctClips > 1)
-                    report.Warnings.Add($"'{item.entry.BlendShapeName}': Multiple pose clips match across the avatar's controllers. Assign one manually.");
+                if (candidates.Count == 0)
+                    report.Warnings.Add($"'{item.entry.BlendShapeName}': No compatible pose clips were found under the recognized eye parameters. Assign animations manually.");
+                else if (candidates.Any(c => !c.SameClips(candidates[0])))
+                    report.Warnings.Add($"'{item.entry.BlendShapeName}': Multiple pose alternatives match across the avatar's controllers. Assign animations manually.");
                 else pending.Add((item.entry, candidates));
             }
             if (pending.Count == 0) return report;
@@ -41,8 +40,8 @@ namespace Noname.AvatarTools.Editor
             var descriptor = component.FindDescriptor();
             var currentRoot = component.PathMode == PoseAnimationPathMode.Absolute ? descriptor.transform
                 : component.RelativePathRoot != null ? component.RelativePathRoot : component.transform;
-            var clips = component.Overrides.Where(e => e?.Animation != null).Select(e => e.Animation)
-                .Concat(pending.Select(p => p.candidates[0].Clip)).Distinct().ToArray();
+            var clips = component.Overrides.Where(e => e != null).SelectMany(e => e.GetAnimations()).Where(clip => clip != null)
+                .Concat(pending.SelectMany(p => p.candidates[0].Clips)).Distinct().ToArray();
             var roots = new[] { currentRoot }.Concat(pending.SelectMany(p => p.candidates.Select(c => c.Root))).Distinct();
             // Keep the current path settings whenever they already resolve every clip. Otherwise use a common
             // source root only if all existing manual assignments will still resolve to the selected renderer.
@@ -50,13 +49,14 @@ namespace Noname.AvatarTools.Editor
             var selectedRoot = commonRoot != null ? commonRoot : currentRoot;
             foreach (var item in pending)
             {
-                var clip = item.candidates[0].Clip;
-                if (!EyeAnimationDiscovery.ClipMatchesTarget(clip, selectedRoot, component.TargetMesh))
+                var animations = item.candidates[0].Clips;
+                if (!PoseOverrideConfiguration.TryReadAnimations(animations, selectedRoot, component.TargetMesh, out _, out _, out _))
                 {
-                    report.Warnings.Add($"'{item.entry.BlendShapeName}': The discovered clip needs a different animation root. Check Path Mode and Relative Path Root before assigning it.");
+                    report.Warnings.Add($"'{item.entry.BlendShapeName}': The discovered animations need a different animation root or have conflicting keyed values. Check the clips, Path Mode, and Relative Path Root before assigning them.");
                     continue;
                 }
-                item.entry.Animation = clip;
+                item.entry.Animation = animations[0];
+                item.entry.AdditionalAnimations = animations.Skip(1).ToList();
                 report.Assigned++;
             }
             if (report.Assigned > 0 && selectedRoot != currentRoot)

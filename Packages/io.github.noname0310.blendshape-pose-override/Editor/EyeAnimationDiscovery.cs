@@ -13,8 +13,12 @@ namespace Noname.AvatarTools.Editor
 
     internal sealed class EyeClipCandidate
     {
-        internal AnimationClip Clip;
+        internal AnimationClip[] Clips;
         internal Transform Root;
+        internal int ExpressionEvidence;
+
+        internal bool SameClips(EyeClipCandidate other)
+            => Clips.Length == other.Clips.Length && Clips.All(other.Clips.Contains);
     }
 
     internal sealed class EyeAnimationSearchResult
@@ -46,25 +50,44 @@ namespace Noname.AvatarTools.Editor
                 if (root.IsChildOf(descriptor.transform)) sources.Add((merge.animator, root));
             }
             foreach (var source in sources) new ControllerSearch(source.Item1, source.Item2, component.TargetMesh, result).Run();
+            foreach (var candidates in result.Candidates.Values) KeepStrongestEvidence(candidates);
+            CombineEyes(result, EyePose.Closed, EyePose.ClosedLeft, EyePose.ClosedRight, component.TargetMesh);
+            CombineEyes(result, EyePose.Joyful, EyePose.JoyfulLeft, EyePose.JoyfulRight, component.TargetMesh);
             return result;
         }
 
         internal static bool ClipMatchesTarget(AnimationClip clip, Transform root, SkinnedMeshRenderer target)
+            => PoseOverrideConfiguration.TryReadAnimations(new[] { clip }, root, target, out _, out _, out _);
+
+        private static void KeepStrongestEvidence(List<EyeClipCandidate> candidates)
         {
-            if (clip == null || root == null || target == null || target.sharedMesh == null) return false;
-            bool found = false;
-            foreach (var binding in AnimationUtility.GetCurveBindings(clip))
+            if (candidates.Count == 0) return;
+            // Eyelid gates also suppress gaze, brow, and wide-eye corrections. Prefer a branch that
+            // explicitly distinguishes closed-eye expressions over these auxiliary neutral clips.
+            int strongest = candidates.Max(c => c.ExpressionEvidence);
+            candidates.RemoveAll(c => c.ExpressionEvidence < strongest);
+        }
+
+        private static void CombineEyes(EyeAnimationSearchResult result, EyePose both, EyePose left, EyePose right,
+            SkinnedMeshRenderer target)
+        {
+            var leftCandidates = result.Candidates[left];
+            var rightCandidates = result.Candidates[right];
+            // Do not hide ambiguity on either side by searching for an arbitrary compatible pair.
+            if (leftCandidates.Count == 0 || rightCandidates.Count == 0 ||
+                leftCandidates.Any(c => !c.SameClips(leftCandidates[0])) ||
+                rightCandidates.Any(c => !c.SameClips(rightCandidates[0]))) return;
+            var combined = result.Candidates[both];
+            int evidence = Math.Min(leftCandidates[0].ExpressionEvidence, rightCandidates[0].ExpressionEvidence);
+            // An explicit bilateral pose is preferable to combining unilateral poses with equal evidence.
+            if (combined.Any(c => c.ExpressionEvidence >= evidence)) return;
+            foreach (var root in leftCandidates.Select(c => c.Root).Intersect(rightCandidates.Select(c => c.Root)))
             {
-                if (binding.type != typeof(SkinnedMeshRenderer) || !binding.propertyName.StartsWith("blendShape.", StringComparison.Ordinal)) continue;
-                var bound = string.IsNullOrEmpty(binding.path) ? root : root.Find(binding.path);
-                if (bound == null || bound.GetComponent<SkinnedMeshRenderer>() != target) continue;
-                if (target.sharedMesh.GetBlendShapeIndex(binding.propertyName.Substring("blendShape.".Length)) < 0) return false;
-                var curve = AnimationUtility.GetEditorCurve(clip, binding);
-                if (curve == null || curve.length == 0) continue;
-                if (!PoseOverrideProcessor.IsFinite(curve.Evaluate(0))) return false;
-                found = true;
+                var clips = leftCandidates[0].Clips.Concat(rightCandidates[0].Clips).Distinct().ToArray();
+                if (!PoseOverrideConfiguration.TryReadAnimations(clips, root, target, out _, out _, out _)) continue;
+                combined.Add(new EyeClipCandidate { Clips = clips, Root = root, ExpressionEvidence = evidence });
             }
-            return found;
+            KeepStrongestEvidence(combined);
         }
 
         private static int Sides(EyePose pose)
@@ -92,10 +115,11 @@ namespace Noname.AvatarTools.Editor
             return name == "EyeLid" || name == "EyeLidLeft" || name == "EyeLidRight";
         }
 
-        private static bool ParameterValue(string parameter, EyePose pose, out float value, out int closed, out int joyful)
+        private static bool ParameterValue(string parameter, EyePose pose, out float value, out int closed,
+            out int joyful, out int expression)
         {
             value = 0;
-            closed = joyful = 0;
+            closed = joyful = expression = 0;
             string name = StandardName(parameter);
             int sides = name.EndsWith("Left", StringComparison.Ordinal) ? Left : name.EndsWith("Right", StringComparison.Ordinal) ? Right : Both;
             string stem = sides == Left ? name.Substring(0, name.Length - 4) : sides == Right ? name.Substring(0, name.Length - 5) : name;
@@ -107,10 +131,11 @@ namespace Noname.AvatarTools.Editor
                 if (close) closed = sides;
                 return true;
             }
-            if (stem == "SmileSad" || stem == "SmileFrown" || stem == "MouthSmile")
+            if (stem == "SmileSad" || stem == "SmileFrown" || stem == "MouthSmile" || stem == "EyeSquint")
             {
                 value = IsJoyful(pose) ? 1 : 0;
                 if (IsJoyful(pose)) joyful = sides;
+                expression = sides;
                 return true;
             }
             return false;
@@ -119,7 +144,7 @@ namespace Noname.AvatarTools.Editor
         private sealed class Evaluation
         {
             internal AnimationClip Clip;
-            internal int Closed, Joyful;
+            internal int Closed, Joyful, Expression;
         }
 
         private sealed class ControllerSearch
@@ -189,8 +214,11 @@ namespace Noname.AvatarTools.Editor
                         int sides = Sides(pose);
                         if (evaluation == null || evaluation.Closed != sides || (IsJoyful(pose) && (evaluation.Joyful & sides) != sides)) continue;
                         var candidates = result.Candidates[pose];
-                        if (!candidates.Any(c => c.Clip == evaluation.Clip && c.Root == root))
-                            candidates.Add(new EyeClipCandidate { Clip = evaluation.Clip, Root = root });
+                        int evidence = (evaluation.Expression & sides) == sides ? 1 : 0;
+                        var existing = candidates.FirstOrDefault(c => c.Clips.Length == 1 && c.Clips[0] == evaluation.Clip && c.Root == root);
+                        if (existing == null)
+                            candidates.Add(new EyeClipCandidate { Clips = new[] { evaluation.Clip }, Root = root, ExpressionEvidence = evidence });
+                        else existing.ExpressionEvidence = Math.Max(existing.ExpressionEvidence, evidence);
                     }
                 }
                 foreach (var child in tree.children) VisitMotion(child.motion);
@@ -216,17 +244,23 @@ namespace Noname.AvatarTools.Editor
                 var children = tree.children;
                 if (children.Length == 0) return null;
                 bool oneDimensional = tree.blendType == BlendTreeType.Simple1D;
-                bool hasX = ParameterValue(tree.blendParameter, pose, out float x, out int closedX, out int joyfulX);
-                bool hasY = ParameterValue(tree.blendParameterY, pose, out float y, out int closedY, out int joyfulY);
-                if (oneDimensional) { closedY = joyfulY = 0; }
+                bool hasX = ParameterValue(tree.blendParameter, pose, out float x, out int closedX, out int joyfulX, out int expressionX);
+                bool hasY = ParameterValue(tree.blendParameterY, pose, out float y, out int closedY, out int joyfulY, out int expressionY);
+                if (oneDimensional) { closedY = joyfulY = expressionY = 0; }
                 if (!hasX || (!oneDimensional && !hasY))
                 {
                     // A constant wrapper is safe; an unrelated selector cannot identify a pose uniquely.
                     if (children.Select(c => c.motion).Distinct().Count() != 1) return null;
                     return evaluations[key] = Evaluate(children[0].motion, pose);
                 }
-                x = Mathf.Clamp(x, children.Min(c => oneDimensional ? c.threshold : c.position.x), children.Max(c => oneDimensional ? c.threshold : c.position.x));
-                if (!oneDimensional) y = Mathf.Clamp(y, children.Min(c => c.position.y), children.Max(c => c.position.y));
+                float minX = children.Min(c => oneDimensional ? c.threshold : c.position.x);
+                float maxX = children.Max(c => oneDimensional ? c.threshold : c.position.x);
+                float minY = children.Min(c => c.position.y), maxY = children.Max(c => c.position.y);
+                // A wide-eye-only branch must not masquerade as a closed pose by clamping 0 to its endpoint.
+                if (closedX != 0 && (x < minX - Epsilon || x > maxX + Epsilon) ||
+                    closedY != 0 && (y < minY - Epsilon || y > maxY + Epsilon)) return null;
+                x = Mathf.Clamp(x, minX, maxX);
+                if (!oneDimensional) y = Mathf.Clamp(y, minY, maxY);
                 var selected = children.Where(c => Mathf.Abs((oneDimensional ? c.threshold : c.position.x) - x) < Epsilon &&
                     (oneDimensional || Mathf.Abs(c.position.y - y) < Epsilon)).ToArray();
                 // Only a pure child pose can be assigned as an existing clip; do not approximate blended poses.
@@ -236,7 +270,8 @@ namespace Noname.AvatarTools.Editor
                 return evaluations[key] = new Evaluation
                 {
                     Clip = childResult.Clip, Closed = childResult.Closed | closedX | closedY,
-                    Joyful = childResult.Joyful | joyfulX | joyfulY
+                    Joyful = childResult.Joyful | joyfulX | joyfulY,
+                    Expression = childResult.Expression | expressionX | expressionY
                 };
             }
         }

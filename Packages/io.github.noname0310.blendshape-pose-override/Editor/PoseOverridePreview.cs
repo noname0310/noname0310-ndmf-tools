@@ -51,8 +51,9 @@ namespace Noname.AvatarTools.Editor
             // Slider changes only affect OnFrame; they do not require rebuilding every blendshape frame.
             context.Observe(component, c => (c.enabled, c.TargetMesh, c.PathMode, c.RelativePathRoot));
             context.Observe(component,
-                c => c.Overrides?.Select(e => (e?.BlendShapeName, e?.Animation)).ToArray(),
-                (a, b) => a == null ? b == null : b != null && a.SequenceEqual(b));
+                c => c.Overrides?.Select(e => (Name: e?.BlendShapeName, Clips: e?.GetAnimations().ToArray())).ToArray(),
+                (a, b) => a == null ? b == null : b != null && a.Length == b.Length && a.Zip(b, (x, y) =>
+                    x.Name == y.Name && (x.Clips == null ? y.Clips == null : y.Clips != null && x.Clips.SequenceEqual(y.Clips))).All(equal => equal));
             ObservePath(context, component.transform);
             if (component.RelativePathRoot != null) ObservePath(context, component.RelativePathRoot);
             if (component.TargetMesh != null)
@@ -63,7 +64,9 @@ namespace Noname.AvatarTools.Editor
             }
             if (component.Overrides != null)
                 foreach (var entry in component.Overrides)
-                    if (entry?.Animation != null) context.Observe(entry.Animation);
+                    if (entry != null)
+                        foreach (var clip in entry.GetAnimations())
+                            if (clip != null) context.Observe(clip);
         }
 
         private static void ObservePath(ComputeContext context, Transform transform)

@@ -16,8 +16,8 @@ The source repository includes instructions for enabling the package's EditMode 
 1. Add **Noname > BlendShape Pose Override** to the avatar root or a child object.
 2. Choose **Target Mesh**. Adding or resetting the component initializes this field from the nearest ancestor VRC Avatar Descriptor's eyelid renderer. This is an editable default, not a permanent connection to the descriptor. The override list starts empty.
 3. Set the renderer's current blendshape values to the intended basis, such as the customized face with its eyes open.
-4. Add a row for each blendshape to replace using **+**, or use an optional eye preset below. Select its name on the left and assign its override animation on the right.
-5. In each clip, key the blendshape values that produce the desired pose. The value at time **0** is used. Clips longer than one frame show a warning. The animation does not need to key every shape: unkeyed shapes retain their current values.
+4. Add a row for each blendshape to replace using **+**, or use an optional eye preset below. Select its name on the left and assign its override animations on the right. Use **+ Add Animation** to combine clips, such as separate left-eye and right-eye poses, in one row.
+5. In each clip, key the blendshape values that produce the desired pose. The value at time **0** is used. Clips longer than one frame show a warning. Unkeyed shapes retain their current values. When multiple clips key the same shape, the values must agree; conflicting values produce a configuration error. Values are combined, not summed or applied in clip order.
 6. Select the path mode. **Absolute** resolves paths from the nearest avatar descriptor. **Relative** resolves from this component's object, or from **Relative Path Root** when assigned, matching MA Merge Animator's path convention.
 7. Enable NDMF Preview and choose a **Preview Entry** and **Preview Weight** to inspect the result in the Scene view. These controls have no effect on build defaults.
 
@@ -34,17 +34,19 @@ The buttons append missing rows and attempt to fill empty animation fields. Exis
 
 Both preset buttons search every MA Merge Animator under the avatar, including inactive objects, plus the descriptor's base and special animator controllers. Nested state machines, nested blend trees, synced layers, and Animator Override Controllers are supported. Clip and tree names are never used to identify expressions.
 
-The search follows `v2/EyeLidLeft`, `v2/EyeLidRight`, or `v2/EyeLid` to the closed pose at 0. Nested `v2/SmileSad*`, `v2/SmileFrown*`, or `v2/MouthSmile*` branches distinguish ordinary closed eyes from joyful closed eyes. Namespaced parameters such as `OSCm/Proxy/v2/EyeLidLeft` are recognized by their standard suffix. These meanings follow the [VRCFaceTracking parameter definitions](https://docs.vrcft.io/docs/tutorial-avatars/tutorial-avatars-extras/parameters).
+The search follows `v2/EyeLidLeft`, `v2/EyeLidRight`, or `v2/EyeLid` to the closed pose at 0. Nested branches or 2D axes using `v2/SmileSad*`, `v2/SmileFrown*`, `v2/MouthSmile*`, or `v2/EyeSquint*` distinguish ordinary closed eyes from joyful or tightly closed eyes. Namespaced parameters such as `FT/v2/EyeLidLeft` and `OSCm/Proxy/FT/v2/EyeLidLeft` are recognized by their standard suffix. These meanings follow the [VRCFaceTracking parameter definitions](https://docs.vrcft.io/docs/tutorial-avatars/tutorial-avatars-extras/parameters).
 
 VRC Blink, MMD blink, and relaxed closed eyes use the ordinary both-eyes-closed pose. MMD smile uses the joyful both-eyes pose. Wink and right wink use the corresponding joyful one-eye pose; wink 2 and right wink 2 use ordinary one-eye poses.
 
 Only clips with blendshape curves that resolve to Target Mesh through the controller's animation root are candidates. MA Relative, Absolute, and Relative Path Root settings are respected. If needed, the component's path settings are adjusted to a common source root, provided existing manual assignments still resolve correctly.
 
-The search assigns an existing clip only when the requested pose selects a single child in a 1D or 2D tree. It does not synthesize clips from multiple motions or guess between different matching clips. Smoothing clips that only animate parameters are excluded. Missing, ambiguous, or incompatible results are left empty with an Inspector message for manual assignment.
+The search selects existing clips at exact child poses in 1D or 2D trees. It prefers branches that distinguish closed-eye expressions over auxiliary eyelid gates for gaze or brow corrections, and excludes wide-eye branches that do not include the closed endpoint. If no equally strong bilateral pose exists, compatible and unambiguous left-eye and right-eye clips from the same animation root are assigned together. No new animation assets are created.
+
+The search does not approximate blended poses or guess between different matching alternatives. Smoothing clips that only animate parameters are excluded. Unknown parameter meanings, missing poses, ambiguous candidates, and incompatible clip combinations are left empty with an Inspector message for manual assignment. Existing single-clip settings remain valid.
 
 ## Basis and output
 
-For each row, the new delta is `original mesh at the clip's keyed values minus original mesh at current renderer values`. At weight 0, the generated mesh preserves the current appearance. At weight 100, the row produces the authored pose. The current customization is not applied twice.
+For each row, the new delta is `original mesh at the combined keyed values minus original mesh at current renderer values`. The row's clips are combined before calculating this displacement once. At weight 0, the generated mesh preserves the current appearance. At weight 100, the row produces the authored pose. The current customization is not applied twice.
 
 All rows are calculated from the same original mesh and weights. A clip may reference another shape that is also overridden; it always samples that shape's original definition. Reordering rows does not change geometry. Activating multiple generated shapes combines their deltas additively; individual target poses are guaranteed when the other generated shapes are at 0.
 

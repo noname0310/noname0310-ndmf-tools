@@ -16,7 +16,17 @@ namespace Noname.AvatarTools
     public sealed class BlendShapePoseEntry
     {
         public string BlendShapeName;
+
+        // Keep the first clip's serialized field so existing scene and prefab overrides remain valid.
         public AnimationClip Animation;
+        public List<AnimationClip> AdditionalAnimations = new List<AnimationClip>();
+
+        public IEnumerable<AnimationClip> GetAnimations()
+        {
+            yield return Animation;
+            if (AdditionalAnimations != null)
+                foreach (var clip in AdditionalAnimations) yield return clip;
+        }
     }
 
     /// <summary>Replaces blendshapes with poses authored relative to the renderer's current weights.</summary>

@@ -221,6 +221,50 @@ namespace Noname.AvatarTools.Tests
         }
 
         [Test]
+        public void MultipleClipsMergeKeyedValuesOnceAndAreOrderIndependent()
+        {
+            renderer.SetBlendShapeWeight(1, 20);
+            var basis = Bake();
+            var desired = Bake(("Customize", 65), ("Close", 55), ("Smile", 80));
+            var first = Clip("Face", ("Customize", 65), ("Close", 55));
+            var second = Clip("Face", ("Customize", 65), ("Smile", 80));
+            Entry("Close", first);
+            var entry = component.Overrides.Single();
+            entry.AdditionalAnimations.Add(second);
+            var forward = Generate();
+            entry.Animation = second;
+            entry.AdditionalAnimations[0] = first;
+            var reverse = Generate();
+            forward.Apply(renderer);
+            AssertPose(basis, Bake());
+            AssertPose(desired, Bake(("Close", 100)));
+            reverse.Apply(renderer);
+            AssertPose(basis, Bake());
+            AssertPose(desired, Bake(("Close", 100)));
+        }
+
+        [Test]
+        public void ConflictingClipValuesAreRejectedWithTheRowShapeAndClipIndex()
+        {
+            Entry("Close", Clip("Face", ("Customize", 65)));
+            component.Overrides.Single().AdditionalAnimations.Add(Clip("Face", ("Customize", 20)));
+            Assert.IsFalse(PoseOverrideConfiguration.TryResolve(component, out _, out var error));
+            StringAssert.Contains("Entry 1", error);
+            StringAssert.Contains("Animation 2", error);
+            StringAssert.Contains("Conflicting values for 'Customize'", error);
+        }
+
+        [TestCase("Wrong path")]
+        [TestCase(null)]
+        public void EveryAdditionalClipMustResolveToTheTarget(string path)
+        {
+            Entry("Close", Clip("Face", ("Close", 65)));
+            component.Overrides.Single().AdditionalAnimations.Add(path == null ? null : Clip(path, ("Smile", 70)));
+            Assert.IsFalse(PoseOverrideConfiguration.TryResolve(component, out _, out var error));
+            StringAssert.Contains("Animation 2", error);
+        }
+
+        [Test]
         public void NegativeFramesWithNonzeroContributionAtZeroPreserveBasis()
         {
             AddFrame(renderer.sharedMesh, "Signed", -100, new Vector3(0.1f, 0, 0));
@@ -403,10 +447,12 @@ namespace Noname.AvatarTools.Tests
             AssertPose(desired, Bake(("Close", 100)));
         }
 
-        [Test]
-        public void PreviewMatchesBuildOutputWithoutChangingOriginalMeshOrWeights()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void PreviewMatchesBuildOutputWithoutChangingOriginalMeshOrWeights(bool separateClips)
         {
-            Entry("Close", Clip("Face", ("Close", 65), ("Customize", 70)));
+            Entry("Close", separateClips ? Clip("Face", ("Close", 65)) : Clip("Face", ("Close", 65), ("Customize", 70)));
+            if (separateClips) component.Overrides.Single().AdditionalAnimations.Add(Clip("Face", ("Customize", 70)));
             var source = renderer.sharedMesh;
             var desired = Bake(("Close", 65), ("Customize", 70));
             var proxy = Child("Proxy").AddComponent<SkinnedMeshRenderer>();

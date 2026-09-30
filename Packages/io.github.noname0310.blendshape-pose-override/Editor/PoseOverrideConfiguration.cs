@@ -94,17 +94,52 @@ namespace Noname.AvatarTools.Editor
                     error = prefix + $"'{entry.BlendShapeName}' is already overridden by another entry.";
                     return false;
                 }
-                if (entry.Animation == null)
+                var pose = new ResolvedPose { ShapeName = entry.BlendShapeName };
+                if (!TryReadAnimations(entry.GetAnimations(), animationRoot, renderer, out var weights, out int ignored, out var clipError))
                 {
-                    error = prefix + "Assign an animation containing the desired pose.";
+                    error = prefix + clipError;
                     return false;
                 }
+                foreach (var weight in weights) pose.Weights.Add(weight.Key, weight.Value);
+                if (ignored > 0)
+                    resolved.Warnings.Add(prefix + $"Ignoring {ignored} curve(s) that do not animate blendshapes on Target Mesh. Only blendshape deformation is supported.");
+                if (pose.Weights.All(p => p.Value == renderer.GetBlendShapeWeight(renderer.sharedMesh.GetBlendShapeIndex(p.Key))))
+                    resolved.Warnings.Add(prefix + "The keyed values match the current basis. This produces no movement.");
+                resolved.Poses.Add(pose);
+            }
+            if (targets.Any(name => renderer.GetBlendShapeWeight(renderer.sharedMesh.GetBlendShapeIndex(name)) != 0))
+                resolved.Warnings.Add("Current contributions from overridden shapes are preserved in the neutral mesh. Their built default weights become 0.");
+            plan = resolved;
+            return true;
+        }
 
-                var pose = new ResolvedPose { ShapeName = entry.BlendShapeName };
-                int ignored = AnimationUtility.GetObjectReferenceCurveBindings(entry.Animation).Length;
-                foreach (var binding in AnimationUtility.GetCurveBindings(entry.Animation))
+        internal static bool TryReadAnimations(IEnumerable<AnimationClip> clips, Transform animationRoot,
+            SkinnedMeshRenderer renderer, out Dictionary<string, float> weights, out int ignored, out string error)
+        {
+            weights = new Dictionary<string, float>(StringComparer.Ordinal);
+            ignored = 0;
+            error = null;
+            if (animationRoot == null || renderer == null || renderer.sharedMesh == null)
+            {
+                error = "Assign a valid animation root and Target Mesh.";
+                return false;
+            }
+            var owners = new Dictionary<string, int>(StringComparer.Ordinal);
+            int index = 0;
+            foreach (var clip in clips)
+            {
+                index++;
+                string prefix = $"Animation {index}" + (clip == null ? ": " : $" ('{clip.name}'): ");
+                if (clip == null)
                 {
-                    // Read curves without applying the animation to the user's avatar.
+                    error = prefix + "Assign an animation containing the desired pose, or remove this slot.";
+                    return false;
+                }
+                int matched = 0;
+                ignored += AnimationUtility.GetObjectReferenceCurveBindings(clip).Length;
+                foreach (var binding in AnimationUtility.GetCurveBindings(clip))
+                {
+                    // Merge keyed values first, then generate one displacement from the shared original basis.
                     if (binding.type != typeof(SkinnedMeshRenderer) || !binding.propertyName.StartsWith("blendShape.", StringComparison.Ordinal))
                     {
                         ignored++;
@@ -122,7 +157,7 @@ namespace Noname.AvatarTools.Editor
                         error = prefix + $"The animation references a missing blendshape: '{name}'.";
                         return false;
                     }
-                    var curve = AnimationUtility.GetEditorCurve(entry.Animation, binding);
+                    var curve = AnimationUtility.GetEditorCurve(clip, binding);
                     if (curve == null || curve.length == 0) continue;
                     float value = curve.Evaluate(0);
                     if (!PoseOverrideProcessor.IsFinite(value))
@@ -130,23 +165,24 @@ namespace Noname.AvatarTools.Editor
                         error = prefix + $"The first-frame value for '{name}' must be finite.";
                         return false;
                     }
-                    pose.Weights[name] = value;
+                    if (weights.TryGetValue(name, out float previous) && previous != value)
+                    {
+                        error = prefix + $"Conflicting values for '{name}': animation {owners[name]} sets {previous}, but this animation sets {value}.";
+                        return false;
+                    }
+                    weights[name] = value;
+                    owners[name] = index;
+                    matched++;
                 }
-                if (pose.Weights.Count == 0)
+                if (matched == 0)
                 {
                     error = prefix + "No first-frame blendshape curves resolve to Target Mesh. Check Path Mode and Relative Path Root.";
                     return false;
                 }
-                if (ignored > 0)
-                    resolved.Warnings.Add(prefix + $"Ignoring {ignored} curve(s) that do not animate blendshapes on Target Mesh. Only blendshape deformation is supported.");
-                if (pose.Weights.All(p => p.Value == renderer.GetBlendShapeWeight(renderer.sharedMesh.GetBlendShapeIndex(p.Key))))
-                    resolved.Warnings.Add(prefix + "The keyed values match the current basis. This produces no movement.");
-                resolved.Poses.Add(pose);
             }
-            if (targets.Any(name => renderer.GetBlendShapeWeight(renderer.sharedMesh.GetBlendShapeIndex(name)) != 0))
-                resolved.Warnings.Add("Current contributions from overridden shapes are preserved in the neutral mesh. Their built default weights become 0.");
-            plan = resolved;
-            return true;
+            if (index != 0) return true;
+            error = "Assign at least one animation containing the desired pose.";
+            return false;
         }
     }
 }

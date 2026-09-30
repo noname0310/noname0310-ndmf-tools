@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.3
+
+- Support multiple animation clips per blendshape override, with add/remove controls and Scene preview support.
+- Combine first-frame keyed values before calculating a single displacement from the current mesh basis. Report conflicting values in the Inspector and during builds.
+- Extend eye preset discovery to EyeSquint parameters and namespaced 2D eye trees, including controllers assigned directly to the avatar descriptor.
+- Automatically combine compatible left-eye and right-eye clips when no matching bilateral pose is available, without generating new animation assets.
+- Prefer expression branches over auxiliary eyelid gates, exclude wide-eye-only branches, and leave ambiguous or incompatible candidates for manual assignment.
+- Preserve existing single-clip settings, prefab overrides, manual assignments, and compatible animation path settings.
+- Add regression coverage for both animation layouts, path inference, conflicting candidates, multi-clip generation, and previews.
+
 ## 0.0.2
 
 - Reduce build and preview generation cost by replacing only the configured blendshapes while preserving other morph data and indices.

@@ -39,6 +39,8 @@ namespace Noname.AvatarTools.Tests
             var delta = new[] { Vector3.down, Vector3.down, Vector3.down };
             mesh.AddBlendShapeFrame("CustomBlink", 100, delta, null, null);
             foreach (string name in PoseOverridePresets.MmdEyeShapeNames) mesh.AddBlendShapeFrame(name, 100, delta, null, null);
+            mesh.AddBlendShapeFrame("Shape A", 100, delta, null, null);
+            mesh.AddBlendShapeFrame("Shape B", 100, delta, null, null);
             face.sharedMesh = mesh;
             descriptor.customEyeLookSettings.eyelidType = VRCAvatarDescriptor.EyelidType.Blendshapes;
             descriptor.customEyeLookSettings.eyelidsSkinnedMesh = face;
@@ -63,12 +65,13 @@ namespace Noname.AvatarTools.Tests
             return obj;
         }
 
-        private AnimationClip Clip(string name, string path = "Face", bool animatorOnly = false)
+        private AnimationClip Clip(string name, string path = "Face", bool animatorOnly = false,
+            string shape = "CustomBlink", float weight = 75)
         {
             var clip = Own(new AnimationClip { name = name });
             AnimationUtility.SetEditorCurve(clip,
-                EditorCurveBinding.FloatCurve(animatorOnly ? "" : path, animatorOnly ? typeof(Animator) : typeof(SkinnedMeshRenderer), animatorOnly ? "Proxy" : "blendShape.CustomBlink"),
-                AnimationCurve.Constant(0, 0, 75));
+                EditorCurveBinding.FloatCurve(animatorOnly ? "" : path, animatorOnly ? typeof(Animator) : typeof(SkinnedMeshRenderer), animatorOnly ? "Proxy" : "blendShape." + shape),
+                AnimationCurve.Constant(0, 0, weight));
             return clip;
         }
 
@@ -149,6 +152,119 @@ namespace Noname.AvatarTools.Tests
             return requests;
         }
 
+        private AnimatorController SplitEyeController(string path, out Dictionary<EyePose, AnimationClip> clips)
+        {
+            clips = new Dictionary<EyePose, AnimationClip>();
+            var motions = new List<Motion>();
+            foreach (bool left in new[] { true, false })
+            {
+                string side = left ? "Left" : "Right", shape = left ? "Shape A" : "Shape B";
+                var closed = Clip("Unrelated asset 1 " + shape, path, shape: shape);
+                var joyful = Clip("Unrelated asset 2 " + shape, path, shape: shape, weight: 100);
+                var neutral = Clip("EyeClosedJoyful misleading name", path, shape: shape, weight: 0);
+                clips.Add(left ? EyePose.ClosedLeft : EyePose.ClosedRight, closed);
+                clips.Add(left ? EyePose.JoyfulLeft : EyePose.JoyfulRight, joyful);
+                var tree = Own(new BlendTree
+                {
+                    blendType = BlendTreeType.FreeformCartesian2D,
+                    blendParameter = "FT/v2/EyeLid" + side,
+                    blendParameterY = "OSCm/Proxy/FT/v2/EyeSquint" + side,
+                    children = new[]
+                    {
+                        new ChildMotion { position = new Vector2(0, 1), motion = joyful, timeScale = 1 },
+                        new ChildMotion { position = new Vector2(1, 0), motion = neutral, timeScale = 1 },
+                        new ChildMotion { position = new Vector2(0, 0), motion = closed, timeScale = 1 },
+                        new ChildMotion { position = new Vector2(0.8f, 0), motion = neutral, timeScale = 1 }
+                    }
+                });
+                motions.Add(tree);
+                // Auxiliary wide-eye and gaze gates use the same eyelid parameter, but are not closing poses.
+                motions.Add(One("FT/v2/EyeLid" + side, (0.8f, neutral), (1, closed)));
+                motions.Add(One("FT/v2/EyeLid" + side, (0, neutral), (0.8f, closed)));
+                motions.Add(tree); // Reused graph nodes must not create duplicate alternatives.
+            }
+            return Controller(motions.ToArray());
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void SeparateEyeSquintTreesCombineClipsAndIgnoreAuxiliaryGates(bool descriptorOnly)
+        {
+            var controller = SplitEyeController(descriptorOnly ? "Model/Face" : "Face", out var clips);
+            if (descriptorOnly)
+                descriptor.baseAnimationLayers = new[] { new VRCAvatarDescriptor.CustomAnimLayer
+                    { type = VRCAvatarDescriptor.AnimLayerType.FX, animatorController = controller } };
+            else Merge(controller);
+            var requests = Requests();
+            var report = EyePresetAutoAssignment.FillMissing(component, requests);
+            Assert.AreEqual(8, report.Assigned);
+            Assert.IsEmpty(report.Warnings);
+            foreach (var entry in component.Overrides)
+            {
+                var pose = requests[entry.BlendShapeName];
+                var expected = pose == EyePose.Closed ? new[] { clips[EyePose.ClosedLeft], clips[EyePose.ClosedRight] }
+                    : pose == EyePose.Joyful ? new[] { clips[EyePose.JoyfulLeft], clips[EyePose.JoyfulRight] }
+                    : new[] { clips[pose] };
+                CollectionAssert.AreEquivalent(expected, entry.GetAnimations());
+            }
+            Assert.AreEqual(descriptorOnly ? PoseAnimationPathMode.Absolute : PoseAnimationPathMode.Relative, component.PathMode);
+            Assert.IsTrue(PoseOverrideConfiguration.TryResolve(component, out _, out var error), error);
+        }
+
+        [Test]
+        public void ConflictingSeparateEyesAreNotCombinedOrChosenByControllerOrder()
+        {
+            Merge(SplitEyeController("Face", out _));
+            Merge(SplitEyeController("Face", out _));
+            var report = EyePresetAutoAssignment.FillMissing(component, Requests());
+            Assert.AreEqual(0, report.Assigned);
+            Assert.AreEqual(8, report.Warnings.Count);
+        }
+
+        [Test]
+        public void IncompatibleKeyedValuesPreventAutomaticBilateralCombination()
+        {
+            Merge(Controller(One("v2/EyeLidLeft", (0, Clip("First", weight: 100))),
+                One("v2/EyeLidRight", (0, Clip("Second", weight: 0)))));
+            var result = EyeAnimationDiscovery.Find(component);
+            Assert.IsEmpty(result.Candidates[EyePose.Closed]);
+            Assert.AreEqual(1, result.Candidates[EyePose.ClosedLeft].Count);
+            Assert.AreEqual(1, result.Candidates[EyePose.ClosedRight].Count);
+        }
+
+        [Test]
+        public void WideEyeOnlyBranchesDoNotProduceClosedPoses()
+        {
+            Merge(Controller(One("v2/EyeLidLeft", (0.8f, Clip("Neutral")), (1, Clip("Wide")))));
+            Assert.IsTrue(EyeAnimationDiscovery.Find(component).Candidates.Values.All(v => v.Count == 0));
+        }
+
+        [Test]
+        public void AdditionalManualClipsArePreservedAndPreventIncompatibleRootChanges()
+        {
+            Merge(EyeController(SixPoses()));
+            var requests = Requests();
+            var entry = component.Overrides[0];
+            var manual = Clip("Manual Absolute", "Model/Face");
+            entry.AdditionalAnimations.Add(manual);
+            component.PathMode = PoseAnimationPathMode.Absolute;
+            var report = EyePresetAutoAssignment.FillMissing(component, requests);
+            Assert.AreEqual(0, report.Assigned);
+            Assert.AreEqual(1, report.Preserved);
+            Assert.AreEqual(PoseAnimationPathMode.Absolute, component.PathMode);
+            Assert.IsNull(entry.Animation);
+            Assert.AreSame(manual, entry.AdditionalAnimations.Single());
+        }
+
+        [Test]
+        public void EditorOnlyMergeControllersDoNotIntroduceAmbiguity()
+        {
+            Merge(EyeController(SixPoses()));
+            var ignored = Merge(EyeController(SixPoses()));
+            ignored.gameObject.tag = "EditorOnly";
+            Assert.AreEqual(8, EyePresetAutoAssignment.FillMissing(component, Requests()).Assigned);
+        }
+
         [TestCase("")]
         [TestCase("OSCm/Proxy/")]
         public void ParametersResolveSixDistinctPosesRegardlessOfNamesAndChildOrder(string prefix)
@@ -158,7 +274,7 @@ namespace Noname.AvatarTools.Tests
             merge.gameObject.SetActive(false);
             var result = EyeAnimationDiscovery.Find(component);
             foreach (var pair in clips)
-                Assert.AreSame(pair.Value, result.Candidates[pair.Key].Single().Clip, pair.Key.ToString());
+                Assert.AreSame(pair.Value, result.Candidates[pair.Key].Single().Clips.Single(), pair.Key.ToString());
         }
 
         [Test]
@@ -200,8 +316,8 @@ namespace Noname.AvatarTools.Tests
             descriptor.baseAnimationLayers = new[] { new VRCAvatarDescriptor.CustomAnimLayer { type = VRCAvatarDescriptor.AnimLayerType.FX, animatorController = Controller(One("v2/EyeLidLeft", (0, clips[EyePose.ClosedLeft]))) } };
             descriptor.specialAnimationLayers = new[] { new VRCAvatarDescriptor.CustomAnimLayer { type = VRCAvatarDescriptor.AnimLayerType.Sitting, animatorController = Controller(One("v2/EyeLidRight", (0, clips[EyePose.ClosedRight]))) } };
             var result = EyeAnimationDiscovery.Find(component);
-            Assert.AreSame(clips[EyePose.ClosedLeft], result.Candidates[EyePose.ClosedLeft].Single().Clip);
-            Assert.AreSame(clips[EyePose.ClosedRight], result.Candidates[EyePose.ClosedRight].Single().Clip);
+            Assert.AreSame(clips[EyePose.ClosedLeft], result.Candidates[EyePose.ClosedLeft].Single().Clips.Single());
+            Assert.AreSame(clips[EyePose.ClosedRight], result.Candidates[EyePose.ClosedRight].Single().Clips.Single());
         }
 
         [Test]
@@ -226,7 +342,7 @@ namespace Noname.AvatarTools.Tests
             var wrapper = Own(new AnimatorOverrideController(controller));
             wrapper.ApplyOverrides(new[] { new KeyValuePair<AnimationClip, AnimationClip>(clips[EyePose.Closed], replacement) });
             Merge(wrapper);
-            Assert.AreSame(replacement, EyeAnimationDiscovery.Find(component).Candidates[EyePose.Closed].Single().Clip);
+            Assert.AreSame(replacement, EyeAnimationDiscovery.Find(component).Candidates[EyePose.Closed].Single().Clips.Single());
         }
 
         [Test]
@@ -243,8 +359,8 @@ namespace Noname.AvatarTools.Tests
             controller.SetStateEffectiveMotion(state, One("v2/EyeLidRight", (0, second)), 1);
             Merge(controller);
             var result = EyeAnimationDiscovery.Find(component);
-            Assert.AreSame(first, result.Candidates[EyePose.ClosedLeft].Single().Clip);
-            Assert.AreSame(second, result.Candidates[EyePose.ClosedRight].Single().Clip);
+            Assert.AreSame(first, result.Candidates[EyePose.ClosedLeft].Single().Clips.Single());
+            Assert.AreSame(second, result.Candidates[EyePose.ClosedRight].Single().Clips.Single());
         }
 
         [Test]
@@ -268,7 +384,7 @@ namespace Noname.AvatarTools.Tests
             Merge(EyeController(wrong));
             Merge(EyeController(SixPoses()), root.transform);
             var result = EyeAnimationDiscovery.Find(component);
-            foreach (var pair in clips) Assert.AreSame(pair.Value, result.Candidates[pair.Key].Single().Clip);
+            foreach (var pair in clips) Assert.AreSame(pair.Value, result.Candidates[pair.Key].Single().Clips.Single());
         }
 
         [Test]
