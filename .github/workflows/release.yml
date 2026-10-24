@@ -10,6 +10,7 @@ on:
         options:
           - normal-field-offset
           - blendshape-pose-override
+          - trace-and-optimize-blendshapes
 
 permissions:
   contents: read

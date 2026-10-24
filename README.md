@@ -6,6 +6,7 @@ NDMF tools for various avatar modifications.
 | --- | --- | --- |
 | [Normal Field Offset](Packages/io.github.noname0310.normal-field-offset/README.md) | Offset clothing along a body's surface normal field. | NDMF, Unity Collections |
 | [BlendShape Pose Override](Packages/io.github.noname0310.blendshape-pose-override/README.md) | Replace blendshapes with poses authored in animation clips. | NDMF, Modular Avatar, VRChat Avatars SDK |
+| [Trace And Optimize BlendShapes](Packages/io.github.noname0310.trace-and-optimize-blendshapes/README.md) | Freeze static shapes and merge shared zero-reset animation bindings. | NDMF, VRChat Avatars SDK |
 
 ## Development
 
@@ -27,7 +28,8 @@ Add these entries to the existing `dependencies` object:
 
 ```json
 "io.github.noname0310.normal-field-offset": "file:../../../noname0310-ndmf-tools/Packages/io.github.noname0310.normal-field-offset",
-"io.github.noname0310.blendshape-pose-override": "file:../../../noname0310-ndmf-tools/Packages/io.github.noname0310.blendshape-pose-override"
+"io.github.noname0310.blendshape-pose-override": "file:../../../noname0310-ndmf-tools/Packages/io.github.noname0310.blendshape-pose-override",
+"io.github.noname0310.trace-and-optimize-blendshapes": "file:../../../noname0310-ndmf-tools/Packages/io.github.noname0310.trace-and-optimize-blendshapes"
 ```
 
 Paths are relative to the directory containing `manifest.json`. For a different
@@ -42,13 +44,14 @@ To expose the package tests, merge these names into the host manifest's top-leve
 ```json
 "testables": [
   "io.github.noname0310.normal-field-offset",
-  "io.github.noname0310.blendshape-pose-override"
+  "io.github.noname0310.blendshape-pose-override",
+  "io.github.noname0310.trace-and-optimize-blendshapes"
 ]
 ```
 
-Run the `Noname.NormalFieldOffset.Tests` and
-`Noname.BlendShapePoseOverride.Tests` assemblies in Unity Test Runner's EditMode.
-Both test assemblies require a VRChat Avatars SDK project.
+Run `Noname.NormalFieldOffset.Tests`, `Noname.BlendShapePoseOverride.Tests`, and
+`Noname.TraceAndOptimizeBlendShapes.Tests` in Unity Test Runner's EditMode.
+The test assemblies require a VRChat Avatars SDK project.
 
 The initial dependency baseline is Unity 2022.3.22f1, NDMF 1.14.8, Modular Avatar
 1.18.7, VRChat Avatars SDK 3.10.5, and Unity Collections 2.1.4. Older combinations

@@ -20,5 +20,5 @@ jobs:
           cache: npm
       - name: Install build dependencies
         run: npm ci
-      - name: Validate and build both packages
+      - name: Validate and build all packages
         run: npm run build

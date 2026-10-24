@@ -1,0 +1,8 @@
+{
+  "name": "Noname.TraceAndOptimizeBlendShapes",
+  "rootNamespace": "Noname.AvatarTools",
+  "references": ["nadena.dev.ndmf.runtime"],
+  "overrideReferences": true,
+  "precompiledReferences": ["VRCSDK3A.dll", "VRCSDKBase.dll"],
+  "autoReferenced": true
+}

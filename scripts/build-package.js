@@ -12,6 +12,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PACKAGES = {
   'normal-field-offset': 'io.github.noname0310.normal-field-offset',
   'blendshape-pose-override': 'io.github.noname0310.blendshape-pose-override',
+  'trace-and-optimize-blendshapes': 'io.github.noname0310.trace-and-optimize-blendshapes',
 };
 
 const readJson = (filename) => JSON.parse(readFileSync(filename, 'utf8'));
