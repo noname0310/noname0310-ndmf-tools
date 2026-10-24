@@ -15,6 +15,12 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             EditorGUILayout.PropertyField(serializedObject.FindProperty("ScopeRoot"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("PreserveMmdBlendShapes"), new GUIContent("Preserve MMD BlendShapes"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("OptimizeZeroResetAnimations"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("IgnoreUnreachableStates"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("ExcludedAnimations"), true);
+            if (serializedObject.FindProperty("ExcludedAnimations").arraySize > 0)
+                EditorGUILayout.HelpBox("Excluded animations do not prevent BlendShape optimization in this scope. " +
+                    "Their bindings to frozen or merged shapes are removed from the build copies, so those facial motions may change. " +
+                    "Other tracks and protected shapes are kept. Assign the original clip assets.", MessageType.Warning);
             serializedObject.ApplyModifiedProperties();
             var component = (TraceAndOptimizeBlendShapes)target;
             var descriptor = component.FindDescriptor();

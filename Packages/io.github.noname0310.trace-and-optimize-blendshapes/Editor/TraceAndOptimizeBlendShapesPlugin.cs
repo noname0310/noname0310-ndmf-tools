@@ -17,7 +17,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization
     {
         internal Transform Root;
         internal HashSet<SkinnedMeshRenderer> OriginalRenderers;
-        internal bool Mmd, ZeroReset;
+        internal bool Mmd, ZeroReset, IgnoreUnreachableStates;
+        internal HashSet<AnimationClip> ExcludedAnimations;
         internal int Depth;
     }
 
@@ -69,11 +70,14 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 for (var parent = root; parent != context.AvatarRootTransform; parent = parent.parent) depth++;
                 state.Scopes.Add(new ScopeSettings { Root = root, Depth = depth,
                     OriginalRenderers = new HashSet<SkinnedMeshRenderer>(root.GetComponentsInChildren<SkinnedMeshRenderer>(true)),
-                    Mmd = component.PreserveMmdBlendShapes, ZeroReset = component.OptimizeZeroResetAnimations });
+                    ExcludedAnimations = new HashSet<AnimationClip>((component.ExcludedAnimations ?? new List<AnimationClip>()).Where(c => c != null)),
+                    Mmd = component.PreserveMmdBlendShapes, ZeroReset = component.OptimizeZeroResetAnimations,
+                    IgnoreUnreachableStates = component.IgnoreUnreachableStates });
             }
             // An equally specific overlap has no meaningful priority. Require matching settings instead of build-order dependence.
             foreach (var group in state.Scopes.GroupBy(s => s.Root))
-                if (group.Select(s => (s.Mmd, s.ZeroReset)).Distinct().Count() > 1)
+                if (group.Select(s => (s.Mmd, s.ZeroReset, s.IgnoreUnreachableStates)).Distinct().Count() > 1 ||
+                    group.Any(s => !s.ExcludedAnimations.SetEquals(group.First().ExcludedAnimations)))
                     throw new InvalidOperationException("BlendShape optimization components with the same scope must use matching settings.");
         }
 
@@ -90,7 +94,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             {
                 var descriptor = context.AvatarRootObject.GetComponent<VRCAvatarDescriptor>();
                 var usage = AnimationUsage.Collect(context.AvatarRootObject, services.ControllerContext,
-                    services.ObjectPathRemapper.GetVirtualToRealPathMap());
+                    services.ObjectPathRemapper.GetVirtualToRealPathMap(), scopes.Any(s => s.IgnoreUnreachableStates));
+                var exclusions = scopes.ToDictionary(s => s, s => new ExcludedAnimationMatcher(s.ExcludedAnimations));
                 var plans = new List<OptimizationPlan>();
                 foreach (var renderer in context.AvatarRootObject.GetComponentsInChildren<SkinnedMeshRenderer>(true))
                 {
@@ -100,7 +105,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                     if (scope == null) continue;
                     var preserve = ProtectedNames(renderer, descriptor, scope.Mmd);
                     PreserveForOtherOptimizers(renderer, preserve);
-                    plans.Add(OptimizationPlan.Create(renderer, usage, scope.ZeroReset, preserve));
+                    plans.Add(OptimizationPlan.Create(renderer, usage, scope.ZeroReset, preserve, exclusions[scope].Matches,
+                        scope.IgnoreUnreachableStates));
                 }
                 var eyelidNames = CaptureEyelids(descriptor);
                 var outputs = new List<(OptimizationPlan plan, Mesh mesh)>();
@@ -127,9 +133,15 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                     $"froze {plans.Sum(p => p.Frozen.Count)} shapes; merged {plans.Sum(p => p.Groups.Sum(g => g.Inputs.Count))} " +
                     $"zero-reset shapes into {plans.Sum(p => p.Groups.Count)}; " +
                     $"{watch.ElapsedMilliseconds} ms.", context.AvatarRootObject);
+                if (usage.Reachability != null)
+                    UnityEngine.Debug.Log($"[Noname BlendShapes] State analysis: {usage.Reachability.ReachableStateCount}/{usage.Reachability.StateCount} states reachable." +
+                        (usage.Reachability.FallbackReason == null ? "" : " Preserved all states: " + usage.Reachability.FallbackReason), context.AvatarRootObject);
                 foreach (var plan in plans.Where(p => p.Skipped.Count > 0))
                     UnityEngine.Debug.Log($"[Noname BlendShapes] Preserved {plan.Skipped.Count} unsupported inputs on '{plan.Renderer.name}': " +
                         string.Join("; ", plan.Skipped.Take(5)), plan.Renderer);
+                foreach (var clip in exclusions.Values.SelectMany(e => e.Unmatched).Distinct())
+                    UnityEngine.Debug.LogWarning($"[Noname BlendShapes] Excluded animation '{clip.name}' did not match any analyzed bindings. " +
+                        "It may be unused in this scope or changed by another build tool; unmatched curves are kept.", clip);
             }
             finally
             {

@@ -13,6 +13,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization
         internal string Name;
         internal float Weight;
         internal IReadOnlyList<CurveUse> Uses;
+        internal IReadOnlyList<CurveUse> IgnoredUses = Array.Empty<CurveUse>();
+        internal IReadOnlyList<CurveUse> UnreachableUses = Array.Empty<CurveUse>();
     }
 
     internal sealed class ShapeGroup
@@ -33,7 +35,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization
         internal IEnumerable<ShapeInput> Removed => Frozen.Concat(Groups.SelectMany(g => g.Inputs));
 
         internal static OptimizationPlan Create(SkinnedMeshRenderer renderer, AnimationUsage usage,
-            bool zeroReset, ISet<string> preserve)
+            bool zeroReset, ISet<string> preserve, Func<VirtualClip, bool> excludeAnimation = null,
+            bool ignoreUnreachableStates = false)
         {
             var plan = new OptimizationPlan { Renderer = renderer, Source = renderer.sharedMesh };
             if (plan.Source == null) return plan;
@@ -61,7 +64,22 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                     plan.Skipped.Add(name + ": default weight is outside the supported 0..100 range.");
                     continue;
                 }
-                var shape = new ShapeInput { Index = i, Name = name, Weight = weight, Uses = usage.Get(renderer, name) };
+                var allUses = usage.Get(renderer, name);
+                var ignored = allUses.Where(u => excludeAnimation?.Invoke(u.Clip) == true).ToArray();
+                var unreachable = allUses.Except(ignored).Where(u => ignoreUnreachableStates && u.Unreachable).ToArray();
+                if (ignored.Concat(unreachable).Any(u => u.ReadOnly))
+                {
+                    plan.Skipped.Add(name + ": ignored animation has an immutable or shared binding.");
+                    continue;
+                }
+                if (unreachable.Any(u => u.Additive))
+                {
+                    plan.Skipped.Add(name + ": unreachable binding participates in an additive animation context.");
+                    continue;
+                }
+                var shape = new ShapeInput { Index = i, Name = name, Weight = weight,
+                    Uses = allUses.Except(ignored).Except(unreachable).ToArray(), IgnoredUses = ignored,
+                    UnreachableUses = unreachable };
                 if (shape.Uses.Count == 0) { plan.Frozen.Add(shape); continue; }
                 if (!zeroReset || shape.Uses.Any(u => !AnimationUsage.IsConstantZero(u.Curve))) continue;
                 if (shape.Uses.Any(u => u.ReadOnly || u.Additive))
@@ -83,6 +101,14 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 {
                     writer.Write(locations.Length);
                     foreach (var location in locations) { writer.Write(location.ClipId); writer.Write(location.path); }
+                    if (ignoreUnreachableStates)
+                    {
+                        // Dead clips still register properties for Write Defaults. Only combine shapes
+                        // with identical layer coverage, and retain that coverage when remapping curves.
+                        var contexts = shape.Uses.Concat(shape.UnreachableUses).SelectMany(u => u.DefaultContexts).Distinct().OrderBy(c => c).ToArray();
+                        writer.Write(contexts.Length);
+                        foreach (int context in contexts) writer.Write(context);
+                    }
                 });
                 if (!groups.TryGetValue(signature, out var group)) groups.Add(signature, group = new ShapeGroup());
                 group.Inputs.Add(shape);
@@ -99,13 +125,28 @@ namespace Noname.AvatarTools.BlendShapeOptimization
 
         internal void RewriteCurves()
         {
+            foreach (var clipUses in Removed.SelectMany(s => s.IgnoredUses)
+                         .Concat(Frozen.SelectMany(s => s.UnreachableUses)).GroupBy(u => u.Clip))
+            {
+                var clip = clipUses.Key;
+                float end = EndTime(clip);
+                foreach (var use in clipUses) clip.SetFloatCurve(use.Binding, null);
+                if (EndTime(clip) < end)
+                {
+                    // An unbound timing curve preserves exit times even if every real track was removed.
+                    var timing = EditorCurveBinding.FloatCurve("__noname_clip_duration_" + Guid.NewGuid().ToString("N"),
+                        typeof(GameObject), "m_IsActive");
+                    clip.SetFloatCurve(timing, AnimationCurve.Constant(0, end, 0));
+                }
+            }
             foreach (var group in Groups)
             {
-                foreach (var clipGroup in group.Inputs.SelectMany(s => s.Uses).GroupBy(u => (u.Clip, u.Binding.path)))
+                foreach (var clipGroup in group.Inputs.SelectMany(s => s.Uses.Concat(s.UnreachableUses)).GroupBy(u => (u.Clip, u.Binding.path)))
                 {
                     var uses = clipGroup.ToArray();
-                    float first = uses.Min(u => u.Curve.keys[0].time);
-                    float last = uses.Max(u => u.Curve.keys[u.Curve.length - 1].time);
+                    var times = uses.SelectMany(u => u.Curve?.keys ?? Array.Empty<Keyframe>()).Select(k => k.time).DefaultIfEmpty(0).ToArray();
+                    float first = times.Min();
+                    float last = times.Max();
                     var binding = uses[0].Binding;
                     binding.propertyName = "blendShape." + group.Name;
                     // Retain the removed curves' time range, including zero-only clips with exit-time transitions.
@@ -118,5 +159,10 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 }
             }
         }
+
+        private static float EndTime(VirtualClip clip)
+            => clip.GetFloatCurveBindings().SelectMany(b => clip.GetFloatCurve(b)?.keys ?? Array.Empty<Keyframe>()).Select(k => k.time)
+                .Concat(clip.GetObjectCurveBindings().SelectMany(b => clip.GetObjectCurve(b) ?? Array.Empty<ObjectReferenceKeyframe>()).Select(k => k.time))
+                .DefaultIfEmpty(0).Max();
     }
 }

@@ -17,6 +17,32 @@ such as `abc`, `abcd`, and `abce` produce three independent groups: `abc`, `d`, 
 `e`. A group whose defaults are all zero retains an empty channel at zero so clip
 timing and state transitions remain intact.
 
+**Ignore Unreachable States** (enabled by default) analyzes the final state
+machines before deciding which BlendShapes are animated. It follows default,
+entry, exit, nested-machine, and Any State paths, respects Mute/Solo, and rejects
+conditions contradicted by known parameter values. Reachable Parameter Drivers
+propagate Set/Copy values and Random ranges across the avatar until the result
+stabilizes. Built-in, expression/OSC/saved, Contact, PhysBone, and animated
+parameters are treated as runtime inputs. Add operations and range-converting
+copies are conservative. Every Blend Tree child remains included.
+
+This option only changes BlendShape analysis; it does not delete states or
+transitions. References in unreachable clips are removed or remapped only for
+optimized shapes. Clip duration and layer binding coverage for Write Defaults
+are preserved. Unknown reachable behaviours or synchronized layers retain all
+controller references. Disable the option to analyze every referenced state.
+External animations still require the MMD protection or explicit shape exclusions.
+
+Use **Excluded Animations** to accept reduced facial motion in selected clips,
+such as AFK animations. Assign their original clip assets. These clips do not
+prevent freezing or zero-reset grouping in this component's mesh scope. The
+build removes their bindings to shapes that were actually optimized; other
+tracks, protected shapes, source assets, and clip durations are retained.
+Exclusions follow NDMF provenance when available. For tools that discard it,
+matching requires a compatible clip name and matching BlendShape curves,
+allowing rebased paths and removed bindings. A warning reports exclusions that
+could not be matched; unrecognized clips remain part of the analysis.
+
 **Preserve MMD BlendShapes** protects recognized Japanese and English MMD names
 from Avatar Optimizer's compatibility table. Descriptor eyelids, visemes, and
 mouth-open shapes are always protected. For additional names, add **Noname >

@@ -15,7 +15,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization
         internal EditorCurveBinding Binding;
         internal AnimationCurve Curve;
         internal int ClipId;
-        internal bool ReadOnly, Additive;
+        internal bool ReadOnly, Additive, Unreachable;
+        internal readonly HashSet<int> DefaultContexts = new();
     }
 
     internal sealed class AnimationUsage
@@ -24,6 +25,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization
         internal readonly HashSet<SkinnedMeshRenderer> MeshSwaps = new();
         private readonly Dictionary<VirtualClip, int> clipIds = new();
         private readonly Dictionary<(VirtualClip, EditorCurveBinding), HashSet<SkinnedMeshRenderer>> destinations = new();
+        private int nextDefaultContext;
+        internal AnimatorReachability Reachability;
         internal int ClipCount => clipIds.Count;
 
         internal IReadOnlyList<CurveUse> Get(SkinnedMeshRenderer renderer, string name)
@@ -31,13 +34,15 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 ? uses : Array.Empty<CurveUse>();
 
         internal static AnimationUsage Collect(GameObject avatar, VirtualControllerContext controllers,
-            IReadOnlyDictionary<string, string> pathMap = null)
+            IReadOnlyDictionary<string, string> pathMap = null, bool analyzeReachability = false)
         {
             var result = new AnimationUsage();
-            foreach (var entry in controllers.Controllers.ToArray())
+            // NDMF can retain controller entries after another build pass removes their component.
+            var entries = controllers.Controllers.Where(e => !(e.Key is UnityEngine.Object owner) || owner != null).ToArray();
+            if (analyzeReachability)
+                result.Reachability = AnimatorReachability.Analyze(avatar, entries.Select(e => e.Value));
+            foreach (var entry in entries)
             {
-                // NDMF can retain controller entries after another build pass removes their component.
-                if (entry.Key is UnityEngine.Object owner && owner == null) continue;
                 var root = entry.Key is Animator animator ? animator.transform : avatar.transform;
                 bool additivePlayable = entry.Key is VRCAvatarDescriptor.AnimLayerType type &&
                                         type == VRCAvatarDescriptor.AnimLayerType.Additive;
@@ -45,7 +50,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 foreach (var layer in entry.Value.Layers)
                     if (additivePlayable || layer.BlendingMode == AnimatorLayerBlendingMode.Additive)
                         additiveClips.UnionWith(layer.AllReachableNodes().OfType<VirtualClip>());
-                result.AddController(avatar.transform, root, entry.Value, additiveClips, pathMap);
+                result.AddController(avatar.transform, root, entry.Value, additiveClips, pathMap, result.Reachability?.Clips(entry.Value));
             }
             // A shared virtual clip can be installed at more than one animation root. Rewriting a binding
             // in that case would affect another renderer, possibly outside the requested mesh scope.
@@ -57,8 +62,19 @@ namespace Noname.AvatarTools.BlendShapeOptimization
         }
 
         internal void AddController(Transform avatarRoot, Transform animationRoot, VirtualAnimatorController controller,
-            HashSet<VirtualClip> additiveClips = null, IReadOnlyDictionary<string, string> pathMap = null)
+            HashSet<VirtualClip> additiveClips = null, IReadOnlyDictionary<string, string> pathMap = null,
+            HashSet<VirtualClip> reachableClips = null)
         {
+            var defaultContexts = new Dictionary<VirtualClip, HashSet<int>>();
+            foreach (var layer in reachableClips == null ? Enumerable.Empty<VirtualLayer>() : controller.Layers)
+            {
+                int context = nextDefaultContext++;
+                foreach (var clip in layer.AllReachableNodes().OfType<VirtualClip>().Distinct())
+                {
+                    if (!defaultContexts.TryGetValue(clip, out var contexts)) defaultContexts.Add(clip, contexts = new());
+                    contexts.Add(context);
+                }
+            }
             foreach (var clip in controller.AllReachableNodes().OfType<VirtualClip>().Distinct())
             {
                 if (!clipIds.TryGetValue(clip, out int id)) clipIds.Add(clip, id = clipIds.Count);
@@ -74,12 +90,15 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                         if (!usages.TryGetValue(renderer, out var shapes)) usages.Add(renderer, shapes = new());
                         var name = binding.propertyName.Substring(11);
                         if (!shapes.TryGetValue(name, out var uses)) shapes.Add(name, uses = new());
-                        if (!uses.Any(u => u.Clip == clip && u.Binding.Equals(binding)))
-                            uses.Add(new CurveUse { Clip = clip, Binding = binding, Curve = clip.GetFloatCurve(binding),
+                        bool unreachable = reachableClips != null && !reachableClips.Contains(clip);
+                        var use = uses.FirstOrDefault(u => u.Clip == clip && u.Binding.Equals(binding));
+                        if (use == null)
+                            uses.Add(use = new CurveUse { Clip = clip, Binding = binding, Curve = clip.GetFloatCurve(binding),
                                 ClipId = id, ReadOnly = clip.IsMarkerClip || targets.Count != 1,
-                                Additive = additiveClips != null && additiveClips.Contains(clip) });
-                        else if (additiveClips != null && additiveClips.Contains(clip))
-                            foreach (var use in uses.Where(u => u.Clip == clip)) use.Additive = true;
+                                Unreachable = unreachable });
+                        use.Unreachable &= unreachable;
+                        use.Additive |= additiveClips != null && additiveClips.Contains(clip);
+                        if (defaultContexts.TryGetValue(clip, out var layerContexts)) use.DefaultContexts.UnionWith(layerContexts);
                         var key = (clip, binding);
                         if (!destinations.TryGetValue(key, out var renderers)) destinations.Add(key, renderers = new());
                         renderers.Add(renderer);

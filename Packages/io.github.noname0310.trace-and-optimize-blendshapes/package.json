@@ -1,7 +1,7 @@
 {
   "name": "io.github.noname0310.trace-and-optimize-blendshapes",
   "displayName": "Noname Trace And Optimize BlendShapes",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "unity": "2022.3",
   "description": "Freeze static blendshapes and merge shared zero-reset animation bindings during NDMF avatar builds.",
   "author": {
@@ -13,7 +13,7 @@
   "licensesUrl": "https://github.com/noname0310/noname0310-ndmf-tools/blob/main/LICENSE.md",
   "documentationUrl": "https://github.com/noname0310/noname0310-ndmf-tools/tree/main/Packages/io.github.noname0310.trace-and-optimize-blendshapes",
   "changelogUrl": "https://github.com/noname0310/noname0310-ndmf-tools/blob/main/Packages/io.github.noname0310.trace-and-optimize-blendshapes/CHANGELOG.md",
-  "url": "https://github.com/noname0310/noname0310-ndmf-tools/releases/download/trace-and-optimize-blendshapes-v0.0.1/io.github.noname0310.trace-and-optimize-blendshapes-0.0.1.zip",
+  "url": "https://github.com/noname0310/noname0310-ndmf-tools/releases/download/trace-and-optimize-blendshapes-v0.0.2/io.github.noname0310.trace-and-optimize-blendshapes-0.0.2.zip",
   "repo": "https://noname0310.github.io/noname0310-ndmf-tools/index.json",
   "vpmDependencies": {
     "nadena.dev.ndmf": ">=1.14.8 <2.0.0-a",

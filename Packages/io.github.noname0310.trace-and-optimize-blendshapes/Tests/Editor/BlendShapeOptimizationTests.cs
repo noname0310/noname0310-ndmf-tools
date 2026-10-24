@@ -16,7 +16,7 @@ using Object = UnityEngine.Object;
 
 namespace Noname.AvatarTools.BlendShapeOptimization.Tests
 {
-    public sealed class BlendShapeOptimizationTests
+    public sealed partial class BlendShapeOptimizationTests
     {
         private readonly List<Object> objects = new();
         private Scene scene;
@@ -171,6 +171,99 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(AnimationUsage.IsConstantZero(new AnimationCurve(new Keyframe(0, 0))), Is.True);
             Assert.That(AnimationUsage.IsConstantZero(new AnimationCurve(new Keyframe(0, 0, 0, 5), new Keyframe(1, 0, -5, 0))), Is.False);
             Assert.That(AnimationUsage.IsConstantZero(AnimationCurve.Constant(0, 2, 0.001f)), Is.False);
+        }
+
+        [Test]
+        public void ExcludingTheOnlyAnimationFreezesShapeAndKeepsOtherTracksAndDuration()
+        {
+            Mesh("a"); renderer.SetBlendShapeWeight(0, 40);
+            var clip = Clip("a"); clip.name = "AFK";
+            AnimationUtility.SetEditorCurve(clip, Binding("a"), AnimationCurve.Linear(0, 0, 4, 100));
+            var position = EditorCurveBinding.FloatCurve("", typeof(Transform), "m_LocalPosition.x");
+            AnimationUtility.SetEditorCurve(clip, position, AnimationCurve.Linear(0, 0, 1, 2));
+            var (usage, controller) = Usage(clip);
+            var matcher = new ExcludedAnimationMatcher(new[] { clip });
+            var plan = OptimizationPlan.Create(renderer, usage, true, new HashSet<string>(), matcher.Matches);
+            Assert.That(plan.Frozen.Select(s => s.Name), Is.EqualTo(new[] { "a" }));
+            MeshOptimization.Apply(plan, Track(MeshOptimization.Generate(plan, MeshOptimization.CreateRecipe(plan))));
+            plan.RewriteCurves();
+            var output = controller.AllReachableNodes().OfType<VirtualClip>().Single();
+            Assert.That(renderer.sharedMesh.blendShapeCount, Is.Zero);
+            Assert.That(renderer.sharedMesh.vertices[0].x, Is.EqualTo(0.4f).Within(1e-6));
+            Assert.That(output.GetFloatCurve(Binding("a")), Is.Null);
+            Assert.That(output.GetFloatCurve(position).Evaluate(1), Is.EqualTo(2));
+            Assert.That(output.GetFloatCurveBindings().SelectMany(b => output.GetFloatCurve(b).keys).Max(k => k.time), Is.EqualTo(4));
+            Assert.That(AnimationUtility.GetEditorCurve(clip, Binding("a")).Evaluate(4), Is.EqualTo(100));
+        }
+
+        [Test]
+        public void ExcludedNonzeroCurvesAllowZeroResetGroupingButProtectedShapesStayAnimated()
+        {
+            Mesh("a", "b", "protected"); renderer.SetBlendShapeWeight(0, 20); renderer.SetBlendShapeWeight(1, 60);
+            var reset = Clip("a", "b");
+            var afk = Clip("a", "b", "protected"); afk.name = "AFK";
+            AnimationUtility.SetEditorCurve(afk, Binding("a"), AnimationCurve.Constant(0, 2, 100));
+            AnimationUtility.SetEditorCurve(afk, Binding("b"), AnimationCurve.Constant(0, 2, 30));
+            AnimationUtility.SetEditorCurve(afk, Binding("protected"), AnimationCurve.Constant(0, 2, 90));
+            var (usage, controller) = Usage(reset, afk);
+            var matcher = new ExcludedAnimationMatcher(new[] { afk });
+            var plan = OptimizationPlan.Create(renderer, usage, true, new HashSet<string> { "protected" }, matcher.Matches);
+            Assert.That(plan.Groups.Count, Is.EqualTo(1));
+            Assert.That(plan.Groups[0].Inputs.Select(s => s.Name), Is.EqualTo(new[] { "a", "b" }));
+            plan.RewriteCurves();
+            var clips = controller.AllReachableNodes().OfType<VirtualClip>().ToArray();
+            var outputAfk = clips.Single(c => c.Name == "AFK");
+            Assert.That(outputAfk.GetFloatCurve(Binding("a")), Is.Null);
+            Assert.That(outputAfk.GetFloatCurve(Binding("b")), Is.Null);
+            Assert.That(outputAfk.GetFloatCurve(Binding("protected")).Evaluate(0), Is.EqualTo(90));
+            Assert.That(clips.Single(c => c.Name == "Reset").GetFloatCurve(Binding(plan.Groups[0].Name)).Evaluate(0), Is.Zero);
+            Assert.That(AnimationUtility.GetCurveBindings(afk).Length, Is.EqualTo(3));
+        }
+
+        [Test]
+        public void ExclusionsMatchRebasedCopiesButNotDifferentCurvesWithTheSameName()
+        {
+            var source = Clip("a"); source.name = "AFK";
+            AnimationUtility.SetEditorCurve(source, Binding("a"), AnimationCurve.Linear(0, 0, 2, 100));
+            var rebased = Track(Object.Instantiate(source)); rebased.name = "rebased AFK";
+            var curve = AnimationUtility.GetEditorCurve(rebased, Binding("a"));
+            AnimationUtility.SetEditorCurve(rebased, Binding("a"), null);
+            AnimationUtility.SetEditorCurve(rebased, Binding("a", "Rebased/Body"), curve);
+            var unrelated = Track(Object.Instantiate(rebased));
+            AnimationUtility.SetEditorCurve(unrelated, Binding("a", "Rebased/Body"), AnimationCurve.Linear(0, 0, 2, 50));
+            var matcher = new ExcludedAnimationMatcher(new[] { source });
+            var clone = new CloneContext(GenericPlatformAnimatorBindings.Instance);
+            Assert.That(matcher.Matches(clone.Clone(rebased)), Is.True);
+            Assert.That(matcher.Matches(clone.Clone(unrelated)), Is.False);
+            Assert.That(matcher.Unmatched, Is.Empty);
+        }
+
+        [Test]
+        public void ExcludedAnimationOnlyRemovesBindingsInTheSelectedScope()
+        {
+            var source = Mesh("a");
+            var child = Track(new GameObject("Scoped")); child.transform.SetParent(root.transform, false);
+            var scoped = child.AddComponent<SkinnedMeshRenderer>(); scoped.sharedMesh = source; scoped.SetBlendShapeWeight(0, 40);
+            var descriptor = root.AddComponent<VRCAvatarDescriptor>(); root.AddComponent<Animator>();
+            var optimizer = child.AddComponent<TraceAndOptimizeBlendShapes>(); optimizer.PreserveMmdBlendShapes = false;
+            var clip = Clip(); clip.name = "AFK";
+            AnimationUtility.SetEditorCurve(clip, Binding("a"), AnimationCurve.Constant(0, 3, 50));
+            AnimationUtility.SetEditorCurve(clip, Binding("a", "Scoped"), AnimationCurve.Linear(0, 0, 4, 100));
+            optimizer.ExcludedAnimations.Add(clip);
+            descriptor.baseAnimationLayers = new[] { new VRCAvatarDescriptor.CustomAnimLayer {
+                type = VRCAvatarDescriptor.AnimLayerType.FX, animatorController = Controller(clip) } };
+            descriptor.specialAnimationLayers = Array.Empty<VRCAvatarDescriptor.CustomAnimLayer>();
+            var context = new BuildContext(root, null);
+            TraceAndOptimizeBlendShapesPlugin.Capture(context); TraceAndOptimizeBlendShapesPlugin.Apply(context);
+            Track(scoped.sharedMesh);
+            var outputController = (AnimatorController)descriptor.baseAnimationLayers[0].animatorController;
+            TrackControllerAssets(outputController);
+            var outputClip = outputController.animationClips.Single();
+            Assert.That(renderer.sharedMesh, Is.SameAs(source));
+            Assert.That(scoped.sharedMesh.blendShapeCount, Is.Zero);
+            Assert.That(AnimationUtility.GetEditorCurve(outputClip, Binding("a")).Evaluate(0), Is.EqualTo(50));
+            Assert.That(AnimationUtility.GetEditorCurve(outputClip, Binding("a", "Scoped")), Is.Null);
+            Assert.That(outputClip.length, Is.EqualTo(4).Within(1e-6));
         }
 
         [Test]
