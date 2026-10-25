@@ -10,7 +10,7 @@ on:
         options:
           - normal-field-offset
           - blendshape-pose-override
-          - trace-and-optimize-blendshapes
+          - advanced-avatar-optimizer
 
 permissions:
   contents: read

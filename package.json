@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build:package": "node scripts/build-package.js",
-    "build": "node scripts/build-package.js normal-field-offset && node scripts/build-package.js blendshape-pose-override && node scripts/build-package.js trace-and-optimize-blendshapes"
+    "build": "node scripts/build-package.js normal-field-offset && node scripts/build-package.js blendshape-pose-override && node scripts/build-package.js advanced-avatar-optimizer"
   },
   "devDependencies": {
     "adm-zip": "0.6.1"
