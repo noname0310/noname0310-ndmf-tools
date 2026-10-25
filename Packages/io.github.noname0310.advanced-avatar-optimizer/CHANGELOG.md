@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.2
+
+- Preserve Color and Vector animation channels during material constant baking. Removing individual channels could zero brightness, gamma, or alpha in Unity's material property blocks, producing black or invisible clothing.
+- Add regression tests that compare evaluated Animator material output before and after optimization.
+
 ## 0.0.1
 
 - Introduce Advanced Avatar Optimizer with independent Advanced Trace And Optimize Animator and Advanced Trace And Optimize BlendShapes components.

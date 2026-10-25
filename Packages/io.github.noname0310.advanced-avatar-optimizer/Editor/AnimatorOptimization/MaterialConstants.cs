@@ -62,6 +62,11 @@ namespace Noname.AvatarTools.AnimatorOptimization
                 foreach (var binding in clip.GetFloatCurveBindings())
                 {
                     if (!typeof(Renderer).IsAssignableFrom(binding.type) || !binding.propertyName.StartsWith("material.", StringComparison.Ordinal)) continue;
+                    // Unity animates a Color/Vector as one property-block value. Deleting a constant
+                    // channel while another channel remains animated makes the deleted channel zero,
+                    // not the material's stored default. Keep component bindings until a whole-property
+                    // proof accounts for every channel, including implicit values and other writers.
+                    if (binding.propertyName.IndexOf('.', "material.".Length) >= 0) continue;
                     var renderer = Resolve(root, binding.path);
                     if (renderer != null) uses.Add(new Use { Owner = entry.Key, Controller = entry.Value, Layer = layer,
                         Clip = clip, Binding = binding, Renderer = renderer });
@@ -119,7 +124,7 @@ namespace Noname.AvatarTools.AnimatorOptimization
                         }).ToArray();
                         copies.Add(renderer, changed); renderer.sharedMaterials = changed;
                     }
-                    foreach (var material in changed) Write(material, property, value);
+                    foreach (var material in changed) material.SetFloat(property, value);
                 }
                 foreach (var use in group)
                 {
@@ -166,28 +171,13 @@ namespace Noname.AvatarTools.AnimatorOptimization
         private static bool Read(Material material, string property, out float value)
         {
             value = 0;
-            int dot = property.LastIndexOf('.');
-            string name = dot < 0 ? property : property.Substring(0, dot);
-            int channel = dot < 0 ? -1 : "xyzw".IndexOf(property.Substring(dot + 1), StringComparison.Ordinal);
-            if (channel < 0 && dot >= 0) channel = "rgba".IndexOf(property.Substring(dot + 1), StringComparison.Ordinal);
-            if (material.shader == null || !material.HasProperty(name) || dot >= 0 && (channel < 0 || property.Length - dot != 2)) return false;
-            int index = material.shader.FindPropertyIndex(name);
+            if (material.shader == null || !material.HasProperty(property)) return false;
+            int index = material.shader.FindPropertyIndex(property);
             if (index < 0) return false;
             var type = material.shader.GetPropertyType(index);
-            if (dot < 0 && (type == UnityEngine.Rendering.ShaderPropertyType.Float || type == UnityEngine.Rendering.ShaderPropertyType.Range)) value = material.GetFloat(name);
-            else if (dot >= 0 && (type == UnityEngine.Rendering.ShaderPropertyType.Vector || type == UnityEngine.Rendering.ShaderPropertyType.Color)) value = material.GetVector(name)[channel];
-            else return false;
+            if (type != UnityEngine.Rendering.ShaderPropertyType.Float && type != UnityEngine.Rendering.ShaderPropertyType.Range) return false;
+            value = material.GetFloat(property);
             return MotionAnalysis.Finite(value);
-        }
-
-        private static void Write(Material material, string property, float value)
-        {
-            int dot = property.LastIndexOf('.');
-            if (dot < 0) { material.SetFloat(property, value); return; }
-            string name = property.Substring(0, dot);
-            int channel = "xyzw".IndexOf(property[property.Length - 1]);
-            if (channel < 0) channel = "rgba".IndexOf(property[property.Length - 1]);
-            var vector = material.GetVector(name); vector[channel] = value; material.SetVector(name, vector);
         }
     }
 }

@@ -84,7 +84,7 @@ Animators. Disable individual optimizations in the Inspector:
 | Remove Unused Parameter Curves | Trace backward from visible output, state conditions, expression/platform parameters and Parameter Driver consumers. Remove unobserved parameter computations, including feedback cycles with no observable consumer. |
 | Simplify Constant Blend Trees | Replace static 1D or Direct trees with a selected child when parameter analysis proves its weight is one and all binding coverage is preserved. |
 | Merge Same Weight Clips | Combine disjoint static clips driven by the same parameter in a non-normalized Direct tree. |
-| Bake Constant Material Properties | Remove material tracks whose evaluated output is invariant. Changed defaults use renderer-specific material copies in the build. Animated material slots, ambiguous targets and unproven weights are preserved. |
+| Bake Constant Material Properties | Bake invariant Float/Range material properties into renderer-specific build copies. Color and Vector channels remain animated because Unity writes their combined property-block value. Animated material slots, ambiguous targets and unproven weights are preserved. |
 
 Graph rewriting runs before Avatar Optimizer and again after its layer merging.
 It sees controllers generated during Transforming. Plugins which introduce new

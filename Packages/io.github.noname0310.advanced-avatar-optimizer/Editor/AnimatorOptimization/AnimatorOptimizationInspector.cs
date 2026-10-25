@@ -22,6 +22,7 @@ namespace Noname.AvatarTools.AnimatorOptimization
                 "Original controllers, animation clips and materials are preserved.", MessageType.Info);
             EditorGUILayout.HelpBox("Unsupported behaviours and synchronized layers disable graph analysis. " +
                 "Structural Blend Tree rewrites require static clips, Write Defaults On and compatible weights. " +
+                "Material baking supports Float/Range properties; Color and Vector channels are preserved. " +
                 "Layer indices and parameter definitions are retained. Optimization counts are printed in the Console.", MessageType.None);
         }
     }

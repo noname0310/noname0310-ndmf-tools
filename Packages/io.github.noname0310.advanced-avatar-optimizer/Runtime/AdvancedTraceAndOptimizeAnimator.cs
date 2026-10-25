@@ -20,7 +20,7 @@ namespace Noname.AvatarTools
         [Tooltip("Merge disjoint static clips with identical weights in non-normalized Direct Blend Trees.")]
         public bool MergeSameWeightClips = true;
 
-        [Tooltip("Remove material curves only when their output is provably invariant. Material changes use build copies.")]
+        [Tooltip("Bake provably invariant Float/Range material properties into build copies. Color and Vector channels remain animated to preserve Unity's property-block output.")]
         public bool BakeConstantMaterialProperties = true;
 
         public VRCAvatarDescriptor FindDescriptor()
