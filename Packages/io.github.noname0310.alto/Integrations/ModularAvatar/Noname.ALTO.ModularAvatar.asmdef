@@ -1,0 +1,8 @@
+{
+  "name": "Noname.ALTO.ModularAvatar",
+  "references": ["Noname.ALTO.Editor", "nadena.dev.ndmf", "nadena.dev.modular-avatar.core"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true,
+  "defineConstraints": ["NONAME_MODULAR_AVATAR"],
+  "versionDefines": [{"name": "nadena.dev.modular-avatar", "expression": "[1.18.0,2.0.0)", "define": "NONAME_MODULAR_AVATAR"}]
+}

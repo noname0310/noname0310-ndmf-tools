@@ -1,0 +1,11 @@
+{
+  "name": "Noname.ALTO.Meshia.ModularAvatar",
+  "references": ["Noname.ALTO.Editor", "Meshia.MeshSimplification.Ndmf.Runtime", "nadena.dev.modular-avatar.core"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true,
+  "defineConstraints": ["NONAME_MESHIA", "NONAME_MESHIA_MODULAR_AVATAR"],
+  "versionDefines": [
+    {"name": "com.ramtype0.meshia.mesh-simplification", "expression": "[3.2.0,4.0.0)", "define": "NONAME_MESHIA"},
+    {"name": "nadena.dev.modular-avatar", "expression": "[1.9.0,2.0.0)", "define": "NONAME_MESHIA_MODULAR_AVATAR"}
+  ]
+}

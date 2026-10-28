@@ -1,8 +1,0 @@
-{
-  "name": "Noname.AdvancedAvatarOptimizer.AvatarOptimizer",
-  "references": ["Noname.AdvancedAvatarOptimizer", "com.anatawa12.avatar-optimizer.api.editor"],
-  "includePlatforms": ["Editor"],
-  "autoReferenced": true,
-  "defineConstraints": ["NONAME_AVATAR_OPTIMIZER"],
-  "versionDefines": [{"name": "com.anatawa12.avatar-optimizer", "expression": "[1.8.0,2.0.0)", "define": "NONAME_AVATAR_OPTIMIZER"}]
-}

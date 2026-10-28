@@ -1,0 +1,9 @@
+{
+  "name": "Noname.ALTO.Editor",
+  "rootNamespace": "Noname.AvatarTools.BlendShapeOptimization",
+  "references": ["Noname.ALTO", "nadena.dev.ndmf", "nadena.dev.ndmf.runtime", "nadena.dev.ndmf.vrchat", "VRC.SDKBase.Editor"],
+  "includePlatforms": ["Editor"],
+  "overrideReferences": true,
+  "precompiledReferences": ["System.Collections.Immutable.dll", "VRCSDK3A.dll", "VRCSDKBase.dll", "VRCSDKBase-Editor.dll", "VRCCore-Editor.dll", "VRC.Dynamics.dll", "VRC.SDK3.Dynamics.Contact.dll", "VRC.SDK3.Dynamics.PhysBone.dll", "VRC.SDK3.Dynamics.Constraint.dll"],
+  "autoReferenced": true
+}

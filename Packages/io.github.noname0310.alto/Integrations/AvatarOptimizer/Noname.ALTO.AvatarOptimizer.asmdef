@@ -1,0 +1,8 @@
+{
+  "name": "Noname.ALTO.AvatarOptimizer",
+  "references": ["Noname.ALTO", "Noname.ALTO.Editor", "nadena.dev.ndmf", "com.anatawa12.avatar-optimizer.api.editor"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true,
+  "defineConstraints": ["NONAME_AVATAR_OPTIMIZER"],
+  "versionDefines": [{"name": "com.anatawa12.avatar-optimizer", "expression": "[1.8.0,2.0.0)", "define": "NONAME_AVATAR_OPTIMIZER"}]
+}

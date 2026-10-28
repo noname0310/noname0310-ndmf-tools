@@ -1,0 +1,8 @@
+{
+  "name": "Noname.ALTO.TestFixtures",
+  "references": ["nadena.dev.ndmf.runtime"],
+  "overrideReferences": true,
+  "precompiledReferences": ["VRCSDKBase.dll"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "autoReferenced": false
+}

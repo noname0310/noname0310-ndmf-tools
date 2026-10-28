@@ -6,7 +6,7 @@ NDMF tools for various avatar modifications.
 | --- | --- | --- |
 | [Normal Field Offset](Packages/io.github.noname0310.normal-field-offset/README.md) | Offset clothing along a body's surface normal field. | NDMF, Unity Collections |
 | [BlendShape Pose Override](Packages/io.github.noname0310.blendshape-pose-override/README.md) | Replace blendshapes with poses authored in animation clips. | NDMF, Modular Avatar, VRChat Avatars SDK |
-| [Advanced Avatar Optimizer](Packages/io.github.noname0310.advanced-avatar-optimizer/README.md) | Optimize Animator graphs and freeze or merge BlendShapes during avatar builds. | NDMF, VRChat Avatars SDK |
+| [ALTO](Packages/io.github.noname0310.alto/README.md) | Static analysis-based optimization of avatar logic, parameters, meshes, materials and physics. | NDMF, VRChat Avatars SDK |
 
 ## Development
 
@@ -29,7 +29,7 @@ Add these entries to the existing `dependencies` object:
 ```json
 "io.github.noname0310.normal-field-offset": "file:../../../noname0310-ndmf-tools/Packages/io.github.noname0310.normal-field-offset",
 "io.github.noname0310.blendshape-pose-override": "file:../../../noname0310-ndmf-tools/Packages/io.github.noname0310.blendshape-pose-override",
-"io.github.noname0310.advanced-avatar-optimizer": "file:../../../noname0310-ndmf-tools/Packages/io.github.noname0310.advanced-avatar-optimizer"
+"io.github.noname0310.alto": "file:../../../noname0310-ndmf-tools/Packages/io.github.noname0310.alto"
 ```
 
 Paths are relative to the directory containing `manifest.json`. For a different
@@ -45,13 +45,15 @@ To expose the package tests, merge these names into the host manifest's top-leve
 "testables": [
   "io.github.noname0310.normal-field-offset",
   "io.github.noname0310.blendshape-pose-override",
-  "io.github.noname0310.advanced-avatar-optimizer"
+  "io.github.noname0310.alto"
 ]
 ```
 
 Run `Noname.NormalFieldOffset.Tests`, `Noname.BlendShapePoseOverride.Tests`, and
-`Noname.AdvancedAvatarOptimizer.Tests` in Unity Test Runner's EditMode.
+`Noname.ALTO.Tests` in Unity Test Runner's EditMode.
 The test assemblies require a VRChat Avatars SDK project.
+With Modular Avatar installed, also run `Noname.ALTO.ModularAvatar.Tests`
+to verify platform-filter integration.
 
 The initial dependency baseline is Unity 2022.3.22f1, NDMF 1.14.8, Modular Avatar
 1.18.7, VRChat Avatars SDK 3.10.5, and Unity Collections 2.1.4. Older combinations

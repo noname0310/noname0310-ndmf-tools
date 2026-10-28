@@ -10,7 +10,7 @@ on:
         options:
           - normal-field-offset
           - blendshape-pose-override
-          - advanced-avatar-optimizer
+          - alto
 
 permissions:
   contents: read

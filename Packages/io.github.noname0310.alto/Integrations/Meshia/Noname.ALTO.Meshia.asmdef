@@ -1,0 +1,10 @@
+{
+  "name": "Noname.ALTO.Meshia",
+  "references": ["Noname.ALTO", "Noname.ALTO.Editor", "Meshia.MeshSimplification.Runtime", "Meshia.MeshSimplification.Ndmf.Runtime", "Unity.Collections"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true,
+  "defineConstraints": ["NONAME_MESHIA"],
+  "versionDefines": [
+    {"name": "com.ramtype0.meshia.mesh-simplification", "expression": "[3.2.0,4.0.0)", "define": "NONAME_MESHIA"}
+  ]
+}

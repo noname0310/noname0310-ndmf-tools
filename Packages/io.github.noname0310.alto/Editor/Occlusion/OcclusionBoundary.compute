@@ -1,0 +1,22 @@
+#pragma kernel Erode
+Texture2D<float> _Input;
+RWTexture2D<float> _Output;
+int _Size, _Radius;
+int2 _Direction;
+float _BackgroundDepth;
+
+// Erode opaque coverage by taking the furthest depth in a pixel neighborhood.
+// Two separable passes preserve narrow openings and silhouette boundaries.
+[numthreads(8, 8, 1)]
+void Erode(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _Size || id.y >= _Size) return;
+    float depth = 0;
+    for (int offset = -_Radius; offset <= _Radius; offset++)
+    {
+        int2 position = (int2)id.xy + _Direction * offset;
+        float sampleDepth = any(position < 0) || any(position >= _Size) ? _BackgroundDepth : _Input.Load(int3(position, 0));
+        depth = max(depth, sampleDepth);
+    }
+    _Output[id.xy] = depth;
+}

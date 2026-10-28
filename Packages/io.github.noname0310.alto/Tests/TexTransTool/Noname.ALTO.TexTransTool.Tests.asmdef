@@ -1,0 +1,11 @@
+{
+  "name": "Noname.ALTO.TexTransTool.Tests",
+  "references": ["Noname.ALTO", "Noname.ALTO.Editor", "Noname.ALTO.TexTransTool", "nadena.dev.ndmf", "net.rs64.tex-trans-tool.runtime"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "overrideReferences": true,
+  "precompiledReferences": ["nunit.framework.dll", "VRCSDK3A.dll", "VRCSDKBase.dll"],
+  "autoReferenced": false,
+  "defineConstraints": ["NONAME_TEX_TRANS_TOOL"],
+  "versionDefines": [{"name": "net.rs64.tex-trans-tool", "expression": "[1.0.2,1.0.3)", "define": "NONAME_TEX_TRANS_TOOL"}]
+}
