@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Noname.AvatarTools.Meshes;
 using NUnit.Framework;
 using Unity.Collections;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace Noname.AvatarTools.BlendShapeOptimization.Tests
 {
@@ -144,6 +146,196 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             }
             Assert.That(mesh.vertexCount, Is.EqualTo(5)); Assert.That(source.bones.Length, Is.EqualTo(influences + 1));
             Assert.That(source.GetBlendShapeWeight(0), Is.EqualTo(145));
+        }
+
+        private sealed class AssemblyUvFixture
+        {
+            internal readonly int[] Dimensions;
+            internal readonly Vector4[][] Values;
+
+            internal AssemblyUvFixture(int[] dimensions, int salt = 0)
+            {
+                Dimensions = dimensions;
+                Values = Enumerable.Range(0, 8).Select(channel => Enumerable.Range(0, 3).Select(vertex =>
+                    new Vector4((salt + channel + vertex + 1) / 64f, (salt + vertex + 2) / 64f,
+                        (channel + vertex + 3) / 16f, (salt + channel + vertex + 4) / 32f)).ToArray()).ToArray();
+            }
+
+            internal void Apply(Mesh mesh)
+            {
+                for (int channel = 0; channel < 8; channel++)
+                {
+                    if (Dimensions[channel] == 0) mesh.SetUVs(channel, Array.Empty<Vector2>());
+                    else if (Dimensions[channel] == 2) mesh.SetUVs(channel, Values[channel].Select(v => new Vector2(v.x, v.y)).ToList());
+                    else if (Dimensions[channel] == 3) mesh.SetUVs(channel, Values[channel].Select(v => new Vector3(v.x, v.y, v.z)).ToList());
+                    else mesh.SetUVs(channel, Values[channel].ToList());
+                }
+            }
+
+            // Independent specification: resolve each requested input by searching
+            // backward through the authored layout, then apply GPU component defaults.
+            internal int Source(int channel)
+            {
+                while (channel >= 0 && Dimensions[channel] == 0) channel--;
+                return channel;
+            }
+
+            internal Vector4 ShaderInput(int channel, int vertex)
+            {
+                int source = Source(channel);
+                if (source < 0) return Vector4.zero;
+                var value = Values[source][vertex];
+                return Dimensions[source] switch
+                {
+                    2 => new Vector4(value.x, value.y, 0, 1),
+                    3 => new Vector4(value.x, value.y, value.z, 1),
+                    _ => value
+                };
+            }
+        }
+
+        private static Vector4[] AssemblyUvShaderInputs(Mesh mesh, int channel)
+        {
+            while (channel >= 0 && !mesh.HasVertexAttribute(VertexAttribute.TexCoord0 + channel)) channel--;
+            if (channel < 0) return Enumerable.Repeat(Vector4.zero, mesh.vertexCount).ToArray();
+            int dimension = mesh.GetVertexAttributeDimension(VertexAttribute.TexCoord0 + channel);
+            var values = new List<Vector4>(); mesh.GetUVs(channel, values);
+            return values.Select(v => dimension == 2 ? new Vector4(v.x, v.y, 0, 1) :
+                dimension == 3 ? new Vector4(v.x, v.y, v.z, 1) : v).ToArray();
+        }
+
+        [TestCase(3)] [TestCase(4)]
+        public void MeshAssemblyPreservesAliasedUvDimensions(int dimension)
+        {
+            var bone = PolicyChild("Bone").transform;
+            var first = AssemblyPart("First", new[] { bone }, Vector3.left);
+            var second = AssemblyPart("Second", new[] { bone }, Vector3.right);
+            var firstInput = new AssemblyUvFixture(new[] { dimension, 0, 0, 0, 0, 0, 0, 0 });
+            var secondInput = new AssemblyUvFixture(new[] { 2, 2, 0, 0, 0, 0, 0, 0 }, 1);
+            firstInput.Apply(first.sharedMesh); secondInput.Apply(second.sharedMesh);
+            using var assembly = SkinnedMeshAssembler.Create(new[] { first, second }, false);
+            Assert.That(assembly.Mesh.GetVertexAttributeDimension(VertexAttribute.TexCoord1), Is.EqualTo(dimension));
+            Assert.That(AssemblyUvShaderInputs(assembly.Mesh, 1), Is.EqualTo(
+                Enumerable.Range(0, 3).Select(v => firstInput.ShaderInput(1, v))
+                    .Concat(Enumerable.Range(0, 3).Select(v => secondInput.ShaderInput(1, v))).ToArray()));
+            Assert.That(assembly.Mesh.HasVertexAttribute(VertexAttribute.TexCoord2), Is.False,
+                "Trailing aliases must not allocate redundant vertex channels.");
+        }
+
+        [TestCase(2)] [TestCase(3)] [TestCase(4)]
+        public void MeshAssemblyRepresentsAbsentUvDefaultsExplicitly(int dimension)
+        {
+            var bone = PolicyChild("Bone").transform;
+            var first = AssemblyPart("Missing UVs", new[] { bone }, Vector3.left);
+            var second = AssemblyPart("Present UVs", new[] { bone }, Vector3.right);
+            new AssemblyUvFixture(new int[8]).Apply(first.sharedMesh);
+            var present = new AssemblyUvFixture(new[] { dimension, 0, 0, 0, 0, 0, 0, 0 }, 1);
+            present.Apply(second.sharedMesh);
+            using var assembly = SkinnedMeshAssembler.Create(new[] { first, second }, false);
+            Assert.That(assembly.Mesh.GetVertexAttributeDimension(VertexAttribute.TexCoord0), Is.EqualTo(4),
+                "An explicit w=0 is required for the missing input, even when the other input is only 2D/3D.");
+            Assert.That(AssemblyUvShaderInputs(assembly.Mesh, 0), Is.EqualTo(Enumerable.Repeat(Vector4.zero, 3)
+                .Concat(Enumerable.Range(0, 3).Select(v => present.ShaderInput(0, v))).ToArray()));
+            Assert.That(assembly.Mesh.HasVertexAttribute(VertexAttribute.TexCoord1), Is.False,
+                "An absent output channel can still alias the preceding channel.");
+        }
+
+        [TestCase(310)] [TestCase(20261029)]
+        public void MeshAssemblyUvLayoutsMatchAuthoredInputFuzz(int seed)
+        {
+            var random = new System.Random(seed);
+            var bone = PolicyChild("Bone").transform;
+            var choices = new[] { 0, 0, 0, 2, 3, 4 };
+            for (int sample = 0; sample < 128; sample++)
+            {
+                var parts = new List<SkinnedMeshRenderer>();
+                try
+                {
+                    var fixtures = new List<AssemblyUvFixture>();
+                    var kept = new List<int[]>();
+                    bool trim = sample % 2 != 0;
+                    int sourceCount = random.Next(1, 5);
+                    for (int source = 0; source < sourceCount; source++)
+                    {
+                        var part = AssemblyPart("Input " + source, new[] { bone }, Vector3.zero); parts.Add(part);
+                        int[] dimensions = Enumerable.Range(0, 8).Select(_ => choices[random.Next(choices.Length)]).ToArray();
+                        if (sample % 16 == 0) Array.Clear(dimensions, 0, dimensions.Length);
+                        var fixture = new AssemblyUvFixture(dimensions, source); fixtures.Add(fixture); fixture.Apply(part.sharedMesh);
+                        bool sparse = random.Next(2) == 0;
+                        if (sparse) part.sharedMesh.triangles = new[] { 0, 2, 2 };
+                        kept.Add(trim && sparse ? new[] { 0, 2 } : new[] { 0, 1, 2 });
+                    }
+                    string replay = "seed=" + seed + ", sample=" + sample + ", trim=" + trim + ", layouts=" +
+                        string.Join("/", fixtures.Select(f => string.Join(",", f.Dimensions))) + ", vertices=" +
+                        string.Join("/", kept.Select(v => string.Join(",", v)));
+                    using var assembly = SkinnedMeshAssembler.Create(parts, false, removeUnusedData: trim);
+                    for (int channel = 0; channel < 8; channel++)
+                    {
+                        int expectedDimension = fixtures.Any(f => f.Dimensions[channel] != 0) ? fixtures.Max(f =>
+                            f.Source(channel) < 0 ? 4 : f.Dimensions[f.Source(channel)]) : 0;
+                        Assert.That(assembly.Mesh.GetVertexAttributeDimension(VertexAttribute.TexCoord0 + channel),
+                            Is.EqualTo(expectedDimension), replay + ", channel=" + channel + " layout");
+                        var expected = fixtures.SelectMany((f, source) => kept[source].Select(v => f.ShaderInput(channel, v))).ToArray();
+                        Assert.That(AssemblyUvShaderInputs(assembly.Mesh, channel), Is.EqualTo(expected),
+                            replay + ", channel=" + channel + " values");
+                    }
+                }
+                finally
+                {
+                    foreach (var part in parts)
+                    {
+                        UnityEngine.Object.DestroyImmediate(part.sharedMesh);
+                        foreach (var material in part.sharedMaterials) UnityEngine.Object.DestroyImmediate(material);
+                        UnityEngine.Object.DestroyImmediate(part.gameObject);
+                    }
+                }
+            }
+        }
+
+        [TestCase(3, true)] [TestCase(4, true)]
+        [TestCase(2, false)] [TestCase(3, false)] [TestCase(0, true)]
+        public void MeshAssemblyPreservesNativeUvAliasesAndComponentDefaults(int dimension, bool alias)
+            => AssertNativeAssemblyUvs(dimension, alias, alias && dimension > 0 ? 2 : 4, false);
+
+        [TestCase(2, false)] [TestCase(3, false)]
+        [TestCase(2, true)] [TestCase(3, true)] [TestCase(4, true)]
+        public void MeshAssemblyPreservesNativeMissingUvDefaults(int otherDimension, bool laterChannel)
+            => AssertNativeAssemblyUvs(0, true, otherDimension, laterChannel);
+
+        private void AssertNativeAssemblyUvs(int dimension, bool alias, int otherDimension, bool laterChannel)
+        {
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null)
+                Assert.Ignore("This comparison requires a graphics device.");
+            var bone = PolicyChild("Bone").transform;
+            var first = AssemblyPart("First", new[] { bone }, new Vector3(-1.1f, 0, 0));
+            var second = AssemblyPart("Second", new[] { bone }, new Vector3(0.1f, 0, 0));
+            first.lightProbeUsage = second.lightProbeUsage = LightProbeUsage.Off;
+            first.reflectionProbeUsage = second.reflectionProbeUsage = ReflectionProbeUsage.Off;
+            new AssemblyUvFixture(new[] { dimension, alias ? 0 : dimension, 0, laterChannel ? 4 : 0, 0, 0, 0, 0 }).Apply(first.sharedMesh);
+            new AssemblyUvFixture(new[] { 2, otherDimension, 0, 0, 0, 0, 0, 0 }, 1).Apply(second.sharedMesh);
+            first.sharedMaterial.SetFloat("_UvProbe", 1); second.sharedMaterials = first.sharedMaterials;
+            var candidates = MergeCandidates(new[] { first, second });
+            Assert.That(MeshMergeAnalysis.Group(candidates, true).Count, Is.EqualTo(1),
+                "This fixture must exercise inputs accepted by the lossless merge policy.");
+            using var assembly = SkinnedMeshAssembler.Create(new[] { first, second }, true);
+            var output = AssemblyOutput(assembly); output.enabled = false;
+            var camera = PolicyChild("Camera").AddComponent<Camera>(); camera.scene = scene;
+            camera.transform.localPosition = new Vector3(0, 0.5f, -4); camera.orthographic = true; camera.orthographicSize = 1.3f;
+            camera.clearFlags = CameraClearFlags.SolidColor; camera.backgroundColor = Color.black; camera.enabled = false;
+            var target = RenderTexture.GetTemporary(96, 96, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            try
+            {
+                var before = DrawAssembly(camera, target); first.enabled = false; second.enabled = false; output.enabled = true;
+                var after = DrawAssembly(camera, target);
+                Assert.That(before.Any(p => p.b > 20), Is.True, "The fixture must actually render visible UV probes.");
+                int difference = before.Zip(after, (a, b) => Math.Max(Math.Max(Math.Abs(a.r - b.r), Math.Abs(a.g - b.g)), Math.Abs(a.b - b.b))).Max();
+                int pixel = Enumerable.Range(0, before.Length).First(i => Math.Max(Math.Max(Math.Abs(before[i].r - after[i].r),
+                    Math.Abs(before[i].g - after[i].g)), Math.Abs(before[i].b - after[i].b)) == difference);
+                Assert.That(difference, Is.LessThanOrEqualTo(1), "Native TEXCOORD1 changed: dimension=" + dimension + ", alias=" + alias +
+                    ", otherDimension=" + otherDimension + ", laterChannel=" + laterChannel +
+                    "; pixel=" + pixel + "; source RGB=" + before[pixel] + "; merged RGB=" + after[pixel] + " (RGB encodes UV.x, UV.z, UV.w)");
+            }
+            finally { RenderTexture.ReleaseTemporary(target); }
         }
 
         private Color32[] DrawAssembly(Camera camera, RenderTexture target)

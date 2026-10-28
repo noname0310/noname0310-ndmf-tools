@@ -180,5 +180,35 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             root.AddComponent<ParameterPolicySourceFixture>();
             Assert.That(ObjectOptimizationSafety.UnsupportedRuntime(root), Does.Contain(nameof(ParameterPolicySourceFixture)));
         }
+
+        [TestCase(false)] [TestCase(true)]
+        public void SdkParentChangeListenerFollowsPhysBoneLifetime(bool keepSimulation)
+        {
+            var settings = ObjectSettings();
+            var target = PolicyChild("PhysBone target");
+            var type = Type.GetType("VRC.Dynamics.ParentChangeDetector, VRC.Dynamics");
+            Assert.That(type, Is.Not.Null);
+            var listener = target.AddComponent(type);
+            if (keepSimulation)
+            {
+                var bone = PolicyChild("Simulation").AddComponent<VRCPhysBone>();
+                bone.rootTransform = target.transform;
+            }
+            Assert.That(ObjectOptimizationSafety.UnsupportedRuntime(root), Is.Null);
+            CollectObjects(settings);
+            Assert.That(listener != null, Is.EqualTo(keepSimulation));
+            Assert.That(target != null, Is.EqualTo(keepSimulation));
+        }
+
+        [Test]
+        public void ExplicitlyPreservedSdkParentChangeListenerSurvivesCollection()
+        {
+            var settings = ObjectSettings();
+            var target = PolicyChild("Observed SDK helper");
+            var listener = target.AddComponent(Type.GetType("VRC.Dynamics.ParentChangeDetector, VRC.Dynamics"));
+            settings.ProtectedComponents.Add(ObjectRegistry.GetReference(listener));
+            CollectObjects(settings);
+            Assert.That(listener != null && target != null, Is.True);
+        }
     }
 }

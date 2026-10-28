@@ -17,6 +17,7 @@ namespace Noname.AvatarTools.ParameterLayout
         {
             encoding.Validate();
             var identityType = ParameterTransportIdentity.Ensure(controller);
+            bool writeDefaults = ParameterTransportDefaults.Read(controller);
             AddParameter(encoding.Name, AnimatorControllerParameterType.Int, initial);
             int defaultBits = encoding.Encode(initial);
             for (int bit = 0; bit < encoding.Bits.Count; bit++)
@@ -28,7 +29,7 @@ namespace Noname.AvatarTools.ParameterLayout
             var layer = controller.AddLayer(new LayerPriority(int.MaxValue), "ALTO Int: " + encoding.Name);
             layer.DefaultWeight = 1;
             var machine = layer.StateMachine = VirtualStateMachine.Create(clone, layer.Name);
-            var idle = machine.AddState("Initialize"); idle.WriteDefaultValues = false;
+            var idle = machine.AddState("Initialize"); idle.WriteDefaultValues = writeDefaults;
             machine.DefaultState = idle;
             var empty = VirtualClip.Create("Integer transport (no pose bindings)");
             idle.Motion = empty;
@@ -37,7 +38,7 @@ namespace Noname.AvatarTools.ParameterLayout
                 int value = encoding.Decode(code);
                 if (code <= encoding.Maximum - encoding.Minimum)
                 {
-                    var encode = machine.AddState("Encode " + value, empty); encode.WriteDefaultValues = false;
+                    var encode = machine.AddState("Encode " + value, empty); encode.WriteDefaultValues = writeDefaults;
                     var operations = encoding.Bits.Select((name, bit) => Set(name, (code >> bit) & 1));
                     Drive(encode, operations, true, save);
                     var condition = value == encoding.Minimum
@@ -47,7 +48,7 @@ namespace Noname.AvatarTools.ParameterLayout
                             : Condition(encoding.Name, AnimatorConditionMode.Equals, value);
                     Enter(encode, new[] { ParameterTransportIdentity.Condition(identityType, true), condition });
                 }
-                var decode = machine.AddState("Decode " + code, empty); decode.WriteDefaultValues = false;
+                var decode = machine.AddState("Decode " + code, empty); decode.WriteDefaultValues = writeDefaults;
                 Drive(decode, new[] { Set(encoding.Name, value) }, false, save);
                 Enter(decode, new[] { ParameterTransportIdentity.Condition(identityType, false) }.Concat(encoding.Bits.Select((name, bit) =>
                     Condition(name, (code & (1 << bit)) != 0 ? AnimatorConditionMode.If : AnimatorConditionMode.IfNot))));

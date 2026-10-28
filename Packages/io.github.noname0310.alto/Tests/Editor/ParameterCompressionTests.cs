@@ -80,11 +80,13 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(JsonUtility.ToJson(fixture.Store.Read(LayoutId).IntegerEncodings[0]), Is.EqualTo(JsonUtility.ToJson(encoding)));
         }
 
-        [TestCase(0, 7, AnimatorControllerParameterType.Bool)] [TestCase(10, 15, AnimatorControllerParameterType.Bool)]
-        [TestCase(0, 1, AnimatorControllerParameterType.Bool)] [TestCase(128, 255, AnimatorControllerParameterType.Bool)]
-        [TestCase(0, 7, AnimatorControllerParameterType.Int)] [TestCase(0, 7, AnimatorControllerParameterType.Float)]
+        [TestCase(0, 7, AnimatorControllerParameterType.Bool, false)] [TestCase(10, 15, AnimatorControllerParameterType.Bool, false)]
+        [TestCase(0, 1, AnimatorControllerParameterType.Bool, false)] [TestCase(128, 255, AnimatorControllerParameterType.Bool, false)]
+        [TestCase(0, 7, AnimatorControllerParameterType.Int, false)] [TestCase(0, 7, AnimatorControllerParameterType.Float, false)]
+        [TestCase(0, 7, AnimatorControllerParameterType.Bool, true)] [TestCase(10, 15, AnimatorControllerParameterType.Bool, true)]
+        [TestCase(0, 7, AnimatorControllerParameterType.Int, true)] [TestCase(0, 7, AnimatorControllerParameterType.Float, true)]
         public void IntegerCompressionNativeStatesEncodeRestoreAndConvergeAfterStaggeredBitDelivery(int minimum, int maximum,
-            AnimatorControllerParameterType identityType)
+            AnimatorControllerParameterType identityType, bool writeDefaults)
         {
             var encoding = IntegerContract(minimum, maximum);
             var clone = new CloneContext(VRChatPlatformAnimatorBindings.Instance);
@@ -92,6 +94,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             controller.Parameters = controller.Parameters.Add("IsLocal",
                 new AnimatorControllerParameter { name = "IsLocal", type = identityType, defaultBool = true, defaultInt = 7, defaultFloat = .25f });
             IntegerEncodingAnimator.Append(clone, controller, encoding, minimum);
+            if (writeDefaults)
+                foreach (var state in controller.AllReachableNodes().OfType<VirtualState>()) state.WriteDefaultValues = true;
             var native = CommitAnimator(controller, root);
             var states = native.layers.Single().stateMachine.states.Select(s => s.state).ToDictionary(s => Animator.StringToHash(s.name));
             var graph = PlayableGraph.Create("Native integer transport fixture");

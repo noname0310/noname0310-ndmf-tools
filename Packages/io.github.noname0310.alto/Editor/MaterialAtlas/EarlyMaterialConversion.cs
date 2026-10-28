@@ -4,10 +4,13 @@ using System.Linq;
 using nadena.dev.ndmf;
 using nadena.dev.ndmf.util;
 using Noname.AvatarTools.Analysis;
+using Noname.AvatarTools.BlendShapeOptimization;
 using Noname.AvatarTools.Build;
+using Noname.AvatarTools.Materials;
 using UnityEditor;
 using UnityEditor.Animations;
 using UnityEngine;
+using VRC.SDK3.Avatars.Components;
 using Object = UnityEngine.Object;
 
 namespace Noname.AvatarTools.MaterialAtlas
@@ -75,7 +78,8 @@ namespace Noname.AvatarTools.MaterialAtlas
         {
             var result = new EarlyMaterialConversion { avatarRoot = context.AvatarRootTransform };
             var selected = new HashSet<Renderer>(MaterialAtlasPass.SelectRenderers(context.AvatarRootObject, state));
-            var candidates = selected.SelectMany(r => r.sharedMaterials).Where(m => m != null).Distinct()
+            var initialMaterials = selected.ToDictionary(r => r, r => r.sharedMaterials);
+            var candidates = initialMaterials.Values.SelectMany(materials => materials).Where(m => m != null).Distinct()
                 .Select(m => (Material: m, Group: state.Group(m)))
                 .Where(p => p.Group >= 0).ToDictionary(p => p.Material, p => p.Group);
 
@@ -148,6 +152,93 @@ namespace Noname.AvatarTools.MaterialAtlas
 
             var replacements = new Dictionary<Object, Object>();
             var owned = new List<Object>();
+            var bakeSettings = context.GetState<MaterialOptimizationState>();
+            var controllerClips = new Dictionary<RuntimeAnimatorController, HashSet<AnimationClip>>();
+            var clipRoots = new Dictionary<AnimationClip, HashSet<Transform>>();
+            var nonSlotInputs = new Dictionary<AnimationClip, HashSet<Material>>();
+            HashSet<Material> NonSlotInputs(AnimationClip clip)
+            {
+                if (nonSlotInputs.TryGetValue(clip, out var cached)) return cached;
+                var slots = materialCurves.Where(curve => curve.Clip == clip).Select(curve => curve.Binding).ToHashSet();
+                var inputs = AnimationUtility.GetObjectReferenceCurveBindings(clip).Where(binding => !slots.Contains(binding))
+                    .SelectMany(binding => AnimationUtility.GetObjectReferenceCurve(clip, binding)).Select(key => key.value)
+                    .Concat(AnimationUtility.GetAnimationEvents(clip).Select(e => e.objectReferenceParameter)).OfType<Material>().ToHashSet();
+                nonSlotInputs.Add(clip, inputs); return inputs;
+            }
+            bool UsesClip(RuntimeAnimatorController controller, AnimationClip clip)
+            {
+                if (controller == null) return false;
+                if (!controllerClips.TryGetValue(controller, out var clips))
+                    controllerClips.Add(controller, clips = controller.animationClips.ToHashSet());
+                return clips.Contains(clip);
+            }
+            HashSet<Transform> AnimationRoots(AnimationClip clip)
+            {
+                if (clipRoots.TryGetValue(clip, out var cached)) return cached;
+                clipRoots.Add(clip, null);
+                var roots = new HashSet<Transform>(); var seen = new HashSet<Object>();
+                var readers = new Queue<Object>(); readers.Enqueue(clip);
+                while (readers.Count != 0)
+                {
+                    var reader = readers.Dequeue();
+                    if (!seen.Add(reader)) continue;
+                    if (reader is Component component)
+                    {
+                        if (component is Animator animator && UsesClip(animator.runtimeAnimatorController, clip))
+                            roots.Add(animator.transform);
+                        else if (component is VRCAvatarDescriptor descriptor && descriptor.transform == context.AvatarRootTransform &&
+                                 (descriptor.baseAnimationLayers ?? Array.Empty<VRCAvatarDescriptor.CustomAnimLayer>())
+                                 .Concat(descriptor.specialAnimationLayers ?? Array.Empty<VRCAvatarDescriptor.CustomAnimLayer>())
+                                 .Any(layer => UsesClip(layer.animatorController, clip))) roots.Add(descriptor.transform);
+                        else return null;
+                        continue;
+                    }
+                    // Unknown asset readers or generators may install this clip at a
+                    // different root. Do not infer their binding space from a path alone.
+                    if (reader != clip && !(reader is AnimatorController || reader is AnimatorOverrideController ||
+                        reader is AnimatorState || reader is AnimatorStateMachine || reader is AnimatorTransitionBase || reader is BlendTree)) return null;
+                    if (!parents.TryGetValue(reader, out var users)) return null;
+                    foreach (var user in users) readers.Enqueue(user);
+                }
+                if (roots.Count == 0) return null;
+                return clipRoots[clip] = roots;
+            }
+            bool AllBakeConsumersInScope(Material source)
+            {
+                if (bakeSettings.Scope.Root == context.AvatarRootTransform) return true;
+                if (parents.TryGetValue(source, out var directReaders))
+                    foreach (var reader in directReaders)
+                        if (reader is AnimationClip clip ? NonSlotInputs(clip).Contains(source) : !(reader is Renderer)) return false;
+                bool hasConsumer = false;
+                foreach (var current in initialMaterials.Where(pair => pair.Value.Contains(source)))
+                {
+                    if (!bakeSettings.Scope.Contains(current.Key.transform)) return false;
+                    hasConsumer = true;
+                }
+                foreach (var curve in materialCurves.Where(curve => curve.Materials.Contains(source)))
+                {
+                    var roots = AnimationRoots(curve.Clip);
+                    if (roots == null) return false;
+                    foreach (var animationRoot in roots)
+                    {
+                        var targets = AnimationUsage.Resolve(context.AvatarRootTransform, animationRoot, curve.Binding.path, null);
+                        if (targets.Count == 0) return false;
+                        foreach (var target in targets)
+                        {
+                            var renderers = target.GetComponents(curve.Binding.type).OfType<Renderer>().ToArray();
+                            if (renderers.Length == 0 || renderers.Any(r => !bakeSettings.Scope.Contains(r.transform))) return false;
+                        }
+                    }
+                    hasConsumer = true;
+                }
+                return hasConsumer;
+            }
+            // Before-generators conversion deliberately replaces the shader contract.
+            // Bake only its selected inputs, using every currently referenced clip as
+            // a conservative writer set. Normal optimization uses the final controllers.
+            var animatedProperties = bakeSettings.BakeLilToon ? visited.OfType<AnimationClip>().SelectMany(clip =>
+                AnimationUtility.GetCurveBindings(clip).Concat(AnimationUtility.GetObjectReferenceCurveBindings(clip)))
+                .Select(MaterialTextureBake.Property).Where(p => p != null).ToHashSet(StringComparer.Ordinal) : new();
             try
             {
                 foreach (var candidate in candidates)
@@ -156,9 +247,19 @@ namespace Noname.AvatarTools.MaterialAtlas
                     var source = candidate.Key;
                     var material = new Material(group.ReferenceMaterial) { name = source.name + " (Reference converted)" };
                     owned.Add(material);
+                    MaterialTextureBakeResult bake = null;
+                    if (bakeSettings.BakeLilToon && bakeSettings.Scope != null && source.parent == null &&
+                        !bakeSettings.Preserved.Contains(ObjectRegistry.GetReference(source)) &&
+                        group.TextureMappings.Any(m => m.SourceProperty == "_MainTex") &&
+                        AllBakeConsumersInScope(source))
+                        bake = MaterialTextureBake.LilToon?.Invoke(source, animatedProperties);
+                    if (bake != null) context.GetState<OptimizationBuildReport>().Messages.Add(source.name + ": " + bake.Detail);
+                    if (bake?.Texture != null) owned.Add(bake.Texture);
+                    if (bake?.Material != null) owned.Add(bake.Material);
                     foreach (var mapping in group.TextureMappings)
                     {
-                        var texture = source.HasTexture(mapping.SourceProperty) ? source.GetTexture(mapping.SourceProperty) : null;
+                        var textureSource = bake?.TextureSource(source, mapping.SourceProperty) ?? source;
+                        var texture = textureSource.HasTexture(mapping.SourceProperty) ? textureSource.GetTexture(mapping.SourceProperty) : null;
                         if (texture == null)
                         {
                             var solid = new Texture2D(4, 4, TextureFormat.RGBA32, false, mapping.Linear) { name = "Atlas missing texture" };
@@ -168,11 +269,12 @@ namespace Noname.AvatarTools.MaterialAtlas
                         }
                         else
                         {
-                            material.SetTextureScale(mapping.DestinationProperty, source.GetTextureScale(mapping.SourceProperty));
-                            material.SetTextureOffset(mapping.DestinationProperty, source.GetTextureOffset(mapping.SourceProperty));
+                            material.SetTextureScale(mapping.DestinationProperty, textureSource.GetTextureScale(mapping.SourceProperty));
+                            material.SetTextureOffset(mapping.DestinationProperty, textureSource.GetTextureOffset(mapping.SourceProperty));
                         }
                         material.SetTexture(mapping.DestinationProperty, texture);
                     }
+                    if (bake?.Material != null) { owned.Remove(bake.Material); Object.DestroyImmediate(bake.Material); }
                     string token = Guid.NewGuid().ToString("N");
                     material.SetOverrideTag(ProvenanceTag, token);
                     var input = new Input { Source = source, Group = candidate.Value };

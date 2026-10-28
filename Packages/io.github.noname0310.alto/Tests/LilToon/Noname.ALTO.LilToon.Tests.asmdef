@@ -1,0 +1,11 @@
+{
+  "name": "Noname.ALTO.LilToon.Tests",
+  "references": ["Noname.ALTO", "Noname.ALTO.Editor", "Noname.ALTO.LilToon", "lilToon.Editor", "nadena.dev.ndmf", "nadena.dev.ndmf.runtime"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "overrideReferences": true,
+  "precompiledReferences": ["nunit.framework.dll", "VRCSDK3A.dll", "VRCSDKBase.dll"],
+  "autoReferenced": false,
+  "defineConstraints": ["NONAME_LILTOON"],
+  "versionDefines": [{"name": "jp.lilxyzw.liltoon", "expression": "[2.3.4,3.0.0)", "define": "NONAME_LILTOON"}]
+}

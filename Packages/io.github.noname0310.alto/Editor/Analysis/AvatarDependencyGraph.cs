@@ -27,6 +27,7 @@ namespace Noname.AvatarTools.Analysis
         private readonly Dictionary<Object, HashSet<Object>> edges = new();
         private readonly HashSet<Object> roots = new();
         private readonly HashSet<Object> live = new();
+        private InvariantComponentSettings invariantSettings;
         internal readonly Dictionary<Component, Transform> Constraints = new();
         internal readonly HashSet<Component> Components;
         // Explicit serialized readers, separate from structural membership/dependency edges.
@@ -90,8 +91,13 @@ namespace Noname.AvatarTools.Analysis
         private bool CanEnable(Component component)
         {
             if (!CanActivate(component.transform)) return false;
-            if (animations.Writes(component, "m_Enabled")) return true;
-            return component is Renderer renderer ? renderer.enabled : component is Behaviour behaviour ? behaviour.enabled : true;
+            bool enabled = component is Renderer renderer ? renderer.enabled : component is Behaviour behaviour ? behaviour.enabled : true;
+            if (enabled || !animations.Writes(component, "m_Enabled")) return enabled;
+            // A binding kept for Write Defaults does not necessarily enable the output.
+            // Only fold a disabled component when all reachable evaluations preserve it.
+            invariantSettings ??= new InvariantComponentSettings(animations,
+                AnimatorReachability.Analyze(avatar, animations.Controllers, animations.PreservedParameters), animations.ControllerEntries);
+            return !invariantSettings.IsConstantProperty(component, "m_Enabled");
         }
 
         private void Build(ObjectOptimizationState settings, bool collectObjects)
@@ -149,8 +155,15 @@ namespace Noname.AvatarTools.Analysis
                 // PhysBones also consume descendants that are not serialized individually.
                 // Keep ignored branches conservatively until the PhysBone specialization pass.
                 if (component is VRCPhysBone physBone)
+                {
+                    var physBoneTarget = physBone.rootTransform != null ? physBone.rootTransform : physBone.transform;
+                    // Match the SDK's non-serialized hierarchy listener dependency. Keep it
+                    // for surviving simulations, and collect it when its PhysBone is removed.
+                    foreach (var helper in physBoneTarget.GetComponents<Component>().Where(ObjectOptimizationSafety.IsParentChangeDetector))
+                        Edge(component, helper);
                     foreach (var child in (physBone.rootTransform != null ? physBone.rootTransform : physBone.transform).GetComponentsInChildren<Transform>(true))
                         Edge(component, child);
+                }
 
                 bool authoring = component is INDMFEditorOnly || component is IEditorOnly;
                 if (!settings.Scope.Contains(component.transform) || settings.Protected(component)) Root(component);
@@ -169,7 +182,8 @@ namespace Noname.AvatarTools.Analysis
                     }
                     else if (!settings.RuntimeDependenciesOnly && collectObjects) Root(component.transform);
                 }
-                else if (component is Transform || component is MeshFilter || Constraints.ContainsKey(component) || audioModifier) { }
+                else if (component is Transform || component is MeshFilter || Constraints.ContainsKey(component) || audioModifier ||
+                    ObjectOptimizationSafety.IsParentChangeDetector(component)) { }
                 else if (!collectObjects) Root(component);
                 else if (component is Animator childAnimator)
                 {
@@ -188,7 +202,7 @@ namespace Noname.AvatarTools.Analysis
                 else if (component is VRCPhysBoneCollider collider)
                 {
                     // Global colliders affect simulations without an explicit local reference.
-                    if (collider.globalCollision != VRCPhysBoneBase.AdvancedBool.False || animatedGlobals.Contains(collider)) Root(component);
+                    if ((collider.globalCollision != VRCPhysBoneBase.AdvancedBool.False || animatedGlobals.Contains(collider)) && CanEnable(collider)) Root(component);
                 }
                 else if (component is VRCContactReceiver receiver)
                 {

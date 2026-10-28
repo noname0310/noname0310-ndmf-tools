@@ -18,6 +18,7 @@ copied, that behavior is identical, or that feature parity has been completed.
 | `Editor/MmdMorphNames.cs` | MMD morph compatibility table | Adapted compatibility names; MIT notice retained. |
 | `Integrations/AvatarOptimizer/` | Public component information, object mapping and UV compatibility APIs; Asset Description schema | Optional interoperability. No internal optimizer is invoked to perform our optimization. |
 | `Editor/ObjectOptimization/` | `Editor/Processors/TraceAndOptimize/FindUnusedObjectsProcessor.cs`, component dependency analysis | Design reference for dependency preservation, unused component collection and bone merging boundaries. Our implementation also uses parameter specialization and Animator reachability. |
+| SDK PhysBone hierarchy-listener lifetime in `ObjectOptimizationSafety` and `AvatarDependencyGraph` | `Editor/APIInternal/ComponentInfos.VRCSDK.cs` | Dependency modeling reviewed against AAO: a live PhysBone retains the parent-change listener on its target; the listener has no independent output. Independently implemented exact SDK type recognition and graph edges. |
 | `Editor/Build/MaterialSlotPlan.cs`, `MaterialFilterPass.cs`, `AutomaticRenderingRules.cs` | `RemoveSubMeshesWithoutMaterial.cs`, `MergeMaterialSlots.cs` | Rendering and material-slot semantics reviewed against AAO. Explicit lossy exclusions are separate from equivalence-preserving cleanup. |
 | `Editor/AnimatorOptimization/`, `Editor/Analysis/` | `Editor/Processors/AnimatorOptimizer/`, Animator dependency analysis | Reference for transformation constraints and compatibility. Our shared reachability, constant propagation and output dependency analyses are independently implemented. |
 | `Editor/Meshes/`, `Editor/Analysis/TransformMutationAnalysis.cs` and geometry optimization design | `AutoMergeSkinnedMesh.cs`, `Internal/MeshInfo2/MeshInfo2.cs`, `MergeSkinnedMeshProcessor.cs`, `ConfigureMergeBone`, `MergeBoneProcessor.cs`, `AnimatorParserV2/AnimatorParser.cs`, `AutoMergeBlendShape.cs`, `ConfigureRemoveZeroSizedPolygon.cs` | Design reference for merge eligibility, vertex defaults, skinning, bone dependencies and stored bounds. Independently implemented assembly, grouping, animation remapping and static skin-bone substitution. Full hierarchy/physics/geometry parity remains separate work. |
@@ -142,6 +143,17 @@ nonnegative scale domain, including collapse; they do not emulate the VRChat cli
 (checked 2026-10-27). Native Animator fixtures compare fixed weighted position,
 scale and SDK component-float outputs, other animated outputs and clip timing.
 Quaternion and discrete animation are not modeled as independent scalar channels.
+
+## lilToon texture baking
+
+[lilToon](https://github.com/lilxyzw/lilToon), by **lilxyzw**, provides the optional
+main-texture baking backend under the MIT license. Reviewed version: **2.3.4**;
+`lilEditorTextureBaker.cs`, `ltspass_baker.shader`, `lil_common_frag.hlsl`,
+`lil_common_functions.hlsl` and `lil_common_macro.hlsl`.
+ALTO calls the public `lilToonInspector.RunBake` API and the installed baker shader.
+It does not copy the shader or interactive texture-saving UI. Animation and scope
+analysis, build-copy handling, eligibility checks and native rendering tests are
+independently implemented.
 
 ## TexTransTool
 

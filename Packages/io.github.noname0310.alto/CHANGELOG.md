@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.0.4
+
+- Persist all generated Animator dependencies after late SDK commits, including cloned Parameter Drivers and Tracking Controls. This fixes behaviours that worked in memory but were missing from saved build assets, affecting facial tracking and other state-driven features.
+- Preserve higher-dimensional UV aliases and distinguish absent UV attributes from implicit component defaults when merging meshes. Keep original shader inputs for mixed 2D, 3D and 4D layouts.
+- Retain unsupported zero-speed lilToon texture-sheet frame selections during baking. Independent static tone correction can still bake without changing the selected frame.
+- Preserve explicitly mapped secondary textures, masks and UV transforms during early material conversion. Use a bake's generated texture only for its declared replacement property.
+- Include animated material swaps when checking a texture bake's scope. Retain original baking inputs when consumers are outside the scope or cannot be resolved safely.
+- Add serialized Animator reload regressions, native rendering comparisons, and deterministic fuzz coverage for state reachability, UV layouts, parameter upload records and triangle-budget allocation.
+
+- Add opt-in lilToon main-texture baking to Trace And Optimize Materials on PC and mobile. Use lilToon's public baker on build copies, preserve animated/unsupported composition, and bake selected inputs before early atlas shader conversion.
+- Allow Build Filter to remove a feature referenced only by a parameter Freeze source. Skip the removed source's rules without applying them to another namespace; preservation and runtime dependency conflicts still stop the build.
+- Disable Meshia Smart Link for skinned and morph-bearing reduction inputs. Prevent overlapping undeformed geometry with different skinning from being connected across the avatar, including merged pairs of earrings.
+- Preserve an all-Write-Defaults-On controller when generating integer compression and time-multiplexing layers. This prevents unrelated expressions from sticking after playback and avoids changing Direct Blend Tree facial outputs; WD-Off and mixed controllers retain their existing mode.
+- Model the SDK's hidden PhysBone parent-change listener as a dependency of its PhysBone instead of an unknown global runtime reader. Keep live listeners and collect orphans without blocking Android atlasing.
+- Accept value-preserving Bool/Int/Float conversions of private parameter constants by late build optimizers, while continuing to reject changed values, writers, unsupported types and public contract changes.
+- Merge skinned renderers with equivalent animated `updateWhenOffscreen` signals. Treat proven default-valued outputs as static; changing signals still require matching writers, masks and expanded bounds. Ignore dummy renderer bindings only when neither serialization nor Unity's native animation lookup finds the property.
+- Evaluate initial visibility from reachable motion outputs even when unreachable clips remain for Write Defaults binding coverage. This allows filtered PhysBone inputs to eliminate their inactive Grab meshes without manual value overrides.
+- Collect permanently disabled global PhysBone colliders when no live animation or remaining consumer needs them. Preserve dynamic, explicitly protected and referenced colliders.
+
 ## 0.0.3
 
 - Publish the expanded optimizer as ALTO. VPM replaces the previous Advanced Avatar Optimizer and Trace And Optimize BlendShapes packages to prevent duplicate scripts.

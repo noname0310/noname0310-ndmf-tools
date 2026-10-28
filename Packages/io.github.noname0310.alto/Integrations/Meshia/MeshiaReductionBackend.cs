@@ -42,11 +42,17 @@ namespace Noname.AvatarTools.MeshReduction
 
         internal static void Simplify(IReadOnlyList<ReductionRequest> requests, bool preserveBorders)
         {
-            var options = MeshSimplifierOptions.Default;
-            options.PreserveBorderEdges = preserveBorders;
             var batch = new List<(Mesh, MeshSimplificationTarget, MeshSimplifierOptions, Mesh)>();
             foreach (var request in requests)
             {
+                var options = MeshSimplifierOptions.Default;
+                options.PreserveBorderEdges = preserveBorders;
+                // Meshia's Smart Link compares undeformed positions and surface attributes,
+                // but not skinning palettes/weights or morph deltas. Coincident islands can
+                // belong to opposite sides of an avatar, even with the same bone Transform
+                // and different bind poses. Restrict deformation to existing mesh edges.
+                if (request.Renderer is SkinnedMeshRenderer || request.Source.blendShapeCount > 0)
+                    options.EnableSmartLink = false;
                 request.Result = new Mesh { name = request.Source.name + " (Reduced)" };
                 var target = new MeshSimplificationTarget { Kind = MeshSimplificationTargetKind.AbsoluteTriangleCount, Value = request.Target };
                 // In 3.2.0 only the single-mesh API guards against adding BlendShapes to a zero-vertex result.

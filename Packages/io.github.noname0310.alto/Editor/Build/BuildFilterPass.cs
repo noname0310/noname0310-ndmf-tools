@@ -175,9 +175,12 @@ namespace Noname.AvatarTools.Build
                 using var serialized = new SerializedObject(owner);
                 foreach (var property in serialized.ObjectProperties())
                 {
-                    // Selected source references have already been checked against their exclusions.
+                    // Preservation is validated above. Freeze sources are analysis inputs,
+                    // not runtime dependencies; Capture skips rules whose source was removed.
                     if (owner is ALTOAnimatorParameterPolicy &&
-                        property.propertyPath.StartsWith("PreserveParameters.Sources.", StringComparison.Ordinal)) continue;
+                        (property.propertyPath.StartsWith("PreserveParameters.Sources.", StringComparison.Ordinal) ||
+                         property.propertyPath.StartsWith("FreezeParameters.Array.data[", StringComparison.Ordinal) &&
+                         property.propertyPath.EndsWith("].Source", StringComparison.Ordinal))) continue;
                     if (property.objectReferenceValue != null && removed.Contains(property.objectReferenceValue))
                         throw new InvalidOperationException("Cannot exclude a referenced object/component. " +
                             AnimationUtility.CalculateTransformPath(owner.transform, avatar.transform) + " (" + owner.GetType().Name +

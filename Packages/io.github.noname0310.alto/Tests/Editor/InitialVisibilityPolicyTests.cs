@@ -30,6 +30,45 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
 
         [TestCase(false, false)] [TestCase(false, true)]
         [TestCase(true, false)] [TestCase(true, true)]
+        public void FilteredPhysBoneMakesGrabVisibilityConstantDespiteUnreachableClip(bool writeDefaults, bool preserveInput)
+        {
+            Mesh("Sample"); var preservation = ObjectSettings(); var obj = PolicyChild("Grab mesh");
+            var target = obj.AddComponent<SkinnedMeshRenderer>(); target.sharedMesh = renderer.sharedMesh;
+            var bone = PhysBone("Grab sensor"); bone.parameter = "Grab";
+            var binding = EditorCurveBinding.FloatCurve(obj.name, typeof(GameObject), "m_IsActive");
+            var source = Controller(StaticCurve(binding, 0), StaticCurve(binding, 1));
+            source.AddParameter("Grab_Stretch", AnimatorControllerParameterType.Float);
+            var states = source.layers[0].stateMachine.states;
+            foreach (var state in states) state.state.writeDefaultValues = writeDefaults;
+            Edge(states[0].state, states[1].state, "Grab_Stretch", 0, AnimatorConditionMode.Greater);
+            var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(source);
+            Assert.That(BakeVisibility(controller, preservation), Is.Zero, "The live PhysBone can still activate the output.");
+            var filter = PhysFilter(); filter.PhysBones.Add(bone);
+            var context = new BuildContext(root, null); PhysBoneFilterPass.Capture(context); ApplyPhysRemoval(context, bone);
+            Assert.That(bone == null, Is.True);
+            Assert.That(BakeVisibility(controller, preservation, preserved: preserveInput ? new[] { "Grab_Stretch" } : null),
+                Is.EqualTo(preserveInput ? 0 : 1));
+            if (preserveInput)
+            {
+                Assert.That(obj.activeSelf, Is.True);
+                Assert.That(controller.AllReachableNodes().OfType<VirtualClip>().Count(c => c.GetFloatCurve(binding) != null), Is.EqualTo(2));
+                return;
+            }
+            Assert.That(obj.activeSelf, Is.False);
+            Assert.That(controller.AllReachableNodes().OfType<VirtualClip>().Any(c => c.GetFloatCurve(binding) != null), Is.False);
+            var built = CommitAnimator(controller, root);
+            obj.SetActive(true);
+            var before = SampleFrozen(source, (p, i) => p.SetFloat("Grab_Stretch", 0), 4, () => obj.activeSelf ? 1 : 0);
+            obj.SetActive(false);
+            var after = SampleFrozen(built, (p, i) => p.SetFloat("Grab_Stretch", 0), 4, () => obj.activeSelf ? 1 : 0);
+            Assert.That(before, Is.All.EqualTo(0)); Assert.That(after, Is.EqualTo(before));
+            CollectObjects(preservation, controller);
+            Assert.That(obj == null && target == null, Is.True);
+            Assert.That(AnimationUtility.GetEditorCurve((AnimationClip)states[1].state.motion, binding), Is.Not.Null);
+        }
+
+        [TestCase(false, false)] [TestCase(false, true)]
+        [TestCase(true, false)] [TestCase(true, true)]
         public void InitialVisibilityPolicyMatchesNativeOutputAfterEvaluation(bool rendererProperty, bool writeDefaults)
         {
             Mesh("Sample"); var preservation = ObjectSettings(); var obj = PolicyChild("Visibility");

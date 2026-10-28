@@ -32,7 +32,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         }
 
         private MeshMergeCandidate[] MergeCandidates(SkinnedMeshRenderer[] parts, VirtualAnimatorController controller = null,
-            bool assertEligible = true, Dictionary<object, VirtualAnimatorController> entries = null, IEnumerable<string> preservedParameters = null)
+            bool assertEligible = true, Dictionary<object, VirtualAnimatorController> entries = null, IEnumerable<string> preservedParameters = null,
+            MeshMergePolicy policy = null)
         {
             controller ??= new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(Controller(Clip()));
             var index = AvatarAnimationIndex.Create(root, entries ?? new Dictionary<object, VirtualAnimatorController>
@@ -42,10 +43,141 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var shaders = new ShaderPropertyUsage();
             return parts.Select(part =>
             {
-                var candidate = MeshMergeAnalysis.Inspect(part, root, index, references, shaders, out string reason);
+                var candidate = MeshMergeAnalysis.Inspect(part, root, index, references, shaders, out string reason, policy);
                 if (assertEligible) Assert.That(reason, Is.Null, part.name + ": " + reason);
                 return candidate;
             }).ToArray();
+        }
+
+        [TestCase(false, false)] [TestCase(false, true)]
+        [TestCase(true, false)] [TestCase(true, true)]
+        public void MeshMergeAcceptsInvariantOffscreenCurvesWithAnUnanimatedRenderer(bool initial, bool animatedDestination)
+        {
+            var pair = MergePair();
+            pair.First.updateWhenOffscreen = pair.Second.updateWhenOffscreen = initial;
+            var clip = Clip();
+            var binding = EditorCurveBinding.DiscreteCurve(animatedDestination ? "First" : "Second",
+                typeof(SkinnedMeshRenderer), MeshMergeAnalysis.UpdateWhenOffscreenProperty);
+            AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Constant(0, 2, initial ? 1 : 0));
+            var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(Controller(clip));
+            var policy = new MeshMergePolicy { ExpandBounds = initial };
+            var candidates = MergeCandidates(new[] { pair.First, pair.Second }, controller, policy: policy);
+            Assert.That(MeshMergeAnalysis.Group(candidates, true, policy).Count, Is.EqualTo(1));
+            MeshOptimizationPass.Merge(candidates, "First", true, mesh => Track(mesh), expandBounds: initial);
+            Assert.That(pair.Second == null, Is.True);
+            Assert.That(pair.First.updateWhenOffscreen, Is.EqualTo(initial));
+            var output = controller.AllReachableNodes().OfType<VirtualClip>().Single();
+            Assert.That(output.GetFloatCurveBindings().Any(b => b.path == "Second"), Is.False);
+            Assert.That(output.GetFloatCurve(binding) != null, Is.EqualTo(animatedDestination));
+            Assert.That(MotionAnalysis.EndTime(output), Is.EqualTo(2));
+            Assert.That(AnimationUtility.GetEditorCurve(clip, binding), Is.Not.Null, "Source assets must remain unchanged.");
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void MeshMergePreservesMatchingAnimatedOffscreenSignals(bool discrete)
+        {
+            var pair = MergePair(); var clip = Clip();
+            var curve = AnimationCurve.Constant(0, 2, 0); curve.AddKey(new Keyframe(1, 1));
+            foreach (var part in new[] { pair.First, pair.Second })
+            {
+                var binding = discrete ? EditorCurveBinding.DiscreteCurve(part.name, typeof(SkinnedMeshRenderer), MeshMergeAnalysis.UpdateWhenOffscreenProperty) :
+                    EditorCurveBinding.FloatCurve(part.name, typeof(SkinnedMeshRenderer), MeshMergeAnalysis.UpdateWhenOffscreenProperty);
+                AnimationUtility.SetEditorCurve(clip, binding, curve);
+            }
+            var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(Controller(clip));
+            var policy = new MeshMergePolicy { ExpandBounds = true };
+            var candidates = MergeCandidates(new[] { pair.First, pair.Second }, controller, policy: policy);
+            Assert.That(MeshMergeAnalysis.Group(candidates, true, policy).Count, Is.EqualTo(1));
+            MeshOptimizationPass.Merge(candidates, "First", true, mesh => Track(mesh), expandBounds: true);
+            var output = controller.AllReachableNodes().OfType<VirtualClip>().Single();
+            var remaining = output.GetFloatCurveBindings().Single(b => b.propertyName == MeshMergeAnalysis.UpdateWhenOffscreenProperty);
+            Assert.That(remaining.path, Is.EqualTo("First")); Assert.That(remaining.isDiscreteCurve, Is.EqualTo(discrete));
+            Assert.That(output.GetFloatCurve(remaining).keys, Is.EqualTo(curve.keys));
+            Assert.That(MotionAnalysis.EndTime(output), Is.EqualTo(2));
+            Assert.That(AnimationUtility.GetCurveBindings(clip).Length, Is.EqualTo(2));
+        }
+
+        [TestCase("DifferentCurve")] [TestCase("DifferentClip")] [TestCase("DifferentDefault")] [TestCase("DifferentCurveType")]
+        public void MeshMergeSeparatesDifferentOffscreenSignals(string reason)
+        {
+            var pair = MergePair(); var first = Clip(); var second = reason == "DifferentClip" ? Clip() : first;
+            var original = Controller(first);
+            if (first != second) original.layers[0].stateMachine.AddState("Other").motion = second;
+            foreach (var part in new[] { pair.First, pair.Second })
+            {
+                var binding = part == pair.Second && reason == "DifferentCurveType" ?
+                    EditorCurveBinding.DiscreteCurve(part.name, typeof(SkinnedMeshRenderer), MeshMergeAnalysis.UpdateWhenOffscreenProperty) :
+                    EditorCurveBinding.FloatCurve(part.name, typeof(SkinnedMeshRenderer), MeshMergeAnalysis.UpdateWhenOffscreenProperty);
+                var curve = AnimationCurve.Linear(0, 0, 1, part == pair.Second && reason == "DifferentCurve" ? 0.8f : 1);
+                AnimationUtility.SetEditorCurve(part == pair.First ? first : second, binding, curve);
+            }
+            if (reason == "DifferentDefault") pair.Second.updateWhenOffscreen = true;
+            var policy = new MeshMergePolicy { ExpandBounds = true };
+            var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(original);
+            var candidates = MergeCandidates(new[] { pair.First, pair.Second }, controller, policy: policy);
+            Assert.That(MeshMergeAnalysis.Group(candidates, true, policy).Count, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void MeshMergeIgnoresMissingNativeRendererPropertiesWithoutSpecialPrefixes()
+        {
+            var pair = MergePair(); var clip = Clip();
+            var binding = EditorCurveBinding.FloatCurve("Second", typeof(SkinnedMeshRenderer), "ConsumedOutput.ArbitraryName");
+            AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Linear(0, 0, 3, 1));
+            var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(Controller(clip));
+            var candidates = MergeCandidates(new[] { pair.First, pair.Second }, controller);
+            Assert.That(MeshMergeAnalysis.Group(candidates, true).Count, Is.EqualTo(1));
+            MeshOptimizationPass.Merge(candidates, "First", true, mesh => Track(mesh));
+            var output = controller.AllReachableNodes().OfType<VirtualClip>().Single();
+            Assert.That(output.GetFloatCurve(binding), Is.Null);
+            Assert.That(MotionAnalysis.EndTime(output), Is.EqualTo(3));
+            Assert.That(AnimationUtility.GetEditorCurve(clip, binding), Is.Not.Null);
+        }
+
+        [Test]
+        public void MeshMergeStillRetainsAnUnsupportedExistingRendererProperty()
+        {
+            var pair = MergePair(); var clip = Clip();
+            AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve("Second", typeof(SkinnedMeshRenderer), "m_Quality"),
+                AnimationCurve.Constant(0, 1, 1));
+            var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(Controller(clip));
+            Assert.That(MergeCandidates(new[] { pair.Second }, controller, assertEligible: false)[0], Is.Null);
+        }
+
+        [Test]
+        public void MeshMergeRequiresBoundsExpansionForChangingOffscreenUpdates()
+        {
+            var pair = MergePair(); var clip = Clip();
+            AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve("Second", typeof(SkinnedMeshRenderer),
+                MeshMergeAnalysis.UpdateWhenOffscreenProperty), AnimationCurve.Linear(0, 0, 1, 1));
+            var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(Controller(clip));
+            Assert.That(MergeCandidates(new[] { pair.Second }, controller, assertEligible: false)[0], Is.Null);
+        }
+
+        [TestCase("Additive")] [TestCase("DirectTree")] [TestCase("Tangents")]
+        public void MeshMergeDoesNotTreatUnprovenDefaultValuedOffscreenKeysAsConstant(string reason)
+        {
+            var pair = MergePair(); var clip = Clip();
+            var curve = reason == "Tangents" ? new AnimationCurve(new Keyframe(0, 0, 0, 4), new Keyframe(1, 0, -4, 0)) :
+                AnimationCurve.Constant(0, 1, 0);
+            AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve("Second", typeof(SkinnedMeshRenderer),
+                MeshMergeAnalysis.UpdateWhenOffscreenProperty), curve);
+            var original = Controller(clip);
+            if (reason == "Additive")
+            {
+                var layers = original.layers; layers[0].blendingMode = AnimatorLayerBlendingMode.Additive; original.layers = layers;
+            }
+            if (reason == "DirectTree")
+            {
+                original.AddParameter("GestureLeftWeight", AnimatorControllerParameterType.Float);
+                var tree = Track(new BlendTree { blendType = BlendTreeType.Direct });
+                tree.children = new[] { new ChildMotion { motion = clip, directBlendParameter = "GestureLeftWeight", timeScale = 1 } };
+                original.layers[0].stateMachine.defaultState.motion = tree;
+            }
+            var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(original);
+            var policy = new MeshMergePolicy { ExpandBounds = true };
+            var candidates = MergeCandidates(new[] { pair.First, pair.Second }, controller, policy: policy);
+            Assert.That(MeshMergeAnalysis.Group(candidates, true, policy).Count, Is.EqualTo(2));
         }
 
         [Test]

@@ -29,6 +29,8 @@ using Object = UnityEngine.Object;
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Noname.ALTO.Meshia")]
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Noname.ALTO.Meshia.ModularAvatar")]
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Noname.ALTO.Meshia.Tests")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Noname.ALTO.LilToon")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Noname.ALTO.LilToon.Tests")]
 
 namespace Noname.AvatarTools.BlendShapeOptimization
 {
@@ -73,6 +75,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
                 .Run("Capture object optimization settings", ObjectOptimizationPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
+                .Run("Capture material optimization settings", MaterialOptimizationPass.Capture);
+            InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
                 .Run("Capture material atlas settings", MaterialAtlasPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
                 .Run("Capture mesh reduction settings", MeshReductionPass.Capture);
@@ -80,8 +84,6 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 .Run("Capture mesh optimization settings", MeshOptimizationPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
                 .Run("Capture mesh renderer settings", MeshRendererSettingsOverridePass.Capture);
-            InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture material optimization settings", MaterialOptimizationPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
                 .Run("Capture PhysBone optimization settings", PhysBoneOptimizationPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")

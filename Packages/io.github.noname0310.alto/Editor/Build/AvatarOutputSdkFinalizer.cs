@@ -124,7 +124,7 @@ namespace Noname.AvatarTools.Build
                     session.Settings, session.Report, saveForTests ?? saver.SaveAsset, session.LocalCandidates,
                     () => MeshOptimizationPass.ApplyFinal(session.Context, finalEntries, policy, saveForTests ?? saver.SaveAsset));
             }
-            finally { current.OnDeactivate(session.Context); }
+            finally { AnimatorAssetPersistence.Commit(session.Context, current, saveForTests ?? saver.SaveAsset); }
         }
     }
 

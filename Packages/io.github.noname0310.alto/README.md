@@ -44,6 +44,8 @@ Root** uses the component's subtree; assign the avatar root when placing the
 settings on a separate empty object. Remaining skinning, constraint and
 serialized component references are checked across the avatar before removal.
 Conflicts with parameter-preservation sources are reported as build errors.
+Freeze rules whose source object or component is excluded are skipped; they do
+not prevent removal or become unscoped rules for a similarly named parameter.
 
 **Build Failure Diagnostics** opens a separate panel, also available under
 **Tools > Noname > ALTO**. **Analyze Build And Find Candidates** preprocesses a
@@ -413,8 +415,10 @@ external-only sensors still require explicit input freezing.
   external generators finish. Permanently inactive renderers can be removed;
   animation that might enable them prevents removal. An inactive object used as
   a skin bone or constraint source survives even when its renderer is removed.
-  Referenced/global PhysBone colliders, immutable clips and indirect references
-  remain valid. Contact receivers require a previously observed parameter to
+  Referenced PhysBone colliders, potentially active global colliders, immutable
+  clips and indirect references remain valid. A disabled global collider can be
+  removed when reachable Animator outputs cannot enable it and no other consumer
+  references it. Contact receivers require a previously observed parameter to
   become unobservable before their components can be removed.
   Preserved parameters remain dynamic; they do not keep a permanently inactive
   renderer alive solely because a mutable clip also animates that renderer.
@@ -519,6 +523,11 @@ processors.
   Descriptor and MMD renderers remain the destination so their object paths,
   morph names and indices survive. Other animated morphs receive unique names
   and their clips are retargeted. Missing morph tracks remain ineffective.
+  Animated **Update When Offscreen** is supported when its initial value and
+  changing signals match. Proven default-valued outputs match unanimated inputs;
+  changing outputs require **Expand Bounds**. Other missing renderer properties
+  do not prevent merging when both serialized and native binding lookups confirm
+  their absence. Existing unsupported properties still keep renderers separate.
   Different anchors can also match when static analysis proves their positions
   remain identical, or when both probe systems are off. This never substitutes
   anchors at different sampling positions; use Mesh Renderer Settings Override
@@ -602,6 +611,12 @@ Add **Noname > ALTO Trace And Optimize Materials** to process mesh and skinned
 renderers in its scope, including generated renderers and safely resolved material
 swap clips. It runs after external optimizers and before final mesh merging.
 
+- **Bake LilToon Main Textures** optionally uses the installed lilToon baker to
+  combine static main-texture color correction and supported secondary layers.
+  It applies on PC and mobile, before atlas packing, and again for materials
+  produced by external optimizers. Before Generators atlas conversion bakes its
+  selected inputs before replacing the shader. Requires lilToon 2.3.4 or a
+  compatible 2.x version; no hard lilToon dependency is added.
 - **Remove Unused Saved Properties** removes obsolete serialized values and texture
   references from generated copies. All shader branches, includes, fallbacks and
   VRChat's Safety Fallback properties contribute to the usage analysis.
@@ -613,6 +628,18 @@ swap clips. It runs after external optimizers and before final mesh merging.
 Source materials and clips are never overwritten. Material Variants retain their
 inheritance. Unknown shader inputs, external asset readers, immutable swap clips
 and shared clips spanning the scope boundary are retained.
+
+Baking is disabled by default. The build report identifies baked or retained
+inputs. Main-texture and correction animation prevents baking; animated layer
+settings can still leave an independent static color-correction bake possible.
+Layer baking requires a compatible UV0 domain, static lighting participation,
+LDR inputs no larger than the main texture, and no layer alpha replacement,
+decal, dissolve, distance fade, AudioLink or view-dependent effects. Custom and
+injected shader variants are retained. The generated texture uses the main
+texture's resolution, wrapping, filtering and mipmap presence; original assets
+are never saved over. As with lilToon's editor bake, finite texture sampling and
+mipmap filtering are not pixel-identical to runtime composition. VRChat Safety
+Fallbacks also receive the baked main texture, so their appearance can change.
 
 ## ALTO Trace And Optimize PhysBones
 
@@ -748,6 +775,12 @@ to enabled; disabling it permits stronger reduction at the cost of boundary
 geometry. **On Budget Unreachable** chooses a warning or a build error. The
 report contains actual input/output counts and retention reasons per renderer.
 
+Skinned and morph-bearing meshes are reduced along existing edges. Meshia's
+position-based Smart Link is disabled for them because coincident undeformed
+vertices can use different bones, bind poses or morph displacements. This keeps
+separate accessories from being connected during reduction; seams may limit how
+far the triangle count can be reduced.
+
 Reduction runs after AAO cleanup so deleted geometry does not spend the budget.
 Its public mapping API follows merged renderers without keeping dead inputs
 alive. If a merge mixes protected, unselected or out-of-scope inputs, the whole
@@ -828,6 +861,9 @@ full layer weight; dynamic outputs, masks, ambiguous bindings, native visibility
 writers and explicit preservation prevent baking. Occlusion and object cleanup
 then use the resulting static visibility. The option does not pick one state
 from an otherwise dynamic Animator.
+Unreachable clips retained for Write Defaults binding coverage do not contribute
+motion values to this proof. Their bindings remain subject to the same safety
+checks before a proven constant output is baked.
 Preserved parameter inputs remain dynamic. A constant visibility track sharing
 their clip or tree may still be removed if its output is proven independent of
 those inputs; other tracks retain their animation.

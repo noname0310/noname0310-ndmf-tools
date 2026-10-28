@@ -30,13 +30,16 @@ namespace Noname.AvatarTools.ParameterPolicy
             };
         }
 
-        internal bool Matches(AnimatorControllerParameter parameter) => Types.Contains(parameter.type) && (parameter.type switch
+        // Other optimizers may lower a private Bool/Int constant to a Float for a Blend Tree.
+        // Its numeric value must remain exact; the public parameter type is checked separately.
+        // Reject narrowing which changes the value, triggers, and every runtime writer below.
+        internal bool Matches(AnimatorControllerParameter parameter) => parameter.type switch
         {
             AnimatorControllerParameterType.Float => parameter.defaultFloat == Value,
             AnimatorControllerParameterType.Int => parameter.defaultInt == Value,
-            AnimatorControllerParameterType.Bool => parameter.defaultBool == (Value != 0),
+            AnimatorControllerParameterType.Bool => (parameter.defaultBool ? 1f : 0f) == Value,
             _ => false
-        });
+        };
     }
 
     internal sealed class ParameterSpecializationReport

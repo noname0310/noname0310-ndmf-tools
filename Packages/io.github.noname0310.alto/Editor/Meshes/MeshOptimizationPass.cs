@@ -168,13 +168,15 @@ namespace Noname.AvatarTools.Meshes
                 AllowCoordinateSpaceChanges = settings.AllowCoordinateSpaceChanges, ConvertRigidMeshes = settings.ConvertRigidMeshes,
                 AllowMaterialSlotReordering = settings.AllowMaterialSlotReordering, Mutations = mutations };
             var candidates = new List<MeshMergeCandidate>();
+            var invariants = animations.Bindings.Any(u => u.Binding.propertyName == MeshMergeAnalysis.UpdateWhenOffscreenProperty) ?
+                new InvariantComponentSettings(animations, AnimatorReachability.Analyze(avatar, animations.Controllers, policy.Preserved), entries) : null;
             foreach (var renderer in renderers)
             {
                 if (settings.Preserved.Contains(ObjectRegistry.GetReference(renderer)) || objectSettings.Protected(renderer))
                 { report.Messages.Add("Mesh retained '" + renderer.name + "': explicit preservation."); continue; }
                 if (InputProtected(settings, renderer, out var inputReason))
                 { report.Messages.Add("Mesh retained '" + renderer.name + "': " + inputReason + "."); continue; }
-                var candidate = MeshMergeAnalysis.Inspect(renderer, avatar, animations, references, context.GetState<OptimizationAnalysis>().Shaders, out string reason, mergePolicy);
+                var candidate = MeshMergeAnalysis.Inspect(renderer, avatar, animations, references, context.GetState<OptimizationAnalysis>().Shaders, out string reason, mergePolicy, invariants);
                 if (candidate != null)
                 {
                     if (settings.ConvertRigidMeshes && RigidMeshConversion.Unweighted(renderer.sharedMesh))
@@ -258,8 +260,9 @@ namespace Noname.AvatarTools.Meshes
                         replacement = binding;
                     }
                     // Missing morph tracks have no output on the fixed source mesh.
-                    // Visibility and material writers already exist on the destination with
-                    // matching evaluation. Object activation tracks remain on their objects.
+                    // Visibility, material and changing offscreen-update writers already
+                    // exist on the destination with matching evaluation. Default-valued
+                    // offscreen-update tracks are redundant. Object activation tracks remain.
                     rewrites.Add((use, replacement));
                 }
             // Source assets remain immutable; only the build clone receives this mesh.

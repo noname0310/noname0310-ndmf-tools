@@ -22,6 +22,7 @@ namespace Noname.AvatarTools.ParameterLayout
         {
             encoding.Validate();
             var identityType = ParameterTransportIdentity.Ensure(controller);
+            bool writeDefaults = ParameterTransportDefaults.Read(controller);
             AnimatorCondition Local(bool local) => ParameterTransportIdentity.Condition(identityType, local);
             Parameter(encoding.Tag, AnimatorControllerParameterType.Int, 0);
             foreach (var slot in encoding.Slots) Parameter(slot.Name, Type(slot.Type), 0);
@@ -38,7 +39,7 @@ namespace Noname.AvatarTools.ParameterLayout
             var layer = controller.AddLayer(new LayerPriority(int.MaxValue), "ALTO Time Multiplexing");
             layer.DefaultWeight = 1;
             var machine = layer.StateMachine = VirtualStateMachine.Create(clone, layer.Name);
-            VirtualState State(string name) { var state = machine.AddState(name, timer); state.WriteDefaultValues = false; return state; }
+            VirtualState State(string name) { var state = machine.AddState(name, timer); state.WriteDefaultValues = writeDefaults; return state; }
             var entry = State("Mux Initialize"); machine.DefaultState = entry;
             var seek = State("Mux Seek");
             var snapshot = new[] { State("Mux Snapshot E0"), State("Mux Snapshot E1") };

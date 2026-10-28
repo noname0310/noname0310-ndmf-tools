@@ -17,7 +17,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
     public sealed partial class BlendShapeOptimizationTests
     {
         private AnimatorController NativeMultiplexController(MultiplexEncoding plan, Parameter[] logical, bool active = true,
-            AnimatorControllerParameterType? identityType = null)
+            AnimatorControllerParameterType? identityType = null, bool writeDefaults = false)
         {
             var clone = new CloneContext(VRChatPlatformAnimatorBindings.Instance);
             var virtualController = VirtualAnimatorController.Create(clone, "Multiplex fixture");
@@ -27,6 +27,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             MultiplexAnimator.Append(clone, virtualController, plan, logical.ToDictionary(p => p.name),
                 active ? names : new HashSet<string>(), logical.ToDictionary(p => p.name, p => p.defaultValue),
                 new HashSet<string>(names.Concat(plan.WireDeclarations().Select(p => p.name))), null);
+            if (writeDefaults)
+                foreach (var state in virtualController.AllReachableNodes().OfType<VirtualState>()) state.WriteDefaultValues = true;
             return CommitAnimator(virtualController, root);
         }
 
@@ -100,11 +102,12 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             for (int slot = 0; slot < slots.Length; slot++) remote.Write(slots[slot].name, values[slot]);
         }
 
-        [TestCase(30)] [TestCase(60)] [TestCase(90)]
-        public void MultiplexingNativeSnapshotsStayCoherentWhenInputsChangeDuringTransmission(int fps)
+        [TestCase(30, false)] [TestCase(60, false)] [TestCase(90, false)]
+        [TestCase(30, true)] [TestCase(60, true)] [TestCase(90, true)]
+        public void MultiplexingNativeSnapshotsStayCoherentWhenInputsChangeDuringTransmission(int fps, bool writeDefaults)
         {
             var input = MultiplexInputs(4, 4, 8); var plan = MultiplexPlan(input, 32);
-            var controller = NativeMultiplexController(plan, input);
+            var controller = NativeMultiplexController(plan, input, writeDefaults: writeDefaults);
             using var local = new NativeMultiplexPeer(PolicyChild("Local"), controller, plan, true);
             using var remote = new NativeMultiplexPeer(PolicyChild("Remote"), controller, plan, false);
             float Value(Parameter p, int generation) => p.valueType switch

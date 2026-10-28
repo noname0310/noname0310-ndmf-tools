@@ -66,6 +66,7 @@ namespace Noname.AvatarTools.ParameterPolicy
                 found.Add(new ClipContext { Owner = entry.Key, Controller = entry.Value, Layer = layer });
             }
             var nativeWriters = VisibilityMutationAnalysis.NativeWriters(avatar);
+            var liveClips = new HashSet<VirtualClip>(index.Controllers.SelectMany(analysis.Clips));
             var removals = new Dictionary<VirtualClip, HashSet<EditorCurveBinding>>();
             var bindingCache = new Dictionary<VirtualMotion, HashSet<EditorCurveBinding>>();
             int changed = 0;
@@ -81,8 +82,12 @@ namespace Noname.AvatarTools.ParameterPolicy
                 bool initial = target is GameObject gameObject ? gameObject.activeSelf : ((Renderer)target).enabled;
                 var uses = group.Select(p => p.Use).Distinct().ToArray();
                 var first = uses[0];
-                if (!MotionAnalysis.Constant(first.Curve, out float value) || value != 0 && value != 1 ||
-                    initial == (value == 1) || uses.Any(u => !MotionAnalysis.Constant(u.Curve, out float other) || other != value)) continue;
+                // Unreachable states can remain solely to preserve Write Defaults binding
+                // coverage. Their curve values are not possible outputs. Pick a candidate
+                // from a live clip, then prove it against every reachable writer state below.
+                var live = uses.FirstOrDefault(u => liveClips.Contains(u.Clip));
+                if (live == null || !MotionAnalysis.Constant(live.Curve, out float value) || value != 0 && value != 1 ||
+                    initial == (value == 1)) continue;
                 if (transform == avatar.transform || !scope.Contains(transform) ||
                     preservation?.Protected(transform) == true || target is Component component && preservation?.Protected(component) == true) continue;
                 string reason = null;

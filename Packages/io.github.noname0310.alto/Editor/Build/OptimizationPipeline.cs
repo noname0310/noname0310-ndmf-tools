@@ -36,6 +36,7 @@ namespace Noname.AvatarTools.Build
                 OptimizationSession.Step(context, "occluded region removal", AnalysisDomain.Meshes, OcclusionPass.Apply);
                 OptimizationSession.Step(context, "BlendShape simplification", AnalysisDomain.Animation | AnalysisDomain.Meshes | AnalysisDomain.Hierarchy, ALTOPlugin.Apply);
             }
+            OptimizationSession.Step(context, "static material texture baking", AnalysisDomain.Materials | AnalysisDomain.Animation, MaterialOptimizationPass.BakeBeforeAtlas);
             OptimizationSession.Step(context, "atlas preparation", AnalysisDomain.Hierarchy | AnalysisDomain.Materials | AnalysisDomain.Meshes, MaterialAtlasPass.Prepare);
         });
 

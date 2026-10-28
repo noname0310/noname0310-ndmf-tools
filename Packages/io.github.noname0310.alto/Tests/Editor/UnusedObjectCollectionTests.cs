@@ -108,6 +108,31 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(unused == null, Is.True);
         }
 
+        [TestCase("Disabled", false)] [TestCase("Inactive", false)] [TestCase("ConstantDisabled", false)]
+        [TestCase("UnreachableEnable", false)] [TestCase("LiveEnable", true)] [TestCase("Preserved", true)] [TestCase("Referenced", true)]
+        public void GlobalColliderCollectionRequiresAPossibleEnabledOutput(string mode, bool keep)
+        {
+            var settings = ObjectSettings(); var collider = PolicyChild("Global").AddComponent<VRCPhysBoneCollider>();
+            collider.globalCollision = VRC.Dynamics.VRCPhysBoneBase.AdvancedBool.True;
+            collider.enabled = mode == "Inactive";
+            if (mode == "Inactive") collider.gameObject.SetActive(false);
+            var binding = EditorCurveBinding.FloatCurve("Global", typeof(VRCPhysBoneCollider), "m_Enabled");
+            var off = StaticCurve(binding, 0); var on = StaticCurve(binding, 1);
+            var source = Controller(off, on); source.AddParameter("Activate", UnityEngine.AnimatorControllerParameterType.Bool);
+            var states = source.layers[0].stateMachine.states;
+            Edge(states[0].state, states[1].state, "Activate", 0, UnityEditor.Animations.AnimatorConditionMode.If);
+            if (mode == "Disabled" || mode == "Inactive") source = Controller(Clip());
+            if (mode == "ConstantDisabled") source = Controller(off);
+            if (mode == "Preserved") settings.ProtectedComponents.Add(ObjectRegistry.GetReference(collider));
+            if (mode == "Referenced") PhysBone("Consumer").colliders.Add(collider);
+            var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(source);
+            CollectObjects(settings, controller, mode == "LiveEnable" ? new[] { "Activate" } : null);
+            Assert.That(collider != null, Is.EqualTo(keep));
+            Assert.That(controller.AllReachableNodes().OfType<VirtualClip>().Any(c => c.GetFloatCurve(binding) != null),
+                Is.EqualTo(keep), "Orphaned bindings may only be removed with their output component.");
+            Assert.That(AnimationUtility.GetEditorCurve(on, binding), Is.Not.Null);
+        }
+
         [TestCase(false)] [TestCase(true)]
         public void GlobalAndAnimatedGlobalCollidersAreObservableWithoutLocalReferences(bool animated)
         {

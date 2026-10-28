@@ -16,7 +16,7 @@ namespace Noname.AvatarTools.Materials
     {
         internal ALTOTraceAndOptimizeMaterials Component;
         internal OptimizationBuildScope Scope;
-        internal bool Clean, Share;
+        internal bool Clean, Share, BakeLilToon;
         internal readonly HashSet<ObjectReference> Preserved = new();
         internal readonly List<(Renderer Original, bool Protected)> Inputs = new();
     }
@@ -33,6 +33,7 @@ namespace Noname.AvatarTools.Materials
                 var state = context.GetState<MaterialOptimizationState>(); var component = state.Component = enabled[0];
                 state.Scope = OptimizationBuildScope.Capture(component, context.AvatarRootObject);
                 state.Clean = component.RemoveUnusedSavedProperties; state.Share = component.ShareEquivalentMaterials;
+                state.BakeLilToon = component.BakeLilToonMainTextures;
                 foreach (var material in (component.PreserveMaterials ?? new()).Where(m => m != null)) state.Preserved.Add(ObjectRegistry.GetReference(material));
             }
             foreach (var component in all.Except(enabled)) Object.DestroyImmediate(component);
@@ -67,17 +68,19 @@ namespace Noname.AvatarTools.Materials
             }
         }
 
-        private static void ApplyCore(BuildContext context)
+        internal static void BakeBeforeAtlas(BuildContext context) => ApplyCore(context, true);
+
+        private static void ApplyCore(BuildContext context, bool bakeOnly = false)
         {
             var state = context.GetState<MaterialOptimizationState>();
-            if (state.Scope == null || !state.Clean && !state.Share) return;
+            if (state.Scope == null || (bakeOnly ? !state.BakeLilToon : !state.Clean && !state.Share && !state.BakeLilToon)) return;
             var avatar = context.AvatarRootObject; var report = context.GetState<OptimizationBuildReport>();
             report.Initialize(avatar, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
             var watch = Stopwatch.StartNew();
             using var lease = OptimizationSession.Acquire(context);
             var services = lease.Services;
             var entries = services.ControllerContext.Controllers.Where(e => !(e.Key is Object owner) || owner != null).ToDictionary(e => e.Key, e => e.Value);
-                var policy = ParameterPolicyPass.Resolve(context, entries);
+            var policy = ParameterPolicyPass.Resolve(context, entries);
             var animations = AvatarAnimationIndex.Create(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(), policy.Preserved);
             string issue = ObjectOptimizationSafety.UnsupportedRuntime(avatar) ?? animations.UnsafeReason;
             if (policy.Uncertain || issue != null)
@@ -108,14 +111,33 @@ namespace Noname.AvatarTools.Materials
                 references.ReferenceOwners.TryGetValue(material, out var readers) && readers.Any(r => !(r is Renderer));
             var shaders = context.GetState<OptimizationAnalysis>().Shaders; var fallbacks = new VrcFallbackPropertyContract();
             var replacements = new Dictionary<Material, Material>(); var canonical = new List<Material>(); var created = new HashSet<Material>();
-            int removed = 0, shared = 0;
+            var animated = state.BakeLilToon ? MaterialTextureBake.AnimatedProperties(animations, renderers, safeSwaps) :
+                new Dictionary<Material, HashSet<string>>();
+            int removed = 0, shared = 0, baked = 0;
+            if (state.BakeLilToon && MaterialTextureBake.LilToon == null)
+                report.Messages.Add("lilToon texture baking skipped: supported lilToon integration is not installed.");
             foreach (var source in pool)
             {
                 if (Protected(source)) { replacements.Add(source, source); continue; }
-                var unused = state.Clean ? SavedMaterialProperties.Unused(source, shaders, fallbacks) : new();
+                var unused = !bakeOnly && state.Clean ? SavedMaterialProperties.Unused(source, shaders, fallbacks) : new();
                 var result = unused.Count > 0 ? SavedMaterialProperties.CleanCopy(source, unused) : source;
                 if (result != source) { created.Add(result); removed += unused.Count; }
-                var existing = state.Share ? canonical.FirstOrDefault(m => SavedMaterialProperties.Equivalent(m, result)) : null;
+                if (state.BakeLilToon)
+                {
+                    var bake = MaterialTextureBake.LilToon?.Invoke(result, animated.TryGetValue(source, out var properties) ? properties : new());
+                    if (bake != null)
+                    {
+                        report.Messages.Add(source.name + ": " + bake.Detail);
+                        if (bake.Material != null)
+                        {
+                            if (created.Remove(result)) Object.DestroyImmediate(result);
+                            result = bake.Material; created.Add(result); baked++;
+                            context.AssetSaver.SaveAsset(bake.Texture);
+                            ObjectRegistry.RegisterReplacedObject(source, result);
+                        }
+                    }
+                }
+                var existing = !bakeOnly && state.Share ? canonical.FirstOrDefault(m => SavedMaterialProperties.Equivalent(m, result)) : null;
                 if (existing != null)
                 {
                     if (created.Remove(result)) Object.DestroyImmediate(result);
@@ -139,7 +161,7 @@ namespace Noname.AvatarTools.Materials
                 use.Clip.SetObjectCurve(use.Binding, keys);
             }
             report.Messages.Add("Material optimization: " + removed + " unused saved properties removed; " + shared +
-                " equivalent materials shared across " + renderers.Count + " renderers; " + watch.ElapsedMilliseconds + " ms. Source assets and fallback inputs retained.");
+                " equivalent materials shared; " + baked + " lilToon textures baked across " + renderers.Count + " renderers; " + watch.ElapsedMilliseconds + " ms. Source assets retained.");
         }
     }
 }

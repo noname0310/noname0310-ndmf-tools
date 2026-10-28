@@ -72,7 +72,7 @@ namespace Noname.AvatarTools.ParameterPolicy
                 if (changes.Changes != 0)
                 {
                     // Commit only after every scope/preservation/constant check succeeds.
-                    current.OnDeactivate(context);
+                    AnimatorAssetPersistence.Commit(context, current);
                     if (!allowTransientAssetsForTests) context.AssetSaver.Dispose();
                 }
                 report.Messages.Add("Final parameter specialization: " + changes + ".");

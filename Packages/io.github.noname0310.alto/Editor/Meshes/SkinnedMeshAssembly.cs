@@ -50,6 +50,80 @@ namespace Noname.AvatarTools.Meshes
             }
         }
 
+        private readonly struct UvChannel
+        {
+            internal readonly int SourceChannel, Dimension;
+            internal UvChannel(int sourceChannel, int dimension)
+            { SourceChannel = sourceChannel; Dimension = dimension; }
+        }
+
+        // A channel's effective source and dimension form one contract. Missing channels
+        // alias the preceding available channel, including its component count; choosing
+        // the output width from explicit attributes alone can truncate that alias.
+        private sealed class UvLayout
+        {
+            internal readonly int[] Dimensions = new int[8];
+            private readonly UvChannel[] inputs;
+
+            internal UvLayout(IReadOnlyList<Input> sources)
+            {
+                inputs = new UvChannel[sources.Count * 8];
+                var present = new bool[8];
+                for (int input = 0; input < sources.Count; input++)
+                {
+                    int previous = -1, effectiveDimension = 0;
+                    for (int channel = 0; channel < 8; channel++)
+                    {
+                        int dimension = sources[input].Mesh.GetVertexAttributeDimension(VertexAttribute.TexCoord0 + channel);
+                        if (dimension > 0)
+                        { previous = channel; effectiveDimension = dimension; present[channel] = true; }
+                        inputs[input * 8 + channel] = new UvChannel(previous, effectiveDimension);
+                        // A missing attribute supplies (0,0,0,0), unlike a present
+                        // 2D/3D attribute whose missing w is one. An emitted channel
+                        // needs four components to represent both cases together.
+                        Dimensions[channel] = Math.Max(Dimensions[channel], previous < 0 ? 4 : effectiveDimension);
+                    }
+                }
+                // A channel absent from every input can remain absent in the output:
+                // its alias is already represented by the preceding output channel.
+                for (int channel = 0; channel < 8; channel++)
+                    if (!present[channel]) Dimensions[channel] = 0;
+            }
+
+            internal void Append(int inputIndex, Input input, List<Vector4>[] output)
+            {
+                List<Vector4> values = null;
+                int loadedChannel = -1;
+                for (int channel = 0; channel < 8; channel++)
+                {
+                    var destination = output[channel];
+                    if (destination == null) continue;
+                    var source = inputs[inputIndex * 8 + channel];
+                    if (source.SourceChannel >= 0 && source.SourceChannel != loadedChannel)
+                    {
+                        values ??= new List<Vector4>(input.Mesh.vertexCount);
+                        input.Mesh.GetUVs(source.SourceChannel, values);
+                        loadedChannel = source.SourceChannel;
+                    }
+                    foreach (int vertex in input.Vertices)
+                    {
+                        var value = Vector4.zero;
+                        if (source.SourceChannel >= 0)
+                        {
+                            value = values[vertex];
+                            // Only present attributes use GPU widening's w=1 default.
+                            // Native comparisons distinguish that from an absent UV's
+                            // zero vector. Mesh.GetUVs<Vector4> alone does not do this.
+                            // Unity Manual: SL-VertexProgramInputs.html (Unity 2022.3).
+                            if (source.Dimension < 3) value.z = 0;
+                            if (source.Dimension < 4) value.w = 1;
+                        }
+                        destination.Add(value);
+                    }
+                }
+            }
+        }
+
         internal static bool HasUnusedData(SkinnedMeshRenderer renderer)
         {
             var input = new Input(renderer, true);
@@ -130,10 +204,11 @@ namespace Noname.AvatarTools.Meshes
             bool tangents = sources.Any(r => r.Mesh.HasVertexAttribute(VertexAttribute.Tangent));
             bool colors = sources.Any(r => r.Mesh.HasVertexAttribute(VertexAttribute.Color));
             var tangentData = new List<Vector4>(tangents ? count : 0); var colorData = new List<Color>(colors ? count : 0);
-            var uvDimensions = Enumerable.Range(0, 8).Select(c => sources.Max(r => r.Mesh.GetVertexAttributeDimension(VertexAttribute.TexCoord0 + c))).ToArray();
-            var uvData = uvDimensions.Select(d => d == 0 ? null : new List<Vector4>(count)).ToArray();
-            foreach (var input in sources)
+            var uvLayout = new UvLayout(sources);
+            var uvData = uvLayout.Dimensions.Select(d => d == 0 ? null : new List<Vector4>(count)).ToArray();
+            for (int inputIndex = 0; inputIndex < sources.Count; inputIndex++)
             {
+                var input = sources[inputIndex];
                 var mesh = input.Mesh; var sourcePositions = mesh.vertices;
                 positions.AddRange(input.Vertices.Select(v => sourcePositions[v]));
                 if (normals) { var values = mesh.normals; normalData.AddRange(input.Vertices.Select(v => values[v])); }
@@ -151,17 +226,7 @@ namespace Noname.AvatarTools.Meshes
                     var values = mesh.colors;
                     colorData.AddRange(values.Length > 0 ? input.Vertices.Select(v => values[v]) : Enumerable.Repeat(Color.white, input.Vertices.Length));
                 }
-                var previous = Enumerable.Repeat(Vector4.zero, mesh.vertexCount).ToList();
-                for (int channel = 0; channel < 8; channel++)
-                {
-                    if (mesh.HasVertexAttribute(VertexAttribute.TexCoord0 + channel))
-                    {
-                        var current = new List<Vector4>(mesh.vertexCount); mesh.GetUVs(channel, current); previous = current;
-                    }
-                    // Unity aliases a missing UV channel to the preceding available channel.
-                    // This convention is also handled explicitly by AAO's MeshInfo2 reader.
-                    uvData[channel]?.AddRange(input.Vertices.Select(v => previous[v]));
-                }
+                uvLayout.Append(inputIndex, input, uvData);
             }
             output.SetVertices(positions);
             if (normals) output.SetNormals(normalData);
@@ -170,8 +235,8 @@ namespace Noname.AvatarTools.Meshes
             for (int channel = 0; channel < 8; channel++)
             {
                 var values = uvData[channel]; if (values == null) continue;
-                if (uvDimensions[channel] == 2) output.SetUVs(channel, values.Select(v => new Vector2(v.x, v.y)).ToList());
-                else if (uvDimensions[channel] == 3) output.SetUVs(channel, values.Select(v => new Vector3(v.x, v.y, v.z)).ToList());
+                if (uvLayout.Dimensions[channel] == 2) output.SetUVs(channel, values.Select(v => new Vector2(v.x, v.y)).ToList());
+                else if (uvLayout.Dimensions[channel] == 3) output.SetUVs(channel, values.Select(v => new Vector3(v.x, v.y, v.z)).ToList());
                 else output.SetUVs(channel, values);
             }
         }

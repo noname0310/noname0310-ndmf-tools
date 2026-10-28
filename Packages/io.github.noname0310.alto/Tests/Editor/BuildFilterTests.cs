@@ -1,5 +1,6 @@
 using System;
 using Noname.AvatarTools.Build;
+using Noname.AvatarTools.ParameterPolicy;
 using nadena.dev.ndmf;
 using NUnit.Framework;
 using UnityEditor.Animations;
@@ -148,6 +149,30 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             filter.ExcludedObjects.Add(feature);
             BuildFilterPass.RemoveEarly(new BuildContext(root, null));
             Assert.That(feature != null && root.GetComponent<ALTOBuildFilter>() == null, Is.True);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void BuildFilterSkipsFreezeRulesFromRemovedSourcesWithoutFreezingAnotherNamespace(bool componentOnly)
+        {
+            var policy = Policy();
+            var filter = Filter();
+            var feature = PolicyChild("Removed source").AddComponent<ParameterPolicySourceFixture>();
+            feature.Provided = feature.From = "Input"; feature.To = "Removed/Input";
+            var survivor = PolicyChild("Surviving source").AddComponent<ParameterPolicySourceFixture>();
+            survivor.Provided = "Input";
+            policy.FreezeParameters.Add(new AnimatorParameterConstant
+            { Source = componentOnly ? feature : feature.gameObject, Name = "Input", Value = 1 });
+            policy.FreezeParameters.Add(new AnimatorParameterConstant { Name = "Unrelated", Value = 0 });
+            if (componentOnly) filter.ExcludedComponents.Add(feature);
+            else filter.ExcludedObjects.Add(feature.gameObject);
+            var context = new BuildContext(root, null);
+            BuildFilterPass.RemoveEarly(context);
+            ParameterPolicyPass.Capture(context);
+            Assert.That(feature == null && survivor != null, Is.True);
+            Assert.That(context.GetState<ParameterPolicyState>().Frozen.Keys, Is.EquivalentTo(new[] { "Unrelated" }));
+            Assert.That(context.GetState<ParameterPolicyState>().Diagnostics,
+                Does.Contain("Skipped frozen parameter from a removed source: Input"));
         }
     }
 }

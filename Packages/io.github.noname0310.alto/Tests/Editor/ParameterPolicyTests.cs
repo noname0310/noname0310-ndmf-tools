@@ -34,6 +34,27 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             return policy;
         }
 
+        [TestCase(AnimatorControllerParameterType.Bool, AnimatorControllerParameterType.Float, 1f, 1f, true)]
+        [TestCase(AnimatorControllerParameterType.Bool, AnimatorControllerParameterType.Float, 0f, 0f, true)]
+        [TestCase(AnimatorControllerParameterType.Int, AnimatorControllerParameterType.Float, 3f, 3f, true)]
+        [TestCase(AnimatorControllerParameterType.Bool, AnimatorControllerParameterType.Float, 1f, 0f, false)]
+        [TestCase(AnimatorControllerParameterType.Float, AnimatorControllerParameterType.Bool, .5f, 1f, false)]
+        [TestCase(AnimatorControllerParameterType.Float, AnimatorControllerParameterType.Int, .5f, 0f, false)]
+        [TestCase(AnimatorControllerParameterType.Bool, AnimatorControllerParameterType.Trigger, 1f, 1f, false)]
+        public void PrivateParameterConstantAcceptsOnlyValuePreservingTypeChanges(
+            AnimatorControllerParameterType original, AnimatorControllerParameterType rewritten, float expected, float actual, bool allowed)
+        {
+            var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(Controller(Clip()));
+            var constant = new ParameterConstant { Name = "Public input", InternalName = "Private constant", Type = original,
+                Types = new HashSet<AnimatorControllerParameterType> { original }, Value = expected };
+            var declaration = new AnimatorControllerParameter { name = constant.InternalName, type = rewritten,
+                defaultFloat = actual, defaultInt = (int)actual, defaultBool = actual != 0 };
+            controller.Parameters = controller.Parameters.Add(declaration.name, declaration);
+            var constants = new Dictionary<string, ParameterConstant> { [constant.Name] = constant };
+            if (allowed) Assert.DoesNotThrow(() => ParameterSpecialization.Validate(new[] { controller }, constants));
+            else Assert.Throws<InvalidOperationException>(() => ParameterSpecialization.Validate(new[] { controller }, constants));
+        }
+
         [Test]
         public void PolicyScopeUsesComponentSubtreeAndTracksReparentedObjects()
         {

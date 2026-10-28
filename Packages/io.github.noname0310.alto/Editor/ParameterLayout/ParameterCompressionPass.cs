@@ -298,7 +298,7 @@ namespace Noname.AvatarTools.ParameterLayout
                     if (multiplex != null) MultiplexAnimator.Append(current.CloneContext, fx, multiplex,
                         declared, multiplexActive, fallback, occupied, save);
                 }
-                finally { current.OnDeactivate(context); }
+                finally { AnimatorAssetPersistence.Commit(context, current, save); }
             }
             if (active.Count != 0 || unused.Count != 0 || multiplex != null)
             {

@@ -24,6 +24,7 @@ namespace Noname.AvatarTools.Meshes
         internal string MaskCoverage;
         internal readonly List<MeshAnimationSignal> Visibility = new();
         internal readonly Dictionary<string, MeshAnimationSignal> Properties = new(StringComparer.Ordinal);
+        internal MeshAnimationSignal UpdateWhenOffscreen;
         internal AvatarAnimationIndex.BindingUse[] Bindings;
         internal readonly HashSet<string> ReservedShapeNames = new(StringComparer.Ordinal);
     }
@@ -46,9 +47,11 @@ namespace Noname.AvatarTools.Meshes
 
     internal static class MeshMergeAnalysis
     {
+        internal const string UpdateWhenOffscreenProperty = "m_UpdateWhenOffscreen";
+
         internal static MeshMergeCandidate Inspect(SkinnedMeshRenderer renderer, GameObject avatar,
             AvatarAnimationIndex animations, AvatarDependencyGraph references, ShaderPropertyUsage shaders, out string reason,
-            MeshMergePolicy policy = null)
+            MeshMergePolicy policy = null, InvariantComponentSettings invariants = null)
         {
             bool makeRigid = renderer != null && policy?.ConvertRigidMeshes == true && RigidMeshConversion.Unweighted(renderer.sharedMesh);
             reason = makeRigid ? SkinnedMeshAssembler.ValidateGeometry(renderer, renderer.sharedMesh) : SkinnedMeshAssembler.Validate(renderer);
@@ -101,8 +104,20 @@ namespace Noname.AvatarTools.Meshes
                         if (!shape) return "immutable renderer animation";
                         result.Pin("immutable animation: " + use.Clip.Name + " / " + use.Binding.propertyName);
                     }
-                    if (use.Binding.isPPtrCurve || !shape && use.Binding.propertyName != "m_Enabled" &&
-                        !use.Binding.propertyName.StartsWith("material.", StringComparison.Ordinal)) return "unsupported renderer animation: " + use.Binding.propertyName;
+                    if (use.Binding.isPPtrCurve) return "unsupported renderer animation: " + use.Binding.propertyName;
+                    if (!shape && use.Binding.propertyName != "m_Enabled" &&
+                        use.Binding.propertyName != UpdateWhenOffscreenProperty &&
+                        !use.Binding.propertyName.StartsWith("material.", StringComparison.Ordinal))
+                    {
+                        // Build tools may leave dummy bindings after consuming an output.
+                        // Verify absence against both serialization and Unity's native
+                        // binding lookup, without recognizing any tool-specific prefix.
+                        using var serialized = new SerializedObject(renderer);
+                        var localBinding = use.Binding; localBinding.path = "";
+                        if (serialized.FindProperty(use.Binding.propertyName) != null ||
+                            AnimationUtility.GetFloatValue(renderer.gameObject, localBinding, out _))
+                            return "unsupported renderer animation: " + use.Binding.propertyName;
+                    }
                     if (!use.Immutable && (use.Roots.Length != 1 || use.Roots[0] != avatar.transform))
                         return "renderer animation has a relative or shared controller root";
                     // Reserve missing names on the destination so appended morphs cannot
@@ -114,6 +129,20 @@ namespace Noname.AvatarTools.Meshes
                         result.ReservedShapeNames.Add(use.Binding.propertyName.Substring("blendShape.".Length));
                     }
                 }
+                var offscreenWriters = result.Bindings.Where(u => u.Binding.propertyName == UpdateWhenOffscreenProperty).ToArray();
+                if (offscreenWriters.Any(u => u.Curve == null)) return "unverified offscreen-update animation";
+                if (offscreenWriters.Length > 0)
+                {
+                    invariants ??= new InvariantComponentSettings(animations,
+                        AnimatorReachability.Analyze(avatar, animations.Controllers, animations.PreservedParameters), animations.ControllerEntries);
+                    // A default-valued curve is only redundant when its entire evaluation
+                    // context preserves that value, including Blend Tree weights and layers.
+                    if (invariants.IsConstantProperty(renderer, UpdateWhenOffscreenProperty))
+                        offscreenWriters = Array.Empty<AvatarAnimationIndex.BindingUse>();
+                    else if (policy?.ExpandBounds != true)
+                        return "animated per-frame bounds depend on the original skinned vertex set";
+                }
+                result.UpdateWhenOffscreen = new MeshAnimationSignal { Initial = renderer.updateWhenOffscreen, Writers = offscreenWriters };
                 for (var transform = renderer.transform; transform != null; transform = transform.parent)
                 {
                     var issue = AddVisibility(result, transform.gameObject, "m_IsActive", transform.gameObject.activeSelf, avatar, animations);
@@ -174,6 +203,7 @@ namespace Noname.AvatarTools.Meshes
             if (a.Pinned && b.Pinned) return "independent external morph interfaces";
             if (a.MaskCoverage != b.MaskCoverage) return "different Animator mask coverage";
             if (a.Visibility.Count != b.Visibility.Count || !a.Visibility.All(s => b.Visibility.Contains(s))) return "different activation or enabled signals";
+            if (!a.UpdateWhenOffscreen.Equals(b.UpdateWhenOffscreen)) return "different offscreen-update animation signals";
             if (a.Properties.Count != b.Properties.Count || !a.Properties.All(p => b.Properties.TryGetValue(p.Key, out var signal) && p.Value.Equals(signal)))
                 return "different material-property animation signals";
             if (a.Properties.Count != 0 && !MaterialDefaultsMatch(x.sharedMaterials, y.sharedMaterials, policy?.AllowMaterialSlotReordering == true))

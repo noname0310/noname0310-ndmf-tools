@@ -116,6 +116,51 @@ namespace Noname.AvatarTools.MeshReduction.Tests
             Assert.That(source.triangles, Is.EqualTo(triangles));
         }
 
+        [TestCase(false, false)] [TestCase(false, true)]
+        [TestCase(true, false)] [TestCase(true, true)]
+        public void ReductionKeepsCoincidentSkinnedIslandsSeparate(bool sharedBone, bool morph)
+        {
+            var renderer = Grid("Overlapping bind geometry", false, 8);
+            var mesh = renderer.sharedMesh;
+            var vertices = mesh.vertices; var triangles = mesh.triangles; var uv = mesh.uv;
+            mesh.vertices = vertices.Concat(vertices).ToArray(); mesh.uv = uv.Concat(uv).ToArray();
+            mesh.triangles = triangles.Concat(triangles.Select(i => i + vertices.Length)).ToArray();
+            mesh.boneWeights = Enumerable.Range(0, 2 * vertices.Length).Select(i =>
+                new BoneWeight { boneIndex0 = i < vertices.Length ? 0 : 1, weight0 = 1 }).ToArray();
+            if (sharedBone)
+            {
+                renderer.bones = new[] { root.transform, root.transform };
+                mesh.bindposes = new[] { Matrix4x4.Translate(Vector3.left * 2), Matrix4x4.Translate(Vector3.right * 2) };
+            }
+            else
+            {
+                renderer.bones[0].localPosition = Vector3.left * 2;
+                renderer.bones[1].localPosition = Vector3.right * 2;
+            }
+            mesh.RecalculateNormals(); mesh.RecalculateBounds();
+            if (morph) mesh.AddBlendShapeFrame("Move", 100,
+                Enumerable.Repeat(Vector3.forward * .1f, mesh.vertexCount).ToArray(), null, null);
+            var originalTriangles = mesh.triangles;
+            var request = Request(renderer, 100);
+            MeshiaReductionBackend.Simplify(new[] { request }, false); Track(request.Result);
+            MeshReductionPass.ValidateResult(request);
+            renderer.sharedMesh = request.Result;
+            var baked = Track(new Mesh()); renderer.BakeMesh(baked);
+            var positions = baked.vertices;
+            Assert.That(positions.Any(p => p.x < -1), Is.True, "The left island must survive.");
+            Assert.That(positions.Any(p => p.x > 1), Is.True, "The right island must survive.");
+            var reducedTriangles = baked.triangles;
+            for (int i = 0; i < reducedTriangles.Length; i += 3)
+            {
+                bool side = positions[reducedTriangles[i]].x < 0;
+                Assert.That(positions[reducedTriangles[i + 1]].x < 0, Is.EqualTo(side), "Reduction connected independently skinned islands.");
+                Assert.That(positions[reducedTriangles[i + 2]].x < 0, Is.EqualTo(side), "Reduction connected independently skinned islands.");
+            }
+            Assert.That(request.Result.triangles.Length / 3, Is.LessThanOrEqualTo(100));
+            Assert.That(mesh.vertices, Is.EqualTo(vertices.Concat(vertices).ToArray()));
+            Assert.That(mesh.triangles, Is.EqualTo(originalTriangles));
+        }
+
         [Test]
         public void ReductionBudgetsIncludeProtectedFacesWithoutChangingTheirMesh()
         {

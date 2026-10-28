@@ -12,6 +12,15 @@ namespace Noname.AvatarTools.ObjectOptimization
 {
     internal static class ObjectOptimizationSafety
     {
+        // The SDK attaches this hidden hierarchy listener to PhysBone targets in the Editor.
+        // It only notifies the owning simulations; it is not an independent avatar output.
+        // Resolve the exact SDK type so an unrelated script with the same name stays unsafe.
+        private static readonly System.Type ParentChangeDetector =
+            System.Type.GetType("VRC.Dynamics.ParentChangeDetector, VRC.Dynamics");
+
+        internal static bool IsParentChangeDetector(Component component) =>
+            component != null && component.GetType() == ParentChangeDetector;
+
         private static readonly HashSet<string> EditorAssemblies = new(CompilationPipeline.GetAssemblies(AssembliesType.Editor)
             .Where(a => (a.flags & AssemblyFlags.EditorAssembly) != 0).Select(a => a.name));
 
@@ -24,7 +33,8 @@ namespace Noname.AvatarTools.ObjectOptimization
                 if (!(component is MonoBehaviour) || component is INDMFEditorOnly || component is IEditorOnly ||
                     component is VRCAvatarDescriptor || component is VRCContactReceiver || component is VRCContactSender ||
                     component is VRCPhysBone || component is VRCPhysBoneCollider || component is VRCRaycast ||
-                    component is VRCHeadChop || component is VRCSpatialAudioSource || component is VRC.Core.PipelineManager) continue;
+                    component is VRCHeadChop || component is VRCSpatialAudioSource || component is VRC.Core.PipelineManager ||
+                    IsParentChangeDetector(component)) continue;
                 if (component.GetType().FullName == "ONSPAudioSource" && component.GetType().Assembly.GetName().Name == "VRC.SDKBase") continue;
                 // SDK constraints only mutate their configured transforms; those references are
                 // protected separately. Custom subclasses are not treated as SDK implementations.

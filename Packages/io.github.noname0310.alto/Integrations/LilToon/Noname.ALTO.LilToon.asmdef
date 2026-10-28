@@ -1,0 +1,8 @@
+{
+  "name": "Noname.ALTO.LilToon",
+  "references": ["Noname.ALTO", "Noname.ALTO.Editor", "lilToon.Editor"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true,
+  "defineConstraints": ["NONAME_LILTOON"],
+  "versionDefines": [{"name": "jp.lilxyzw.liltoon", "expression": "[2.3.4,3.0.0)", "define": "NONAME_LILTOON"}]
+}
