@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.7
+
+- Fix time-multiplexed parameters failing to update remote avatars at low frame rates. Replace short exit-time frame steps, use full normalized timer cycles, and receive each batch on its first observed publication before committing the complete snapshot.
+- In Guarded mode, invalidate old publication tags before reusing shared payload slots, and retain publications for at least 0.2 seconds. Cover 5–90 FPS, independently scheduled peers and 10 Hz packets, delayed fields, missed batches and interrupted snapshots with native Unity regressions.
+- Add a Low Latency transmission mode with direct packet sampling and periodic longer sweeps for slow observers. Default the Installer template to Low Latency with a 0.1-second hold; connected instances inherit this unless overridden. Retain Guarded for directly added components, expose the coherent-packet assumption, and reuse the reference upload's recorded protocol on other platforms.
+- After a receive timeout, require a different publication before restarting reception. Prevent a retained old tag from reviving a partial snapshot during an outage longer than the epoch wrap interval.
+- When changing transmission modes, upload the reference platform first, then rebuild and upload other platforms using the new recorded protocol. Existing template instances without overrides now select Low Latency.
+
 ## 0.0.6
 
 - Report unreadable Material Atlas input meshes before accessing their UV data. Include the mesh name, the original model asset path when available, and instructions to enable Read/Write, instead of reporting a misleading missing UV0 channel.

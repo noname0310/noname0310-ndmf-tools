@@ -15,8 +15,9 @@ namespace Noname.AvatarTools.ParameterLayout
         public int Batch, Slot;
     }
 
-    // Protocol 1: typed reusable payloads, an atomic Int tag with alternating epochs,
-    // preparation/publication phases, and full-cycle buffering. See CREDITS.md for
+    // Typed reusable payloads, an atomic Int tag, and complete snapshot buffering.
+    // Protocol 1 guards independently delayed fields; protocol 2 assumes coherent
+    // packet delivery and adds periodic slow recovery sweeps. See CREDITS.md for
     // the VRCFury behavior reference; this protocol and implementation are independent.
     [Serializable]
     internal sealed class MultiplexEncoding
@@ -28,7 +29,21 @@ namespace Noname.AvatarTools.ParameterLayout
         public List<ParameterLayoutEntry> Slots = new();
         public List<MultiplexInput> Inputs = new();
         internal int WireCost => 8 + Slots.Sum(p => Cost(p.Type));
-        internal float NominalCycleSeconds => 2 * Batches * HoldSeconds;
+        // Leave a publication visible for at least one 5 FPS observer frame, plus
+        // the sender's explicit frame step. This is not a network delivery guarantee.
+        internal float PublicationHoldSeconds => Math.Max(.2f, HoldSeconds);
+        // Tolerate slow phase transitions, but expire before the minimum two-epoch
+        // wrap interval (four batches with invalidation, preparation and publication).
+        internal int EpochCount => Protocol == 1 ? 2 : Batches <= 31 ? 8 : Batches <= 63 ? 4 : 2;
+        internal float FastPublicationSeconds => HoldSeconds;
+        internal float RecoveryPublicationSeconds => Math.Max(.25f, FastPublicationSeconds);
+        internal bool IsRecoveryEpoch(int epoch) => (epoch + 1) % Math.Min(4, EpochCount) == 0;
+        internal float PublicationSeconds(int epoch) => IsRecoveryEpoch(epoch)
+            ? RecoveryPublicationSeconds : FastPublicationSeconds;
+        internal float ReceiveTimeoutSeconds => Protocol == 1 ? Math.Max(1f, 6 * HoldSeconds)
+            : Math.Max(1.2f, 2 * RecoveryPublicationSeconds);
+        internal float NominalCycleSeconds => Protocol == 1 ? Batches * (2 * HoldSeconds + PublicationHoldSeconds)
+            : Batches * Enumerable.Range(0, EpochCount).Average(PublicationSeconds);
         internal int Code(int epoch, int batch) => 1 + epoch * Batches + batch;
         internal static int Cost(ValueType type) => type == ValueType.Bool ? 1 : 8;
         internal static int Cost(IEnumerable<Parameter> parameters) => parameters.Where(p => p.networkSynced).Sum(p => Cost(p.valueType));
@@ -102,7 +117,7 @@ namespace Noname.AvatarTools.ParameterLayout
 
         internal void Validate()
         {
-            if (Protocol != 1 || string.IsNullOrWhiteSpace(Tag) || Batches < 2 || Batches > 127 ||
+            if ((Protocol != 1 && Protocol != 2) || string.IsNullOrWhiteSpace(Tag) || Batches < 2 || Batches > 127 ||
                 !float.IsFinite(HoldSeconds) || HoldSeconds < .1f || HoldSeconds > 1 || Slots == null || Inputs == null ||
                 Slots.Count == 0 || Inputs.Count < 2 || Slots.Any(s => s == null || string.IsNullOrWhiteSpace(s.Name) ||
                     !Enum.IsDefined(typeof(ValueType), s.Type)))

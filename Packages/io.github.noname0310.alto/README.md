@@ -365,14 +365,39 @@ and applies a complete cycle together. Float payloads use native Float slots,
 without conversion to Int. Logical names, menu/OSC bindings and Saved values stay
 local. Both codecs retain existing Bool, Int or Float `IsLocal` declarations and
 route the SDK's 0/1 identity accordingly; unsupported Trigger identity is rejected
-before controller changes. Missing batches restart reception, and interrupted partial cycles expire.
-**Packet Hold Seconds** controls the preparation and publication intervals; the
-reported cycle time also needs Animator frames and network delivery time.
+before controller changes. Missing batches restart reception, and interrupted partial
+cycles expire. Expired reception waits for a different publication before accepting
+another snapshot, so a retained tag cannot repeatedly revive an interrupted cycle.
+
+The Installer template uses **Low Latency** with **Packet Hold Seconds = 0.1**.
+Connected instances inherit these values unless overridden. Adding the compression
+component directly retains Guarded defaults.
+
+**Transmission Mode** selects the transport assumption:
+
+- **Guarded** separates invalidation, payload preparation and publication.
+  **Packet Hold Seconds** controls the first two phases; publication lasts at least
+  0.2 seconds. These holds tolerate independent field delays shorter than the holds.
+- **Low Latency** publishes the payload and tag together, assuming the receiver
+  observes coherent packet fields, as in the direct sampling approach used by
+  VRCFury. Set **Packet Hold Seconds** to **0.1** for the shortest ordinary hold.
+  Every fourth complete sweep holds each publication for at least 0.25 seconds,
+  giving slow observers another opportunity to receive the full snapshot. With
+  more than 63 batches, recovery occurs every second sweep. Partial sweeps never
+  update logical outputs.
+
+The reference upload records the mode and timing; other platforms reuse that
+contract even if their local settings differ. Changing the reference protocol
+requires rebuilding the other platforms with the new record. The build report
+shows nominal average hold time per cycle; Animator frames and network delivery
+add further delay. A low sender frame rate still slows either transport. Frame
+steps use explicit conditions, and timed states use full normalized cycles instead
+of short exit windows that Unity can miss at low frame rates.
 
 This deliberately trades remote response time for network bits. Brief changes
-between snapshots may not be observed remotely. Preparation holds tolerate
-staggered delivery; arbitrary packet delays, reordering and client scheduling
-cannot be treated as atomic transport. Keep event-like or responsive inputs native.
+between snapshots may not be observed remotely. Low Latency does not protect
+against independent field delays. Neither mode guarantees delivery under arbitrary
+packet delay, reordering, loss or client scheduling. Keep event-like or responsive inputs native.
 Native Unity regression tests model Parameter Drivers and packet delivery; they
 do not replace VRChat client networking validation.
 

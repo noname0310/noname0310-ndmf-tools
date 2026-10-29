@@ -22,6 +22,7 @@ namespace Noname.AvatarTools.ParameterLayout
     {
         internal bool RemoveUnused;
         internal ParameterMultiplexingMode Multiplexing;
+        internal ParameterTransmissionMode Transmission;
         internal int Budget = 256;
         internal float HoldSeconds = .15f;
         internal readonly HashSet<string> MultiplexNames = new(StringComparer.Ordinal);
@@ -75,12 +76,14 @@ namespace Noname.AvatarTools.ParameterLayout
             {
                 var component = enabled[0];
                 if (!Enum.IsDefined(typeof(ParameterMultiplexingMode), component.TimeMultiplexing) ||
+                    !Enum.IsDefined(typeof(ParameterTransmissionMode), component.TransmissionMode) ||
                     (component.TimeMultiplexing != ParameterMultiplexingMode.Disabled &&
                     (component.TargetBitBudget < 16 || component.TargetBitBudget > 256 ||
                     !MotionAnalysis.Finite(component.PacketHoldSeconds) || component.PacketHoldSeconds < .1f || component.PacketHoldSeconds > 1)))
                     throw new InvalidOperationException("Choose valid time multiplexing settings and budget.");
                 settings = new ParameterCompressionSettings { RemoveUnused = component.RemoveUnusedSynchronization,
-                    Multiplexing = component.TimeMultiplexing, Budget = component.TargetBitBudget, HoldSeconds = component.PacketHoldSeconds };
+                    Multiplexing = component.TimeMultiplexing, Transmission = component.TransmissionMode,
+                    Budget = component.TargetBitBudget, HoldSeconds = component.PacketHoldSeconds };
                 CaptureSelection(context, component.KeepNativeParameters, settings.KeepNative, settings.KeepPrefixes);
                 if (settings.Multiplexing == ParameterMultiplexingMode.AutomaticByPriority)
                 {
@@ -260,6 +263,8 @@ namespace Noname.AvatarTools.ParameterLayout
             var fallback = new Dictionary<string, float>(StringComparer.Ordinal);
             if (multiplex != null)
             {
+                if (reference == null)
+                    multiplex.Protocol = settings.Transmission == ParameterTransmissionMode.LowLatency ? 2 : 1;
                 multiplex.Validate();
                 if (reference != null && multiplex.WireDeclarations().Any(p => occupied.Contains(p.name)))
                     throw new InvalidOperationException("Recorded multiplexing wire names collide with current parameters.");
@@ -315,9 +320,13 @@ namespace Noname.AvatarTools.ParameterLayout
             foreach (var name in unused.OrderBy(n => n, StringComparer.Ordinal)) report.Messages.Add("Unused synchronized input kept local: " + name);
             if (multiplex != null)
                 report.Messages.Add("Time multiplexing: " + multiplex.Inputs.Count + " inputs, " + multiplex.Slots.Count +
-                    " typed payload slots, " + multiplex.Batches + " batches; nominal hold time per cycle " +
+                    " typed payload slots, " + multiplex.Batches + " batches; " + (multiplex.Protocol == 2 ? "Low Latency" : "Guarded") +
+                    "; nominal average hold time per cycle " +
                     multiplex.NominalCycleSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) +
                     " seconds plus Animator frames and network delay. Only complete received snapshots are applied.");
+            if (multiplex?.Protocol == 2)
+                report.Messages.Add("Low Latency transport assumes coherent packet field delivery. Every " + Math.Min(4, multiplex.EpochCount) +
+                    "th sweep holds publications longer for slow observers. This does not guarantee delivery under arbitrary loss or field skew.");
             return new ParameterCompressionResult { Integers = encodings, Multiplexing = multiplex };
         }
     }

@@ -584,8 +584,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   TimeMultiplexing: 4
+  TransmissionMode: 1
   TargetBitBudget: 256
-  PacketHoldSeconds: 0.15
+  PacketHoldSeconds: 0.1
   MultiplexedParameters:
     Sources: []
     Names: []

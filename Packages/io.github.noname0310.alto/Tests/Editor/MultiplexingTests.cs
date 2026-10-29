@@ -120,17 +120,21 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 Is.EqualTo("DynamicInput=16 bits (2 inputs); MomentaryControl=16 bits (2 inputs); Preserved=8 bits (1 inputs); eligible=16 bits (2 inputs)"));
         }
 
-        [TestCase(false, ParameterMultiplexingMode.SelectedInputs)] [TestCase(true, ParameterMultiplexingMode.SelectedInputs)]
-        [TestCase(false, ParameterMultiplexingMode.AllSynchronizedInputs)] [TestCase(true, ParameterMultiplexingMode.AllSynchronizedInputs)]
-        [TestCase(false, ParameterMultiplexingMode.AutomaticByPriority)] [TestCase(true, ParameterMultiplexingMode.AutomaticByPriority)]
-        public void MultiplexingGeneratesTypedAssetsWithoutChangingSourceParameters(bool sdk, ParameterMultiplexingMode mode)
+        [TestCase(false, ParameterMultiplexingMode.SelectedInputs, 1)] [TestCase(true, ParameterMultiplexingMode.SelectedInputs, 1)]
+        [TestCase(false, ParameterMultiplexingMode.AllSynchronizedInputs, 1)] [TestCase(true, ParameterMultiplexingMode.AllSynchronizedInputs, 1)]
+        [TestCase(false, ParameterMultiplexingMode.AutomaticByPriority, 1)] [TestCase(true, ParameterMultiplexingMode.AutomaticByPriority, 1)]
+        [TestCase(false, ParameterMultiplexingMode.SelectedInputs, 2)] [TestCase(true, ParameterMultiplexingMode.SelectedInputs, 2)]
+        [TestCase(false, ParameterMultiplexingMode.AllSynchronizedInputs, 2)] [TestCase(true, ParameterMultiplexingMode.AllSynchronizedInputs, 2)]
+        [TestCase(false, ParameterMultiplexingMode.AutomaticByPriority, 2)] [TestCase(true, ParameterMultiplexingMode.AutomaticByPriority, 2)]
+        public void MultiplexingGeneratesTypedAssetsWithoutChangingSourceParameters(bool sdk, ParameterMultiplexingMode mode, int protocol)
         {
             var descriptor = LayoutDescriptor();
             var input = Track(ScriptableObject.CreateInstance<VRCExpressionParameters>());
             input.parameters = MultiplexInputs(4, 4, 8); descriptor.expressionParameters = input;
             string original = EditorJsonUtility.ToJson(input);
             var settings = new ParameterCompressionSettings
-            { Multiplexing = mode, Budget = 32, HoldSeconds = .1f };
+            { Multiplexing = mode, Budget = 32, HoldSeconds = .1f,
+                Transmission = protocol == 2 ? ParameterTransmissionMode.LowLatency : ParameterTransmissionMode.Guarded };
             settings.MultiplexNames.UnionWith(input.parameters.Select(p => p.name));
             var context = new BuildContext(root, null); using var fixture = new LayoutTestStore();
             var layout = new ParameterLayoutSettings { Compression = settings };
@@ -145,27 +149,34 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             {
                 var record = ParameterLayoutPass.ApplyFinal(root, layout, ParameterLayoutPlatform.PC,
                     new OptimizationBuildReport(), value => Track(value), fixture.Store, context);
-                Assert.That(record.Multiplexing, Is.Not.Null); ParameterLayoutModel.Validate(record);
+                Assert.That(record.Multiplexing.Protocol, Is.EqualTo(protocol)); ParameterLayoutModel.Validate(record);
             }
             Assert.That(descriptor.expressionParameters.CalcTotalCost(), Is.LessThanOrEqualTo(32));
             Assert.That(input.parameters.All(p => descriptor.expressionParameters.parameters.Single(o => o.name == p.name).saved), Is.True);
             Assert.That(EditorJsonUtility.ToJson(input), Is.EqualTo(original));
             Track(descriptor.expressionParameters);
-            TrackControllerAssets((AnimatorController)descriptor.baseAnimationLayers.Single(l => l.type == VRCAvatarDescriptor.AnimLayerType.FX).animatorController);
+            var fx = (AnimatorController)descriptor.baseAnimationLayers.Single(l => l.type == VRCAvatarDescriptor.AnimLayerType.FX).animatorController;
+            TrackControllerAssets(fx);
+            Assert.That(fx.layers.Last().stateMachine.states.Any(s => s.state.name.StartsWith("Mux Prepare")), Is.EqualTo(protocol == 1));
         }
 
-        [TestCase(false, ParameterMultiplexingMode.AutomaticMenuInputs)] [TestCase(true, ParameterMultiplexingMode.AutomaticMenuInputs)]
-        [TestCase(false, ParameterMultiplexingMode.AllSynchronizedInputs)] [TestCase(true, ParameterMultiplexingMode.AllSynchronizedInputs)]
-        [TestCase(false, ParameterMultiplexingMode.AutomaticByPriority)] [TestCase(true, ParameterMultiplexingMode.AutomaticByPriority)]
-        public void MultiplexingMobileKeepsTheProtocolAndOnlyDecodesSurvivingInputs(bool removeAll, ParameterMultiplexingMode mode)
+        [TestCase(false, ParameterMultiplexingMode.AutomaticMenuInputs, 1)] [TestCase(true, ParameterMultiplexingMode.AutomaticMenuInputs, 1)]
+        [TestCase(false, ParameterMultiplexingMode.AllSynchronizedInputs, 1)] [TestCase(true, ParameterMultiplexingMode.AllSynchronizedInputs, 1)]
+        [TestCase(false, ParameterMultiplexingMode.AutomaticByPriority, 1)] [TestCase(true, ParameterMultiplexingMode.AutomaticByPriority, 1)]
+        [TestCase(false, ParameterMultiplexingMode.AutomaticMenuInputs, 2)] [TestCase(true, ParameterMultiplexingMode.AutomaticMenuInputs, 2)]
+        [TestCase(false, ParameterMultiplexingMode.AllSynchronizedInputs, 2)] [TestCase(true, ParameterMultiplexingMode.AllSynchronizedInputs, 2)]
+        [TestCase(false, ParameterMultiplexingMode.AutomaticByPriority, 2)] [TestCase(true, ParameterMultiplexingMode.AutomaticByPriority, 2)]
+        public void MultiplexingMobileKeepsTheProtocolAndOnlyDecodesSurvivingInputs(bool removeAll, ParameterMultiplexingMode mode, int protocol)
         {
             var descriptor = LayoutDescriptor(); var original = MultiplexInputs();
-            var plan = MultiplexPlan(original); var record = LayoutRecord(plan.WireDeclarations()); record.Multiplexing = plan;
+            var plan = MultiplexPlan(original); plan.Protocol = protocol;
+            var record = LayoutRecord(plan.WireDeclarations()); record.Multiplexing = plan;
             using var fixture = new LayoutTestStore(); fixture.Store.Commit(record);
             var input = Track(ScriptableObject.CreateInstance<VRCExpressionParameters>());
             input.parameters = removeAll ? Array.Empty<Parameter>() : original.Take(1).ToArray(); descriptor.expressionParameters = input;
             var settings = new ParameterLayoutSettings { Compression = new ParameterCompressionSettings
-                { Multiplexing = mode, Budget = 16 } };
+                { Multiplexing = mode, Budget = 16,
+                    Transmission = protocol == 2 ? ParameterTransmissionMode.Guarded : ParameterTransmissionMode.LowLatency } };
             var context = new BuildContext(root, null);
             ParameterLayoutPass.ApplyFinal(root, settings, ParameterLayoutPlatform.Android,
                 new OptimizationBuildReport(), value => Track(value), fixture.Store, context);
@@ -177,6 +188,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(fx.parameters.Any(p => p.name == "Float3"), Is.False, "Removed features need no logical input or decoder");
             Assert.That(fx.layers.Last().stateMachine.states.Any(s => s.state.name.StartsWith("Mux Publish")), Is.True,
                 "Android owners still send defaults for inputs that remote PC avatars may observe");
+            Assert.That(fx.layers.Last().stateMachine.states.Any(s => s.state.name.StartsWith("Mux Prepare")), Is.EqualTo(protocol == 1),
+                "The reference protocol takes priority over the opposite mobile transmission setting");
         }
 
         [Test]

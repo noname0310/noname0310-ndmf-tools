@@ -16,7 +16,13 @@ namespace Noname.AvatarTools.ParameterLayout
             if (mode.enumValueIndex != (int)ParameterMultiplexingMode.Disabled)
             {
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("TargetBitBudget"));
+                var transmission = serializedObject.FindProperty("TransmissionMode");
+                EditorGUILayout.PropertyField(transmission);
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("PacketHoldSeconds"));
+                if (transmission.enumValueIndex == (int)ParameterTransmissionMode.LowLatency)
+                    EditorGUILayout.HelpBox("Low Latency assumes the fields from one network packet are observed together. " +
+                        "A 0.1-second packet hold gives the shortest ordinary schedule; periodic longer sweeps help slow observers recover. " +
+                        "Use Guarded to tolerate independently delayed fields. Other platforms use the reference upload's recorded mode and timing.", MessageType.Info);
                 if (mode.enumValueIndex == (int)ParameterMultiplexingMode.SelectedInputs)
                     EditorGUILayout.PropertyField(serializedObject.FindProperty("MultiplexedParameters"), true);
                 if (mode.enumValueIndex == (int)ParameterMultiplexingMode.AutomaticByPriority)

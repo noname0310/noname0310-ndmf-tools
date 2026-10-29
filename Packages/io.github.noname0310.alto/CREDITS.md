@@ -85,9 +85,9 @@ resynchronization after missed batches. Reviewed files under
 [Parameter Compressor documentation](https://vrcfury.com/components/other/#parameter-compressor-beta).
 
 The multiplexing implementation here is independently written using NDMF and
-public VRChat SDK APIs. It uses separate typed payloads, an Int tag with alternating
-epochs, preparation/publication phases and its own budget model and serialized
-contract. VRCFury source is not copied, redistributed, linked or called. VRCFury is
+public VRChat SDK APIs. It uses separate typed payloads, an Int tag with rotating
+epochs, guarded field updates or periodic recovery sweeps, and its own budget model
+and serialized contract. VRCFury source is not copied, redistributed, linked or called. VRCFury is
 not a dependency. Its custom license is not the MIT/Apache-2.0 license of this package.
 
 Automatic priority selection is independently designed around this package's final

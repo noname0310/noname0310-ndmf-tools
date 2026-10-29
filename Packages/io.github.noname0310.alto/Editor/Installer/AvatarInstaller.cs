@@ -278,7 +278,10 @@ namespace Noname.AvatarTools.Installer
             optimization.AddComponent<ALTOTraceAndOptimizeBlendShapes>(); optimization.AddComponent<ALTOTraceAndOptimizeMaterials>();
             optimization.AddComponent<ALTOTraceAndOptimizePhysBones>(); optimization.AddComponent<ALTOTraceAndOptimizeMeshes>();
             optimization.AddComponent<ALTOTraceAndOptimizeExpressions>();
-            Child("Parameters").AddComponent<ALTOParameterCompression>(); Child("Parameters").AddComponent<ALTOParameterLayout>();
+            var compression = Child("Parameters").AddComponent<ALTOParameterCompression>();
+            compression.TransmissionMode = ParameterTransmissionMode.LowLatency;
+            compression.PacketHoldSeconds = .1f;
+            Child("Parameters").AddComponent<ALTOParameterLayout>();
             Child("Mobile/Exclusions").AddComponent<ALTOBuildExclusions>().RemoveAudioSources = true;
             var parameterPolicy = Child("Mobile/Policies").AddComponent<ALTOAnimatorParameterPolicy>();
             parameterPolicy.FreezeMode = AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved;

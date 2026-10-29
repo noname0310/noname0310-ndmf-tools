@@ -102,11 +102,18 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             for (int slot = 0; slot < slots.Length; slot++) remote.Write(slots[slot].name, values[slot]);
         }
 
-        [TestCase(30, false)] [TestCase(60, false)] [TestCase(90, false)]
-        [TestCase(30, true)] [TestCase(60, true)] [TestCase(90, true)]
-        public void MultiplexingNativeSnapshotsStayCoherentWhenInputsChangeDuringTransmission(int fps, bool writeDefaults)
+        [TestCase(5, false, 1)] [TestCase(10, false, 1)] [TestCase(15, false, 1)] [TestCase(20, false, 1)] [TestCase(24, false, 1)]
+        [TestCase(30, false, 1)] [TestCase(60, false, 1)] [TestCase(90, false, 1)]
+        [TestCase(5, true, 1)] [TestCase(10, true, 1)] [TestCase(15, true, 1)] [TestCase(20, true, 1)] [TestCase(24, true, 1)]
+        [TestCase(30, true, 1)] [TestCase(60, true, 1)] [TestCase(90, true, 1)]
+        [TestCase(5, false, 2)] [TestCase(10, false, 2)] [TestCase(15, false, 2)] [TestCase(20, false, 2)] [TestCase(24, false, 2)]
+        [TestCase(30, false, 2)] [TestCase(60, false, 2)] [TestCase(90, false, 2)]
+        [TestCase(5, true, 2)] [TestCase(10, true, 2)] [TestCase(15, true, 2)] [TestCase(20, true, 2)] [TestCase(24, true, 2)]
+        [TestCase(30, true, 2)] [TestCase(60, true, 2)] [TestCase(90, true, 2)]
+        public void MultiplexingNativeSnapshotsStayCoherentWhenInputsChangeDuringTransmission(int fps, bool writeDefaults, int protocol)
         {
             var input = MultiplexInputs(4, 4, 8); var plan = MultiplexPlan(input, 32);
+            plan.Protocol = protocol;
             var controller = NativeMultiplexController(plan, input, writeDefaults: writeDefaults);
             using var local = new NativeMultiplexPeer(PolicyChild("Local"), controller, plan, true);
             using var remote = new NativeMultiplexPeer(PolicyChild("Remote"), controller, plan, false);
@@ -124,21 +131,29 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                     foreach (var p in input) Assert.That(remote.Read(p.name), Is.Zero, "Incomplete snapshots cannot change logical outputs");
                 if (remote.Commits != previousCommits)
                 {
-                    foreach (var p in input) Assert.That(remote.Read(p.name), Is.EqualTo(Value(p, previousCommits)).Within(1e-5f),
+                    // Incomplete generations may be discarded, but committed values
+                    // must all belong to one captured generation.
+                    int generation = remote.Read("Float0") > 0 ? 0 : 1;
+                    foreach (var p in input) Assert.That(remote.Read(p.name), Is.EqualTo(Value(p, generation)).Within(1e-5f),
                         "All fields must come from one captured generation: " + p.name);
                     previousCommits = remote.Commits;
                 }
             }
             Assert.That(remote.Commits, Is.EqualTo(2), "Receiver failed to converge; local=" + local.State + ", remote=" + remote.State);
             foreach (var p in input) Assert.That(local.Read(p.name), Is.EqualTo(Value(p, 1)).Within(1e-5f));
+            foreach (var p in input) Assert.That(remote.Read(p.name), Is.EqualTo(Value(p, 1)).Within(1e-5f));
         }
 
-        [TestCase(AnimatorControllerParameterType.Bool)]
-        [TestCase(AnimatorControllerParameterType.Int)]
-        [TestCase(AnimatorControllerParameterType.Float)]
-        public void MultiplexingNativeUsesTheExistingIdentityTypeForOwnerAndRemote(AnimatorControllerParameterType identityType)
+        [TestCase(AnimatorControllerParameterType.Bool, 1)]
+        [TestCase(AnimatorControllerParameterType.Int, 1)]
+        [TestCase(AnimatorControllerParameterType.Float, 1)]
+        [TestCase(AnimatorControllerParameterType.Bool, 2)]
+        [TestCase(AnimatorControllerParameterType.Int, 2)]
+        [TestCase(AnimatorControllerParameterType.Float, 2)]
+        public void MultiplexingNativeUsesTheExistingIdentityTypeForOwnerAndRemote(AnimatorControllerParameterType identityType, int protocol)
         {
             var input = MultiplexInputs(4, 4, 8); var plan = MultiplexPlan(input, 32);
+            plan.Protocol = protocol;
             var controller = NativeMultiplexController(plan, input, identityType: identityType);
             Assert.That(controller.parameters.Single(p => p.name == "IsLocal").type, Is.EqualTo(identityType));
             using var local = new NativeMultiplexPeer(PolicyChild("Local"), controller, plan, true);
@@ -175,20 +190,24 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(controller.Layers, Is.Empty);
         }
 
-        [TestCase(0, false)] [TestCase(25, false)] [TestCase(0, true)] [TestCase(25, true)]
-        public void MultiplexingNativeReceiverResynchronizesAfterLateJoinOrAMissingBatch(int joinFrame, bool dropBatch)
+        [TestCase(0, false, 1)] [TestCase(25, false, 1)] [TestCase(0, true, 1)] [TestCase(25, true, 1)]
+        [TestCase(0, false, 2)] [TestCase(25, false, 2)] [TestCase(0, true, 2)] [TestCase(25, true, 2)]
+        public void MultiplexingNativeReceiverResynchronizesAfterLateJoinOrAMissingBatch(int joinFrame, bool dropBatch, int protocol)
         {
             var input = MultiplexInputs(); var plan = MultiplexPlan(input);
+            plan.Protocol = protocol;
             var controller = NativeMultiplexController(plan, input);
             using var local = new NativeMultiplexPeer(PolicyChild("Local"), controller, plan, true);
             foreach (var p in input) local.Write(p.name, 63 / 127f);
             for (int i = 0; i < joinFrame; i++) local.Tick(1f / 60);
             using var remote = new NativeMultiplexPeer(PolicyChild("Remote"), controller, plan, false);
-            bool skipped = false;
+            bool skipped = false; int droppedCode = -1;
             for (int i = 0; i < 1200 && remote.Commits == 0; i++)
             {
                 local.Tick(1f / 60);
-                bool drop = dropBatch && local.Read(plan.Tag) == plan.Code(0, 1);
+                int code = (int)local.Read(plan.Tag);
+                if (dropBatch && droppedCode < 0 && code > 0 && (code - 1) % plan.Batches == 1) droppedCode = code;
+                bool drop = dropBatch && code == droppedCode;
                 if (drop) skipped = true;
                 else DeliverMultiplexFrame(local, remote, plan);
                 remote.Tick(1f / 60);
@@ -199,10 +218,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             foreach (var p in input) Assert.That(remote.Read(p.name), Is.EqualTo(63 / 127f).Within(1e-5f));
         }
 
-        [Test]
-        public void MultiplexingAndroidOwnerSendsFrozenDefaultsForRemovedPcFeatures()
+        [TestCase(1)] [TestCase(2)]
+        public void MultiplexingAndroidOwnerSendsFrozenDefaultsForRemovedPcFeatures(int protocol)
         {
             var input = MultiplexInputs(); var plan = MultiplexPlan(input);
+            plan.Protocol = protocol;
             var senderController = NativeMultiplexController(plan, input, active: false);
             var receiverController = NativeMultiplexController(plan, input);
             using var local = new NativeMultiplexPeer(PolicyChild("Android Owner"), senderController, plan, true);
@@ -214,24 +234,84 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             foreach (var p in input) Assert.That(remote.Read(p.name), Is.Zero);
         }
 
-        [TestCase(30)] [TestCase(60)] [TestCase(90)]
-        public void MultiplexingNativeRecoversFromAnOutageLongerThanAnEpochWrap(int fps)
+        [TestCase(5, 5, .1f, 1)] [TestCase(5, 60, .1f, 1)] [TestCase(60, 5, .1f, 1)]
+        [TestCase(10, 60, .1f, 1)] [TestCase(60, 10, .1f, 1)]
+        [TestCase(20, 60, .1f, 1)] [TestCase(60, 20, .1f, 1)]
+        [TestCase(5, 60, .15f, 1)] [TestCase(60, 5, .15f, 1)]
+        [TestCase(15, 15, .15f, 1)] [TestCase(20, 20, .15f, 1)] [TestCase(24, 24, .15f, 1)]
+        [TestCase(60, 90, .15f, 1)]
+        [TestCase(5, 5, .1f, 2)] [TestCase(5, 60, .1f, 2)] [TestCase(60, 5, .1f, 2)]
+        [TestCase(10, 60, .1f, 2)] [TestCase(60, 10, .1f, 2)]
+        [TestCase(20, 60, .1f, 2)] [TestCase(60, 20, .1f, 2)]
+        [TestCase(5, 60, .15f, 2)] [TestCase(60, 5, .15f, 2)]
+        [TestCase(15, 15, .15f, 2)] [TestCase(20, 20, .15f, 2)] [TestCase(24, 24, .15f, 2)]
+        [TestCase(60, 90, .15f, 2)]
+        public void MultiplexingNativeConvergesWithIndependentFrameRatesAndPeriodicPackets(int ownerFps, int remoteFps, float hold, int protocol)
+        {
+            var input = MultiplexInputs(10, 4, 75); var plan = MultiplexPlan(input, 47);
+            plan.Protocol = protocol;
+            plan.HoldSeconds = hold;
+            Assert.That(plan.Batches, Is.EqualTo(5));
+            var controller = NativeMultiplexController(plan, input);
+            using var local = new NativeMultiplexPeer(PolicyChild("Local"), controller, plan, true);
+            using var remote = new NativeMultiplexPeer(PolicyChild("Remote"), controller, plan, false);
+            float Value(Parameter p, int generation) => p.valueType switch
+            { ValueType.Float => (generation == 0 ? 17 : -29) / 127f, ValueType.Int => generation == 0 ? 13 : 241, _ => generation == 0 ? 1 : 0 };
+            foreach (var p in input) local.Write(p.name, Value(p, 0));
+            // Each peer and the 10 Hz packet source has its own clock and phase.
+            // Delivery is modeled, not a VRChat client/network integration test.
+            double nextOwner = 0, nextRemote = .037, nextPacket = .071;
+            bool changed = false, converged = false;
+            for (double time = 0; time < 60;)
+            {
+                time = Math.Min(nextOwner, Math.Min(nextRemote, nextPacket));
+                if (nextOwner <= time + 1e-8)
+                {
+                    if (!changed && time >= 3)
+                    { foreach (var p in input) local.Write(p.name, Value(p, 1)); changed = true; }
+                    local.Tick(1f / ownerFps); nextOwner += 1.0 / ownerFps;
+                }
+                if (nextPacket <= time + 1e-8)
+                { DeliverMultiplexFrame(local, remote, plan); nextPacket += .1; }
+                if (nextRemote > time + 1e-8) continue;
+                int before = remote.Commits;
+                remote.Tick(1f / remoteFps); nextRemote += 1.0 / remoteFps;
+                if (remote.Commits == before) continue;
+                int generation = remote.Read("Float0") > 0 ? 0 : 1;
+                foreach (var p in input)
+                    Assert.That(remote.Read(p.name), Is.EqualTo(Value(p, generation)).Within(1e-5f),
+                        "A received snapshot mixed generations: " + p.name);
+                if (changed && generation == 1 && remote.Commits >= 2) { converged = true; break; }
+            }
+            Assert.That(converged, Is.True, "Transport did not converge at owner=" + ownerFps + " FPS, remote=" + remoteFps +
+                " FPS; local=" + local.State + ", remote=" + remote.State + ", commits=" + remote.Commits);
+            foreach (var p in input) Assert.That(local.Read(p.name), Is.EqualTo(Value(p, 1)).Within(1e-5f));
+        }
+
+        [TestCase(5, 1)] [TestCase(10, 1)] [TestCase(15, 1)] [TestCase(20, 1)] [TestCase(30, 1)] [TestCase(60, 1)] [TestCase(90, 1)]
+        [TestCase(5, 2)] [TestCase(10, 2)] [TestCase(15, 2)] [TestCase(20, 2)] [TestCase(30, 2)] [TestCase(60, 2)] [TestCase(90, 2)]
+        public void MultiplexingNativeRecoversFromAnOutageLongerThanAnEpochWrap(int fps, int protocol)
         {
             var input = MultiplexInputs(); var plan = MultiplexPlan(input);
+            plan.Protocol = protocol;
             var controller = NativeMultiplexController(plan, input);
             using var local = new NativeMultiplexPeer(PolicyChild("Local"), controller, plan, true);
             using var remote = new NativeMultiplexPeer(PolicyChild("Remote"), controller, plan, false);
             foreach (var p in input) local.Write(p.name, 17 / 127f);
             int outageStart = -1;
-            for (int frame = 0; frame < fps * 20 && remote.Commits == 0; frame++)
+            float maximumBatchSeconds = plan.Protocol == 1
+                ? 2 * plan.HoldSeconds + plan.PublicationHoldSeconds + 6f / fps
+                : plan.RecoveryPublicationSeconds + 2f / fps;
+            int outageSeconds = Mathf.CeilToInt(plan.EpochCount * plan.Batches * maximumBatchSeconds) + 3;
+            for (int frame = 0; frame < fps * (outageSeconds + 30) && remote.Commits == 0; frame++)
             {
                 local.Tick(1f / fps);
-                if (outageStart < 0 && remote.State == "Mux Await E0 B1")
+                if (outageStart < 0 && remote.State != null && remote.State.StartsWith("Mux Receive", StringComparison.Ordinal))
                 {
                     outageStart = frame;
                     foreach (var p in input) local.Write(p.name, 63 / 127f);
                 }
-                if (outageStart < 0 || frame - outageStart >= fps * 4)
+                if (outageStart < 0 || frame - outageStart >= fps * outageSeconds)
                     DeliverMultiplexFrame(local, remote, plan);
                 remote.Tick(1f / fps);
                 if (remote.Commits == 0) foreach (var p in input) Assert.That(remote.Read(p.name), Is.Zero);
@@ -277,9 +357,14 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 remote.Tick(1f / fps);
                 if (remote.Commits == 0) foreach (var p in input) Assert.That(remote.Read(p.name), Is.Zero);
                 if (remote.Commits != previousCommits)
-                    foreach (var p in input) Assert.That(remote.Read(p.name), Is.EqualTo(Value(p, previousCommits)).Within(1e-5f));
+                {
+                    int generation = remote.Read("Float0") > 0 ? 0 : 1;
+                    foreach (var p in input) Assert.That(remote.Read(p.name), Is.EqualTo(Value(p, generation)).Within(1e-5f),
+                        "Delayed field " + p.name + " at frame " + frame + "; local=" + local.State + ", remote=" + remote.State);
+                }
             }
             Assert.That(remote.Commits, Is.EqualTo(2), "Delayed wire values must converge without mixed snapshots");
+            foreach (var p in input) Assert.That(remote.Read(p.name), Is.EqualTo(Value(p, 1)).Within(1e-5f));
         }
     }
 }

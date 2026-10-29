@@ -6,6 +6,7 @@ using UnityEngine;
 namespace Noname.AvatarTools
 {
     public enum ParameterMultiplexingMode { Disabled, AutomaticMenuInputs, SelectedInputs, AllSynchronizedInputs, AutomaticByPriority }
+    public enum ParameterTransmissionMode { Guarded, LowLatency }
     [Serializable]
     public sealed class CompressedIntegerParameter
     {
@@ -23,8 +24,10 @@ namespace Noname.AvatarTools
     {
         [Tooltip("Automatically share network slots when the reference avatar exceeds the budget, or explicitly select eligible inputs. Applies to PC and other platforms using the recorded contract.")]
         public ParameterMultiplexingMode TimeMultiplexing = ParameterMultiplexingMode.AutomaticByPriority;
+        [Tooltip("Guarded separates field updates to tolerate bounded independent delivery delays. Low Latency assumes a packet's fields are observed together and adds periodic longer sweeps for slow observers. Other platforms follow the reference upload's recorded mode.")]
+        public ParameterTransmissionMode TransmissionMode = ParameterTransmissionMode.Guarded;
         [Range(16, 256)] public int TargetBitBudget = 256;
-        [Tooltip("Seconds to hold each payload preparation and publication phase. Longer holds improve tolerance of slow delivery but increase synchronization delay.")]
+        [Tooltip("Guarded: hold each preparation phase for this duration. Low Latency: hold ordinary publications for this duration, with longer recovery sweeps. Longer holds increase synchronization latency.")]
         [Range(0.1f, 1f)] public float PacketHoldSeconds = 0.15f;
         [Tooltip("Eligible inputs in Selected Inputs mode. Empty selection selects nothing. Momentary inputs may be missed between snapshots.")]
         public AnimatorParameterSelection MultiplexedParameters = new();
