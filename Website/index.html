@@ -43,6 +43,16 @@
       <h2>Dependencies</h2>
       <p>Use a Unity 2022.3 avatar project with NDMF installed. BlendShape Pose Override and ALTO also require the VRChat Avatars SDK. BlendShape Pose Override additionally requires Modular Avatar.</p>
       <p>Add the <a href="https://modular-avatar.nadena.dev/">Modular Avatar repository</a> to VCC so it can resolve the NDMF and Modular Avatar dependencies.</p>
+      <h3>Additional packages for ALTO</h3>
+      <p>Install these separately to use triangle reduction and material atlasing. Add each repository to VCC, then add the package to your project under Manage Project using a supported version below.</p>
+      <ul>
+        <li><strong>Meshia Mesh Simplification</strong> — required for ALTO Mesh Reduction. Supported versions: <strong>3.2.0 or later, below 4.0</strong>.<br>
+          <a href="vcc://vpm/addRepo?url=https%3A%2F%2Framtype0.github.io%2FVpmRepository%2Findex.json">Add Meshia repository to VCC</a> &middot;
+          <a href="https://ramtype0.github.io/VpmRepository/index.json">Repository URL</a></li>
+        <li><strong>TexTransTool</strong> — required for ALTO Material Atlas. Supported version: <strong>1.0.2</strong>.<br>
+          <a href="vcc://vpm/addRepo?url=https%3A%2F%2Fvpm.rs64.net%2Fvpm.json">Add TexTransTool repository to VCC</a> &middot;
+          <a href="https://vpm.rs64.net/vpm.json">Repository URL</a></li>
+      </ul>
     </section>
   </main>
   <footer>
