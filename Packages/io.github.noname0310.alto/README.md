@@ -6,9 +6,9 @@ ALTO uses constant propagation, reachability and dependency analysis to optimize
 
 The package provides **ALTO Trace And Optimize Animator**,
 **ALTO Trace And Optimize BlendShapes**, **ALTO Animator Parameter
-Policy**, **ALTO Parameter Layout**, **ALTO Parameter Compression**, **ALTO Build Filter**, **ALTO PhysBone Filter**, **ALTO Contact Filter**,
+Policy**, **ALTO Parameter Layout**, **ALTO Parameter Compression**, **ALTO Build Exclusions**, **ALTO Rendering Filter**, **ALTO PhysBone Filter**, **ALTO Contact Filter**,
 **ALTO Trace And Optimize Objects**, **ALTO Material Atlas**,
-**ALTO Mesh Renderer Settings Override**, **ALTO Mesh Reduction**, **ALTO Remove Occluded Mesh**,
+**ALTO Mesh Renderer Settings Override**, **ALTO Mesh Optimization Policy**, **ALTO Mesh Reduction**, **ALTO Remove Occluded Mesh**,
 **ALTO Trace And Optimize Meshes**,
 **ALTO Trace And Optimize Materials**, **ALTO Trace And Optimize PhysBones**, and
 **ALTO Trace And Optimize Expressions**.
@@ -25,6 +25,110 @@ For a manual or local UPM installation, remove those previous package entries
 before adding ALTO. Script GUIDs are retained from Advanced Avatar Optimizer;
 component and assembly names now use ALTO.
 
+### Avatar setup installer
+
+Open **Tools > Noname > ALTO > Installer** and select an avatar instance in a scene
+or Prefab Mode. **Simple** is the default mode: work through Setup, Features,
+Physics, Meshes and Review. Choose whether AFK expressions may change, which
+controls and gimmicks to retain, and which PhysBones matter to you. Body meshes,
+full-detail face meshes and explicit overlay deletion regions remain editable,
+including for avatars without a preset. **Advanced** exposes the complete Setup,
+Parameters, Features, Meshes and Materials panels. Switching modes retains all choices.
+**Review > Install on Avatar** adds a connected `LinkTimeOptimizationSettings`
+prefab instance from the bundled template, then records your choices as prefab
+overrides. Review shows missing references and dependencies
+before installation. The entire addition can be undone in one step. Source
+meshes, materials and animations are unchanged; optimization runs on build copies.
+
+The instance keeps its link to **Editor/Installer/Templates/LinkTimeOptimizationSettings.prefab**
+in the package. Avatar references, changed values and removed optional features
+are instance overrides; the template contains reusable defaults without avatar
+references. Unmodified properties continue to inherit the template. Adjust the
+instance in the Inspector and save or apply it as a nested instance in your avatar
+prefab as needed. An avatar with existing ALTO
+settings cannot be installed again; **Select Existing Settings** locates its
+current configuration. The installer does not overwrite or migrate that setup.
+
+Each panel groups its options in **Common**, **Mobile** or **Cross-platform**
+frames with explicit platform labels. **Optimize Mobile Only** limits general
+optimization to Android and iOS. Mobile simplification separately chooses which
+features, controls and geometry to keep. Parameter layout and automatic
+compression still apply across platforms so PC uploads can establish their shared
+synchronization contract. The installer uses a 256-bit synchronization target;
+it does not expose a custom bit budget. General optimization is required for
+mobile simplification's cleanup and mesh-merging passes. Choose **Optimize Mobile
+Only** when PC should keep its original optimization behavior. Synchronization
+settings are placed outside the Common platform filter and can be disabled
+separately; compression requires parameter layout.
+
+Every scoped setting explicitly targets the selected avatar root. Body-mesh
+occlusion targets default to all BlendShapes as candidate regions; explicit
+geometry deletions remain a separate selection. The installer suggests meshes
+used for descriptor lip sync and eyelids as meshes to keep at full detail during
+triangle reduction. Review this list for your avatar. Material atlasing requires
+the supported TexTransTool integration; triangle reduction requires Meshia.
+Installation itself does not build the avatar or predict a final performance rank.
+
+Selecting the avatar automatically discovers AFK BlendShape clips and fills the
+initial full-detail mesh list from the descriptor's lip-sync and eyelid references.
+It also suggests a body mesh for hidden-region removal, with all BlendShapes
+selected. Body discovery ranks renderer, mesh and material names and body-region
+BlendShapes; facial references reduce confidence without excluding unified
+face/body meshes. Clothing names reduce confidence. Only a clear leading match
+is selected; ambiguous, unnamed or split-body setups may need manual selection.
+The suggestion is an editable Installer heuristic, not an optimization proof.
+These are initial suggestions: editing the lists is allowed and does not trigger
+rediscovery. AFK discovery uses the built-in `AFK` parameter rather than clip or artist names.
+It compares state-machine reachability with AFK variable and always false,
+including intro, loop and exit paths, nested machines, overrides and supported
+Blend Tree branches. Descriptor layers, child Animators and serialized controller
+references in avatar components are inspected without modifying their assets.
+Enable **Allow AFK expressions to change** to review and use the candidate
+checkboxes before installing. **Refresh AFK Animations** updates them after
+animation setup changes and retains your choices for unchanged candidates. Clips also reachable outside
+AFK start unchecked because excluding them may change other expressions too.
+Authoring discovery cannot see controllers generated only at build time or
+guarantee indirect parameter-driven AFK paths; use manual animation exclusions
+when needed. The installer rechecks candidates immediately before installation.
+
+Known optional authoring components for Light Limit Changer, marshmallow PB,
+Pudding and RealSweat are initially added to mobile component exclusions by their
+full type names. Their packages are not dependencies of ALTO, and renamed objects
+still match. Remove any suggestion you want to keep. This stops the selected
+components' build processing; already-installed output can additionally be
+excluded by object or processed by mobile rendering/dependency cleanup. Unrecognized
+features can always be added manually. Explicit exclusions can reduce both surviving
+content and analysis work. **Add Detected Setup Components** refreshes suggestions
+on request; ordinary UI refreshes do not restore entries you removed.
+
+PhysBones are never selected automatically. The Simple Physics panel provides a
+searchable checklist and controlled-bone hierarchy selections for generated physics.
+**Hide Inactive PhysBones** starts enabled, hiding disabled components and inactive
+owners or controlled roots. This only filters the Editor list, never the keep list;
+animations may change activity at runtime. With Keep Listed and no selections, all
+mobile PhysBones are removed. The final resource budget is evaluated during builds.
+
+**Presets/Shinano Face Overlays.asset** identifies the original Shinano face and its
+nine overlay BlendShapes. It contains only names, a SHA-256 digest and a 256-bit
+distribution signature: no vertex samples, triangles, UVs, morph deltas, bones or
+avatar asset references. Base-position identification ignores vertex order, duplicate
+positions from seams, BlendShapes and skinning. The original Shinano and the tested
+Fermata face share this exact fingerprint despite different vertex counts. A unique
+exact match initializes deletion regions. Similar geometry only produces an editable
+suggestion that requires **Use These Preset Regions**; signature agreement is not
+a percentage of allowable position error. All named regions must exist, ambiguous
+exact matches require selection, and unmatched meshes remain available for manual setup.
+Create additional presets with **Assets > Create > Noname > ALTO > Mesh Region Preset**:
+enter region names and use **Add Reference Fingerprint**. The temporary reference
+mesh is never saved in the preset. Presets are authoring suggestions, not evidence
+that removing a region preserves appearance.
+
+The package includes **Presets/Mobile Toon Standard.mat**, a reference material
+using the SDK's VRChat/Mobile/Toon Standard shader, white tint and culling off.
+It contains no avatar textures and can also be assigned directly to a Material
+Atlas group's Reference Material. The existing per-group **Atlas Size** field
+continues to control the output texture dimensions.
+
 ## Platform selection
 
 Policies that intentionally remove features default to **Android**. The
@@ -35,9 +139,17 @@ Apply On Platforms selects PC/Android/iOS. Both conditions must permit the build
 The optional integration uses Modular Avatar 1.18.x's public component API;
 Modular Avatar is not a required dependency.
 
-## ALTO Build Filter
+**ALTO Optimization Platform Filter** limits ALTO settings on its object and
+descendants to selected PC/Android/iOS platforms. Nested filters intersect and
+disabled filters are ignored. It does not remove objects, hide meshes or disable
+components from other packages. The installer uses an Android+iOS filter on
+**Common** when **Optimize Mobile Only** is selected; it is separate from MA's
+VRSNS filter and from each policy's own platform selection. All applicable
+conditions must permit a setting to run.
 
-Add **Noname > ALTO Build Filter** inside an avatar. **Excluded Objects**
+## ALTO Build Exclusions
+
+Add **Noname > ALTO Build Exclusions** inside an avatar. **Excluded Objects**
 removes selected subtrees before NDMF generators run. **Excluded Components**
 removes individual components while keeping their objects. An empty **Scope
 Root** uses the component's subtree; assign the avatar root when placing the
@@ -66,6 +178,13 @@ removed. It is disabled by default. **Preserve Audio Sources** keeps selected
 sources; explicit exclusions still apply. Dependants are removed first, and a
 remaining reader or required-component conflict stops removal before mutation.
 Audio created by a later generator remains that generator's responsibility.
+
+## ALTO Rendering Filter
+
+Add **Noname > ALTO Rendering Filter** inside the avatar. Its scope and platform
+selection are independent of Build Exclusions. Rules are captured before early
+exclusions and evaluated after generators. Explicit targets removed by Build
+Exclusions are skipped. Rendering Filter does not remove authoring components.
 
 **Material Exclusions** runs after generators, before texture atlasing and
 mesh optimization. Select a Renderer, a Material, a slot, or their intersection.
@@ -105,8 +224,34 @@ Animated mesh references and shared clips needing incompatible remappings are
 reported instead of being rewritten ambiguously. If another generator merges a
 selected renderer before this pass, select its destination renderer.
 
-This component changes build copies and has no continuous preview. Use Advanced
+This component changes build copies and has no continuous preview. Use ALTO
 Trace And Optimize Expressions for subsequent menu/local-parameter cleanup.
+
+## Organizing settings
+
+Settings may be grouped under `Common` and `Mobile`, with child objects
+for exclusions, policies, filters, materials, geometry, optimization and parameters.
+Add a `PC` group only when desktop-specific settings are needed.
+These names organize the hierarchy; they do not select a platform or control
+NDMF execution order. Set **Apply On Platforms** to **Android + IOS** for shared
+mobile policies, **PC** for desktop policies, and **All** for common policies.
+Keep whole-avatar optimizers and the cross-platform Parameter Layout and
+Parameter Compression together under Common.
+
+Assign **Scope Root** explicitly before moving a scoped component: an empty
+scope follows its containing object's subtree. Each component retains its own
+platform and scope selection. Some components participate in more than one
+build phase, so the hierarchy represents configuration categories rather than
+an executable list. Material Atlas can also convert materials before generators
+when **Material Conversion** selects that stage.
+
+Older **ALTO Build Filter** components remain supported with both sets of rules.
+New setups use the two separate components. Use only one active early exclusion
+policy and one active rendering filter per avatar and platform; a legacy Build
+Filter occupies both roles. PhysBone Filter and Contact Filter remain separate
+because they filter generated simulation/input components, not authoring objects
+or rendering output. Later optimization removes objects only when no retained
+consumer needs them.
 
 ## ALTO Parameter Layout
 
@@ -518,8 +663,8 @@ renderer compatibility checks. NDMF-only manual bakes cannot include later SDK
 processors.
 
 - **Merge Compatible Skinned Meshes** combines groups with matching activation
-  curves, Animator mask coverage and rendering settings. Coordinate systems and
-  culling volumes follow the options below; this is not a forced renderer count.
+  curves, Animator mask coverage and rendering settings. Coordinate systems follow Mesh Optimization Policy and
+  culling volumes follow Expand Bounds; this is not a forced renderer count.
   Descriptor and MMD renderers remain the destination so their object paths,
   morph names and indices survive. Other animated morphs receive unique names
   and their clips are retargeted. Missing morph tracks remain ineffective.
@@ -536,25 +681,6 @@ processors.
   coordinates at build time. Enabled by default. Disabling it requires matching
   bounds. A common fixed coordinate system can be proven through static helper
   transforms even when the root-bone objects are different.
-- **Allow Coordinate Space Changes** permits different coordinate roots, with
-  **Expand Bounds** enabled. It is off by default; its platform selection defaults
-  to Android and affects only this relaxation. Object-space shader effects can
-  change. Mirrored face winding and world tangent handedness are corrected;
-  independent animated scale signs, toggles and rendering settings still split
-  groups. Matching groups can grow after parameter specialization removes toggles.
-  SDK Contact, PhysBone collider and Descriptor frame references do not by
-  themselves imply scale changes. Their referenced transforms remain protected;
-  actual animation, physics and unknown runtime writers are still considered.
-  Head Chop remains a scale writer, but proven constant nonnegative settings do
-  not imply a winding reversal. Such coordinate roots can merge when every skin
-  bone follows the affected frame, including its collapsed pose. Animated or
-  unverified settings, independent scale writers and outside skin bones retain
-  separate groups. This does not make Head Chop bones eligible for static baking.
-- **Convert Rigid Meshes** lets eligible MeshRenderers and unweighted skinned
-  meshes join these groups, using their original transform as a rigid bone.
-  Requires renderer merging and the coordinate-space relaxation on that platform.
-  Mesh swaps, external readers and bindings that would become newly active remain
-  protected. MeshRenderer morphs remain unevaluated; existing SMR morphs survive.
 - **Merge Identical Material Slots** coalesces adjacent equal material slots
   without moving them across intervening materials. It can run independently
   of renderer merging.
@@ -595,15 +721,62 @@ object type. All masks within a relevant controller remain significant, includin
 layers that can affect other bindings through Write Defaults. Object-activation
 masks are checked independently from renderer masks.
 
+## ALTO Mesh Optimization Policy
+
+Add **Noname > ALTO Mesh Optimization Policy** to permit selected visual
+changes during Trace And Optimize Meshes. It does not execute a separate
+optimization pass. **Scope Root** selects the affected subtree (empty uses the
+component's subtree), and **Apply On Platforms** controls all options together.
+Set it to **Android + IOS** when sharing a Mobile configuration. Policies can
+also apply on PC. Scope and platform selection still respect ancestor filters.
+
+Without a matching policy, the mesh optimizer uses conservative coordinate and
+material-order rules. A more-specific scope replaces a broader policy, including
+when every option in the local policy is off. Equally specific policies must
+agree on the active platform. A policy does not broaden the optimizer's scope,
+activate a disabled optimizer, or bypass Preserve Renderers and animation,
+shader, lighting, skinning or external-reference checks.
+
+Generated renderers in scope are included. When an external optimizer combines
+inputs from different policy scopes, the output receives only permissions shared
+by every original input. ALTO also keeps that intersection after its own merges
+and into the late SDK pass, so the destination object's location cannot grant
+new permissions to geometry from another scope.
+
+- **Allow Coordinate Space Changes** permits different coordinate roots, with
+  **Expand Bounds** enabled. It is off by default and uses this policy
+  component's shared platform selection. Object-space shader effects can
+  change. Mirrored face winding and world tangent handedness are corrected;
+  independent animated scale signs, toggles and rendering settings still split
+  groups. Matching groups can grow after parameter specialization removes toggles.
+  SDK Contact, PhysBone collider and Descriptor frame references do not by
+  themselves imply scale changes. Their referenced transforms remain protected;
+  actual animation, physics and unknown runtime writers are still considered.
+  Head Chop remains a scale writer, but proven constant nonnegative settings do
+  not imply a winding reversal. Such coordinate roots can merge when every skin
+  bone follows the affected frame, including its collapsed pose. Animated or
+  unverified settings, independent scale writers and outside skin bones retain
+  separate groups. This does not make Head Chop bones eligible for static baking.
+- **Convert Rigid Meshes** lets eligible MeshRenderers and unweighted skinned
+  meshes join these groups, using their original transform as a rigid bone.
+  Requires renderer merging and the coordinate-space relaxation on that platform.
+  Mesh swaps, external readers and bindings that would become newly active remain
+  protected. MeshRenderer morphs remain unevaluated; existing SMR morphs survive.
+
 **Allow Material Slot Reordering** optionally merges equal materials across
-intervening slots: `[A, B, A]` becomes `[A, B]`. It is enabled for **Android** by
-default and has its own platform selection; choose **All** to enable it on PC as well.
+intervening slots: `[A, B, A]` becomes `[A, B]`. It is disabled by default and uses the same **Apply On Platforms** selection
+as the other options on this policy.
 It works with **Merge Identical Material Slots**, including on a single renderer.
 The first material stays first. Reordering can change overlapping surfaces,
 stencil and depth effects. Animated material slots, unsupported shaders and
 preserved renderers still prevent this transformation. Without this option,
 only adjacent equal slots coalesce. Repeated adjacent slots do not by themselves
 make numeric material-animation defaults incompatible.
+
+The former per-option platform fields on Trace And Optimize Meshes have been
+removed. Move previously configured coordinate, rigid-conversion and slot-order
+permissions to this component when upgrading; there is no automatic compatibility
+fallback. Common optimization settings remain on Trace And Optimize Meshes.
 
 ## ALTO Trace And Optimize Materials
 

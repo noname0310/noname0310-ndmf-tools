@@ -15,10 +15,10 @@ namespace Noname.AvatarTools.Build
     // Independently implemented explicit exclusion policy; see CREDITS.md.
     internal static class AutomaticRenderingRules
     {
-        internal static bool Preserved(BuildFilterState state, Renderer renderer) =>
+        internal static bool Preserved(RenderingFilterState state, Renderer renderer) =>
             state.PreserveAutomaticRenderers.Contains(ObjectRegistry.GetReference(renderer));
 
-        internal static List<MaterialExclusion> MaterialRules(BuildFilterState state, IEnumerable<Renderer> renderers)
+        internal static List<MaterialExclusion> MaterialRules(RenderingFilterState state, IEnumerable<Renderer> renderers)
         {
             var rules = new List<MaterialExclusion>(state.Materials);
             if (!state.RemoveAdditionalMaterialPasses) return rules;
@@ -35,7 +35,7 @@ namespace Noname.AvatarTools.Build
             return rules;
         }
 
-        internal static void RemoveRenderers(GameObject avatar, BuildFilterState state,
+        internal static void RemoveRenderers(GameObject avatar, RenderingFilterState state,
             IEnumerable<VirtualAnimatorController> controllers, ICollection<string> messages)
         {
             if (state.ExcludedRendererTypes == RendererFilterTypes.None) return;

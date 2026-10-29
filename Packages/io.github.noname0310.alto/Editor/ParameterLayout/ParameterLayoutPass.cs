@@ -43,7 +43,7 @@ namespace Noname.AvatarTools.ParameterLayout
         {
             var all = context.AvatarRootObject.GetComponentsInChildren<ALTOParameterLayout>(true);
             var active = all.Where(c => c.enabled && !ALTOPlugin.IsEditorOnly(c.transform) &&
-                BuildPlatformFilters.Includes(c.transform, context)).ToArray();
+                BuildPlatformFilters.IncludesSettings(c.transform, context)).ToArray();
             if (active.Length > 1) throw new InvalidOperationException("Use one enabled ALTO Parameter Layout per avatar.");
             var compression = ParameterCompressionPass.Capture(context, active.Length == 1);
             if (active.Length == 1)

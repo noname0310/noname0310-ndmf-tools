@@ -1,0 +1,25 @@
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace Noname.AvatarTools
+{
+    [AddComponentMenu("Noname/ALTO Rendering Filter")]
+    [DisallowMultipleComponent]
+    public sealed class ALTORenderingFilter : ALTOPlatformOptimizationComponent
+    {
+        [Tooltip("Applied after generators and before texture atlasing and mesh merging.")]
+        public List<MaterialExclusion> MaterialExclusions = new();
+
+        [Tooltip("Explicitly remove BlendShape-defined geometry after generators, before freezing, atlas packing and reduction. Missing targets or morphs are reported as errors.")]
+        public List<BlendShapeMeshExclusion> BlendShapeExclusions = new();
+
+        [Tooltip("Remove material slots beyond a mesh's submesh count after generators run. Primary geometry is retained.")]
+        public bool RemoveAdditionalMaterialPasses;
+
+        [Tooltip("Explicitly discard these rendering features after generators run. Particle Systems also removes their simulation components when no retained consumer needs them. These types are not categorically unsupported on mobile platforms.")]
+        public RendererFilterTypes ExcludedRendererTypes;
+
+        [Tooltip("Exclude these renderers from automatic rendering rules. Explicit object, component and material exclusions still apply.")]
+        public List<Renderer> PreserveAutomaticRenderers = new();
+    }
+}

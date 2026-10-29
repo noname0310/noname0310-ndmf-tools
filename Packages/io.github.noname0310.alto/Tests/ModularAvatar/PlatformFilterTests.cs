@@ -41,6 +41,20 @@ namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
             return filter;
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void MeshPolicyStillRespectsAncestorPlatformFilters(bool excluded)
+        {
+            AddFilter(settings, excluded, Platform);
+            var optimizer = avatar.AddComponent<ALTOTraceAndOptimizeMeshes>(); optimizer.ScopeRoot = avatar.transform;
+            var policy = settings.AddComponent<ALTOMeshOptimizationPolicy>();
+            policy.ScopeRoot = avatar.transform; policy.ApplyOnPlatforms = OptimizationPlatforms.All;
+            policy.AllowCoordinateSpaceChanges = policy.AllowMaterialSlotReordering = true;
+            var renderer = feature.AddComponent<SkinnedMeshRenderer>();
+            MeshOptimizationPass.Capture(context);
+            Assert.That(context.GetState<MeshOptimizationState>().PermissionsFor(renderer),
+                Is.EqualTo(excluded ? MeshOptimizationPermissions.None : MeshOptimizationPermissions.All));
+        }
+
         [TestCase(true, true, false)]
         [TestCase(true, false, true)]
         [TestCase(false, true, true)]
@@ -48,13 +62,15 @@ namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
         public void AllBuildTargetsStillRespectMaIncludeAndExclude(bool exclude, bool matches, bool expected)
         {
             AddFilter(settings, exclude, matches ? Platform : "other.vrsns");
-            var filter = settings.AddComponent<ALTOBuildFilter>();
+            var filter = settings.AddComponent<ALTOBuildExclusions>();
             filter.ApplyOnPlatforms = OptimizationPlatforms.All;
             filter.ScopeRoot = avatar.transform;
             filter.ExcludedObjects.Add(feature);
+            var rendering = settings.AddComponent<ALTORenderingFilter>();
+            rendering.ApplyOnPlatforms = OptimizationPlatforms.All; rendering.ScopeRoot = avatar.transform;
             BuildFilterPass.RemoveEarly(context);
             Assert.That(feature == null, Is.EqualTo(expected));
-            Assert.That(context.GetState<BuildFilterState>().Scope != null, Is.EqualTo(expected));
+            Assert.That(context.GetState<RenderingFilterState>().Scope != null, Is.EqualTo(expected));
         }
 
         [TestCase(false)]
@@ -65,9 +81,11 @@ namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
             settings.transform.SetParent(parent.transform);
             parent.SetActive(parentActive);
             AddFilter(parent, true, Platform);
-            var filter = settings.AddComponent<ALTOBuildFilter>();
+            var filter = settings.AddComponent<ALTOBuildExclusions>();
             filter.ApplyOnPlatforms = OptimizationPlatforms.All; filter.ScopeRoot = avatar.transform;
             filter.ExcludedObjects.Add(feature);
+            var rendering = settings.AddComponent<ALTORenderingFilter>();
+            rendering.ApplyOnPlatforms = OptimizationPlatforms.All; rendering.ScopeRoot = avatar.transform;
             var policy = settings.AddComponent<ALTOAnimatorParameterPolicy>(); policy.ApplyOnPlatforms = OptimizationPlatforms.All;
             settings.AddComponent<ALTOTraceAndOptimizeBlendShapes>().ScopeRoot = avatar.transform;
             settings.AddComponent<ALTOTraceAndOptimizeAnimator>();
@@ -83,6 +101,7 @@ namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
             PhysBoneFilterPass.Capture(context);
             MeshRendererSettingsOverridePass.Capture(context);
             Assert.That(feature != null, Is.True);
+            Assert.That(context.GetState<RenderingFilterState>().Scope, Is.Null);
             Assert.That(context.GetState<ParameterPolicyState>().Enabled, Is.False);
             Assert.That(context.GetState<OptimizationState>().Scopes, Is.Empty);
             Assert.That(context.GetState<AnimatorOptimizationState>().Settings, Is.Null);
@@ -104,7 +123,7 @@ namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
         public void MixedIncludeAndExcludeFailsBeforeApplyingExclusions()
         {
             AddFilter(settings, false, Platform); AddFilter(settings, true, "other.vrsns");
-            var filter = settings.AddComponent<ALTOBuildFilter>();
+            var filter = settings.AddComponent<ALTOBuildExclusions>();
             filter.ApplyOnPlatforms = OptimizationPlatforms.All; filter.ScopeRoot = avatar.transform;
             filter.ExcludedObjects.Add(feature);
             Assert.Throws<InvalidOperationException>(() => BuildFilterPass.RemoveEarly(context));
@@ -115,7 +134,7 @@ namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
         public void DesktopAndAndroidSelectionIsIndependentOfMaVrsnsSelection()
         {
             AddFilter(settings, false, Platform);
-            var filter = settings.AddComponent<ALTOBuildFilter>();
+            var filter = settings.AddComponent<ALTOBuildExclusions>();
             Assert.That(filter.ApplyOnPlatforms, Is.EqualTo(OptimizationPlatforms.Android));
             Assert.That(BuildPlatformFilters.Includes(settings.transform, context), Is.True);
             Assert.That(OptimizationBuildScope.Applies(filter, BuildTarget.Android), Is.True);

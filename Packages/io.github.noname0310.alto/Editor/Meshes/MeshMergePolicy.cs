@@ -11,6 +11,14 @@ namespace Noname.AvatarTools.Meshes
     {
         internal bool ExpandBounds, AllowCoordinateSpaceChanges, ConvertRigidMeshes, AllowMaterialSlotReordering;
         internal TransformMutationAnalysis Mutations;
+        internal Func<Renderer, MeshOptimizationPermissions> PermissionsFor;
+
+        internal bool AllowsCoordinates(Renderer renderer) => PermissionsFor != null
+            ? (PermissionsFor(renderer) & MeshOptimizationPermissions.CoordinateSpaceChanges) != 0 : AllowCoordinateSpaceChanges;
+        internal bool ConvertsRigid(Renderer renderer) => PermissionsFor != null
+            ? (PermissionsFor(renderer) & MeshOptimizationPermissions.RigidConversion) != 0 : ConvertRigidMeshes;
+        internal bool ReordersSlots(Renderer renderer) => PermissionsFor != null
+            ? (PermissionsFor(renderer) & MeshOptimizationPermissions.MaterialSlotReordering) != 0 : AllowMaterialSlotReordering;
 
         internal static Transform CoordinateRoot(SkinnedMeshRenderer renderer) => renderer.rootBone != null ? renderer.rootBone : renderer.transform;
 
@@ -40,7 +48,7 @@ namespace Noname.AvatarTools.Meshes
             // Prove this through fixed local transforms, not a one-frame world-matrix comparison.
             var first = Canonical(x); var second = Canonical(y);
             if (first.Root == second.Root && first.Offset.Equals(second.Offset)) return true;
-            if (!AllowCoordinateSpaceChanges || !ExpandBounds) return false;
+            if (!AllowsCoordinates(a.Renderer) || !AllowsCoordinates(b.Renderer) || !ExpandBounds) return false;
             // A fixed winding reversal can preserve mirrored culling. Independent
             // animated scale signs cannot be represented by one renderer's front face.
             return CoordinateScaleWriters(a.Renderer).SetEquals(CoordinateScaleWriters(b.Renderer));

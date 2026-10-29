@@ -164,12 +164,12 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         public void MaterialRulesSurviveEarlyMarkerRemoval()
         {
             MaterialFixture(1, 2);
-            var filter = Filter();
+            var filter = RenderingFilter();
             filter.MaterialExclusions.Add(new MaterialExclusion { Renderer = renderer, Slot = 1 });
             var context = new BuildContext(root, null);
             BuildFilterPass.RemoveEarly(context);
-            Assert.That(root.GetComponent<ALTOBuildFilter>(), Is.Null);
-            Assert.That(context.GetState<BuildFilterState>().Materials.Single().Renderer, Is.SameAs(renderer));
+            Assert.That(root.GetComponent<ALTORenderingFilter>(), Is.Null);
+            Assert.That(context.GetState<RenderingFilterState>().Materials.Single().Renderer, Is.SameAs(renderer));
         }
     }
 }

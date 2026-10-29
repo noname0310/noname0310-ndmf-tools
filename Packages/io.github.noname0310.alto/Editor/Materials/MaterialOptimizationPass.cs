@@ -26,7 +26,7 @@ namespace Noname.AvatarTools.Materials
         internal static void Capture(BuildContext context)
         {
             var all = context.AvatarRootObject.GetComponentsInChildren<ALTOTraceAndOptimizeMaterials>(true);
-            var enabled = all.Where(c => c.enabled && BuildPlatformFilters.Includes(c.transform, context)).ToArray();
+            var enabled = all.Where(c => c.enabled && BuildPlatformFilters.IncludesSettings(c.transform, context)).ToArray();
             if (enabled.Length > 1) throw new InvalidOperationException("Use one enabled ALTO Trace And Optimize Materials per avatar.");
             if (enabled.Length == 1)
             {

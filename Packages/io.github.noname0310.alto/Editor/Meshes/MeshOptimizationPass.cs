@@ -19,12 +19,41 @@ namespace Noname.AvatarTools.Meshes
         internal ALTOTraceAndOptimizeMeshes Component;
         internal OptimizationBuildScope Scope;
         internal bool MergeRenderers, MergeSlots, RemoveUnusedData, RebindStaticBones;
-        internal bool ExpandBounds, AllowCoordinateSpaceChanges;
-        internal bool ConvertRigidMeshes, AllowMaterialSlotReordering;
+        internal bool ExpandBounds;
+        internal readonly MeshOptimizationPolicies Policies = new();
+        internal bool MayConvertRigid => MergeRenderers && Policies.MayConvertRigid;
         internal bool Changed;
         internal readonly HashSet<ObjectReference> Preserved = new();
         internal readonly List<(Renderer Original, bool InScope, bool Preserved)> Inputs = new();
+        internal readonly List<MeshOptimizationPermissions> InputPermissions = new();
+        internal readonly List<ObjectReference> InputReferences = new();
+        private readonly Dictionary<ObjectReference, MeshOptimizationPermissions> rewrittenPermissions = new();
         internal bool Enabled => Scope != null && (MergeRenderers || MergeSlots || RemoveUnusedData || RebindStaticBones);
+
+        internal Renderer MappedInput(int index) => Component != null && Component.BuildInputRenderers.Length == Inputs.Count
+            ? Component.BuildInputRenderers[index] : Inputs[index].Original;
+
+        internal MeshOptimizationPermissions PermissionsFor(Renderer renderer)
+        {
+            var reference = ObjectRegistry.GetReference(renderer);
+            bool found = rewrittenPermissions.TryGetValue(reference, out var permissions);
+            if (!found) permissions = MeshOptimizationPermissions.All;
+            for (int i = 0; i < Inputs.Count; i++)
+            {
+                if (MappedInput(i) != renderer && (i >= InputReferences.Count || !Equals(InputReferences[i], reference))) continue;
+                // A merged output inherits only permissions granted to every input.
+                // Missing provenance cannot grant a visual relaxation.
+                permissions &= i < InputPermissions.Count ? InputPermissions[i] : MeshOptimizationPermissions.None;
+                found = true;
+            }
+            if (!found) permissions = Policies.Resolve(renderer.transform);
+            if (!MergeRenderers) permissions &= ~MeshOptimizationPermissions.RigidConversion;
+            if (!MergeSlots) permissions &= ~MeshOptimizationPermissions.MaterialSlotReordering;
+            return permissions;
+        }
+
+        internal void RecordPermissions(Renderer renderer, MeshOptimizationPermissions permissions) =>
+            rewrittenPermissions[ObjectRegistry.GetReference(renderer)] = permissions;
     }
 
     internal static class MeshOptimizationPass
@@ -32,22 +61,19 @@ namespace Noname.AvatarTools.Meshes
         internal static void Capture(BuildContext context)
         {
             var all = context.AvatarRootObject.GetComponentsInChildren<ALTOTraceAndOptimizeMeshes>(true);
-            var enabled = all.Where(c => c.enabled && BuildPlatformFilters.Includes(c.transform, context)).ToArray();
+            var enabled = all.Where(c => c.enabled && BuildPlatformFilters.IncludesSettings(c.transform, context)).ToArray();
             if (enabled.Length > 1) throw new InvalidOperationException("Use one enabled ALTO Trace And Optimize Meshes per avatar.");
+            var state = context.GetState<MeshOptimizationState>();
+            state.Policies.Capture(context);
             if (enabled.Length == 1)
             {
-                var component = enabled[0]; var state = context.GetState<MeshOptimizationState>();
+                var component = enabled[0];
                 state.Component = component;
                 state.Scope = OptimizationBuildScope.Capture(component, context.AvatarRootObject);
                 state.MergeRenderers = component.MergeCompatibleSkinnedMeshes; state.MergeSlots = component.MergeIdenticalMaterialSlots;
                 state.RemoveUnusedData = component.RemoveUnusedMeshData;
                 state.RebindStaticBones = component.RebindStaticBones;
                 state.ExpandBounds = component.ExpandBounds;
-                state.AllowCoordinateSpaceChanges = component.AllowCoordinateSpaceChanges &&
-                    (component.CoordinateSpaceChangesOnPlatforms & OptimizationBuildScope.Platform(context.GetState<OptimizationBuildEnvironment>().Target)) != 0;
-                state.ConvertRigidMeshes = state.AllowCoordinateSpaceChanges && state.MergeRenderers && component.ConvertRigidMeshes;
-                state.AllowMaterialSlotReordering = state.MergeSlots && component.AllowMaterialSlotReordering &&
-                    (component.MaterialSlotReorderingOnPlatforms & OptimizationBuildScope.Platform(context.GetState<OptimizationBuildEnvironment>().Target)) != 0;
                 foreach (var renderer in (component.PreserveRenderers ?? new()).Where(r => r != null))
                 {
                     if (!renderer.transform.IsChildOf(context.AvatarRootTransform))
@@ -67,8 +93,12 @@ namespace Noname.AvatarTools.Meshes
             state.Component.BuildInputRenderers = context.AvatarRootObject.GetComponentsInChildren<Renderer>(true)
                 .Where(r => r is SkinnedMeshRenderer || r is MeshRenderer).ToArray();
             foreach (var renderer in state.Component.BuildInputRenderers)
+            {
                 state.Inputs.Add((renderer, state.Scope.Contains(renderer.transform),
                     state.Preserved.Contains(ObjectRegistry.GetReference(renderer)) || objectSettings.Protected(renderer)));
+                state.InputPermissions.Add(state.Policies.Resolve(renderer.transform));
+                state.InputReferences.Add(ObjectRegistry.GetReference(renderer));
+            }
             if (state.RebindStaticBones)
                 state.Component.BuildSkinningDependencies = SkinningBoundaryDependencies.Collect(context.AvatarRootTransform,
                     state.Inputs.Where(i => i.InScope && !i.Preserved).Select(i => i.Original).OfType<SkinnedMeshRenderer>());
@@ -79,8 +109,7 @@ namespace Noname.AvatarTools.Meshes
             reason = null;
             for (int i = 0; i < settings.Inputs.Count; i++)
             {
-                var mapped = settings.Component != null && settings.Component.BuildInputRenderers.Length == settings.Inputs.Count ?
-                    settings.Component.BuildInputRenderers[i] : settings.Inputs[i].Original;
+                var mapped = settings.MappedInput(i);
                 if (mapped != renderer) continue;
                 if (!settings.Inputs[i].InScope) { reason = "an external optimizer merged an out-of-scope input"; return true; }
                 if (settings.Inputs[i].Preserved) { reason = "an external optimizer merged a preserved input"; return true; }
@@ -129,7 +158,7 @@ namespace Noname.AvatarTools.Meshes
             if (!settings.Enabled) return 0;
             var avatar = context.AvatarRootObject; var report = context.GetState<OptimizationBuildReport>();
             var renderers = avatar.GetComponentsInChildren<SkinnedMeshRenderer>(true).Where(r => settings.Scope.Contains(r.transform)).ToArray();
-            if (renderers.Length == 0 && (!settings.ConvertRigidMeshes || !avatar.GetComponentsInChildren<MeshRenderer>(true).Any(r => settings.Scope.Contains(r.transform)))) return 0;
+            if (renderers.Length == 0 && (!settings.MayConvertRigid || !avatar.GetComponentsInChildren<MeshRenderer>(true).Any(r => settings.Scope.Contains(r.transform)))) return 0;
             report.Initialize(avatar, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
             var watch = Stopwatch.StartNew();
             var animations = AvatarAnimationIndex.Create(avatar, entries, paths, policy.Preserved);
@@ -145,15 +174,18 @@ namespace Noname.AvatarTools.Meshes
             referenceSettings.ProtectedSubtrees.AddRange(objectSettings.ProtectedSubtrees);
             var references = AvatarDependencyGraph.Create(avatar, animations, referenceSettings, collectObjects: false);
             int converted = 0, weighted = 0;
-            if (settings.ConvertRigidMeshes)
+            if (settings.MayConvertRigid)
             {
                 foreach (var renderer in avatar.GetComponentsInChildren<MeshRenderer>(true).Where(r => settings.Scope.Contains(r.transform)))
                 {
+                    var permissions = settings.PermissionsFor(renderer);
+                    if ((permissions & MeshOptimizationPermissions.RigidConversion) == 0) continue;
                     if (settings.Preserved.Contains(ObjectRegistry.GetReference(renderer)) || objectSettings.Protected(renderer) || InputProtected(settings, renderer, out _)) continue;
                     string issue = RigidMeshConversion.ValidateExplicitConversion(renderer, animations, references,
                         context.GetState<OptimizationAnalysis>().Shaders, true);
                     if (issue != null) { report.Messages.Add("Rigid renderer retained '" + renderer.name + "': " + issue + "."); continue; }
-                    RigidMeshConversion.Convert(renderer, animations, save); converted++;
+                    var convertedRenderer = RigidMeshConversion.Convert(renderer, animations, save);
+                    settings.RecordPermissions(convertedRenderer, permissions); converted++;
                 }
                 if (converted > 0)
                 {
@@ -164,9 +196,9 @@ namespace Noname.AvatarTools.Meshes
                 }
             }
             var mutations = TransformMutationAnalysis.Create(avatar, animations);
+            var permissionsByRenderer = renderers.ToDictionary(r => (Renderer)r, settings.PermissionsFor);
             var mergePolicy = new MeshMergePolicy { ExpandBounds = settings.ExpandBounds,
-                AllowCoordinateSpaceChanges = settings.AllowCoordinateSpaceChanges, ConvertRigidMeshes = settings.ConvertRigidMeshes,
-                AllowMaterialSlotReordering = settings.AllowMaterialSlotReordering, Mutations = mutations };
+                PermissionsFor = renderer => permissionsByRenderer[renderer], Mutations = mutations };
             var candidates = new List<MeshMergeCandidate>();
             var invariants = animations.Bindings.Any(u => u.Binding.propertyName == MeshMergeAnalysis.UpdateWhenOffscreenProperty) ?
                 new InvariantComponentSettings(animations, AnimatorReachability.Analyze(avatar, animations.Controllers, policy.Preserved), entries) : null;
@@ -179,7 +211,7 @@ namespace Noname.AvatarTools.Meshes
                 var candidate = MeshMergeAnalysis.Inspect(renderer, avatar, animations, references, context.GetState<OptimizationAnalysis>().Shaders, out string reason, mergePolicy, invariants);
                 if (candidate != null)
                 {
-                    if (settings.ConvertRigidMeshes && RigidMeshConversion.Unweighted(renderer.sharedMesh))
+                    if (mergePolicy.ConvertsRigid(renderer) && RigidMeshConversion.Unweighted(renderer.sharedMesh))
                     { RigidMeshConversion.WeightUnweighted(renderer, save); weighted++; settings.Changed = true; }
                     candidates.Add(candidate);
                     if (candidate.Pinned) report.Messages.Add("Mesh interface retained '" + renderer.name + "': " +
@@ -209,9 +241,12 @@ namespace Noname.AvatarTools.Meshes
             }
             foreach (var group in partitions)
             {
+                var permissions = group.Aggregate(MeshOptimizationPermissions.All,
+                    (allowed, candidate) => allowed & permissionsByRenderer[candidate.Renderer]);
+                bool reorderSlots = (permissions & MeshOptimizationPermissions.MaterialSlotReordering) != 0;
                 int before = group.Sum(c => c.Renderer.sharedMaterials.Length);
                 var materials = group.SelectMany(c => c.Renderer.sharedMaterials).ToArray();
-                bool sameMaterials = settings.AllowMaterialSlotReordering ? materials.Distinct().Count() < materials.Length :
+                bool sameMaterials = reorderSlots ? materials.Distinct().Count() < materials.Length :
                     materials.Zip(materials.Skip(1), (a, b) => a != null && a == b).Any(same => same);
                 bool unusedData = settings.RemoveUnusedData && group.Any(c => SkinnedMeshAssembler.HasUnusedData(c.Renderer));
                 int reboundCount = group.Sum(c => skinning.TryGetValue(c.Renderer, out var plan) ? plan.ReboundEntries : 0);
@@ -223,7 +258,8 @@ namespace Noname.AvatarTools.Meshes
                 var destination = group[0].Renderer;
                 int oldVertices = group.Sum(c => c.Renderer.sharedMesh.vertexCount), oldPalette = group.Sum(c => c.Renderer.bones.Length);
                 Merge(group, pathFor(destination.transform), settings.MergeSlots,
-                    save, settings.RemoveUnusedData, skinning, settings.ExpandBounds, settings.AllowMaterialSlotReordering);
+                    save, settings.RemoveUnusedData, skinning, settings.ExpandBounds, reorderSlots);
+                settings.RecordPermissions(destination, permissions);
                 removed += group.Count - 1; slots += before - destination.sharedMaterials.Length; groups++;
                 vertices += oldVertices - destination.sharedMesh.vertexCount; palette += oldPalette - destination.bones.Length;
                 rebound += reboundCount;
@@ -232,7 +268,8 @@ namespace Noname.AvatarTools.Meshes
             report.Messages.Add((runtimeDependenciesOnly ? "Final runtime mesh optimization: " : "Mesh optimization: ") + removed + " renderers and " + slots + " material slots merged in " + groups + " groups; " +
                 vertices + " unused vertices and " + palette + " unused or duplicate bone-palette entries removed; " +
                 rebound + " static skin-bone entries rebound; " + converted + " rigid renderers converted and " + weighted +
-                " unweighted meshes assigned rigid skinning; material-slot reordering " + (settings.AllowMaterialSlotReordering ? "enabled" : "disabled") +
+                " unweighted meshes assigned rigid skinning; material-slot reordering permitted for " +
+                permissionsByRenderer.Values.Count(p => (p & MeshOptimizationPermissions.MaterialSlotReordering) != 0) + " inspected renderers" +
                 "; " + watch.ElapsedMilliseconds + " ms.");
             context.GetState<OptimizationAnalysis>().Invalidate(AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Meshes);
             return groups + converted + weighted;

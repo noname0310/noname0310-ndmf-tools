@@ -1,0 +1,28 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e4e5f451b48f59146b6b09a4d4a870c2, type: 3}
+  m_Name: Shinano Face Overlays
+  m_EditorClassIdentifier: 
+  DisplayName: Shinano face overlays
+  BlendShapes:
+  - other_cheek_1
+  - other_cheek_2
+  - other_cheek_3
+  - other_shadow
+  - other_sweat _1
+  - other_sweat _2
+  - other_tear_1
+  - other_tear_2
+  - other_tear_3
+  Fingerprints:
+  - PositionsSha256: positions-v1:1a8b4f6d6b966b7cf74695771430e2b12dc16a2f96cf980c7268800b68982d97
+    DistributionSignature: distribution-v1:6c2c9e2b56850a42bb077c90dbc527432b91eeb05903edc97a33b39e1686863a

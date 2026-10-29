@@ -55,8 +55,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             rigid.lightProbeUsage = LightProbeUsage.Off; rigid.reflectionProbeUsage = ReflectionProbeUsage.Off;
             var expected = AssemblyWorldVertices(pair.First).Concat(AssemblyWorldVertices(pair.Second))
                 .Concat(original.vertices.Select(rigidObject.transform.TransformPoint)).ToArray();
-            var settings = root.AddComponent<ALTOTraceAndOptimizeMeshes>(); settings.AllowCoordinateSpaceChanges = true;
-            settings.CoordinateSpaceChangesOnPlatforms = enabled ? OptimizationPlatforms.All : OptimizationPlatforms.None;
+            var settings = root.AddComponent<ALTOTraceAndOptimizeMeshes>(); var permissions = MeshPolicy();
+            permissions.ApplyOnPlatforms = enabled ? OptimizationPlatforms.All : OptimizationPlatforms.None;
             settings.RebindStaticBones = false;
             var context = new BuildContext(root, null); MeshOptimizationPass.Capture(context); MeshOptimizationPass.Prepare(context); MeshOptimizationPass.Apply(context);
             foreach (var skin in root.GetComponentsInChildren<SkinnedMeshRenderer>(true)) if (skin.sharedMesh != null) Track(skin.sharedMesh);
@@ -73,8 +73,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         public void MeshPassPreservesExplicitRigidRendererExclusions(bool keep)
         {
             MaterialDescriptor(); var rigid = RigidPart(); rigid.lightProbeUsage = LightProbeUsage.Off; rigid.reflectionProbeUsage = ReflectionProbeUsage.Off;
-            var settings = root.AddComponent<ALTOTraceAndOptimizeMeshes>(); settings.AllowCoordinateSpaceChanges = true;
-            settings.CoordinateSpaceChangesOnPlatforms = OptimizationPlatforms.All;
+            var settings = root.AddComponent<ALTOTraceAndOptimizeMeshes>(); var permissions = MeshPolicy();
+            permissions.ApplyOnPlatforms = OptimizationPlatforms.All;
             if (keep) settings.PreserveRenderers.Add(rigid);
             var context = new BuildContext(root, null); MeshOptimizationPass.Capture(context); MeshOptimizationPass.Prepare(context); MeshOptimizationPass.Apply(context);
             foreach (var skin in root.GetComponentsInChildren<SkinnedMeshRenderer>(true)) if (skin.sharedMesh != null) Track(skin.sharedMesh);
@@ -89,8 +89,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             part.sharedMaterial = Track(new Material(Shader.Find("Hidden/Noname/Assembly Object Space")));
             part.lightProbeUsage = LightProbeUsage.Off; part.reflectionProbeUsage = ReflectionProbeUsage.Off; part.SetBlendShapeWeight(0, 42);
             var before = AssemblyWorldVertices(part);
-            var settings = root.AddComponent<ALTOTraceAndOptimizeMeshes>(); settings.AllowCoordinateSpaceChanges = true;
-            settings.CoordinateSpaceChangesOnPlatforms = OptimizationPlatforms.All; settings.RebindStaticBones = false;
+            var settings = root.AddComponent<ALTOTraceAndOptimizeMeshes>(); var permissions = MeshPolicy();
+            permissions.ApplyOnPlatforms = OptimizationPlatforms.All; settings.RebindStaticBones = false;
             var context = new BuildContext(root, null); MeshOptimizationPass.Capture(context); MeshOptimizationPass.Prepare(context); MeshOptimizationPass.Apply(context);
             Track(part.sharedMesh); Assert.That(RigidMeshConversion.Unweighted(part.sharedMesh), Is.False);
             Assert.That(part.GetBlendShapeWeight(0), Is.EqualTo(42)); Assert.That(original.blendShapeCount, Is.EqualTo(1));
@@ -198,11 +198,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         public void MeshCoordinateChangesAreGatedSeparatelyFromEquivalentOptimizations(bool enabledForCurrentPlatform)
         {
             MaterialDescriptor();
-            var settings = root.AddComponent<ALTOTraceAndOptimizeMeshes>(); settings.AllowCoordinateSpaceChanges = true;
-            settings.CoordinateSpaceChangesOnPlatforms = enabledForCurrentPlatform ? OptimizationPlatforms.All : OptimizationPlatforms.None;
+            var settings = root.AddComponent<ALTOTraceAndOptimizeMeshes>(); var permissions = MeshPolicy();
+            permissions.ApplyOnPlatforms = enabledForCurrentPlatform ? OptimizationPlatforms.All : OptimizationPlatforms.None;
             var context = new BuildContext(root, null); MeshOptimizationPass.Capture(context);
             var state = context.GetState<MeshOptimizationState>();
-            Assert.That(state.AllowCoordinateSpaceChanges, Is.EqualTo(enabledForCurrentPlatform));
+            Assert.That((state.PermissionsFor(renderer) & MeshOptimizationPermissions.CoordinateSpaceChanges) != 0, Is.EqualTo(enabledForCurrentPlatform));
             Assert.That(state.MergeRenderers && state.ExpandBounds, Is.True);
         }
 

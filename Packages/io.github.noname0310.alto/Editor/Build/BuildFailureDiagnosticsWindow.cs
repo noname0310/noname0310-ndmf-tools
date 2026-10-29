@@ -8,7 +8,7 @@ namespace Noname.AvatarTools.Build
 {
     internal sealed class BuildFailureDiagnosticsWindow : EditorWindow
     {
-        [SerializeField] private ALTOBuildFilter filter;
+        [SerializeField] private ALTOBuildExclusions filter;
         private AvatarBuildAnalysisResult baseline;
         private IReadOnlyList<BuildFailureCandidate> candidates = Array.Empty<BuildFailureCandidate>();
         private readonly Dictionary<Component, AvatarBuildAnalysisResult> trials = new();
@@ -21,10 +21,10 @@ namespace Noname.AvatarTools.Build
         {
             var selected = Selection.activeGameObject;
             var descriptor = selected != null ? selected.GetComponentInParent<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor>(true) : null;
-            Open(descriptor != null ? descriptor.GetComponentInChildren<ALTOBuildFilter>(true) : null);
+            Open(descriptor != null ? descriptor.GetComponentInChildren<ALTOBuildExclusions>(true) : null);
         }
 
-        internal static void Open(ALTOBuildFilter value)
+        internal static void Open(ALTOBuildExclusions value)
         {
             var window = GetWindow<BuildFailureDiagnosticsWindow>("ALTO Build Diagnostics");
             window.filter = value; window.Clear(); window.Show();
@@ -48,7 +48,7 @@ namespace Noname.AvatarTools.Build
             using (new EditorGUI.DisabledScope(busy))
             {
                 EditorGUI.BeginChangeCheck();
-                filter = (ALTOBuildFilter)EditorGUILayout.ObjectField("Build Filter", filter, typeof(ALTOBuildFilter), true);
+                filter = (ALTOBuildExclusions)EditorGUILayout.ObjectField("Build Exclusions", filter, typeof(ALTOBuildExclusions), true);
                 if (EditorGUI.EndChangeCheck()) Clear();
             }
             EditorGUILayout.HelpBox("Analyze a fresh build copy on the current platform. Error stacks identify participating build-only components, not proven causes. " +

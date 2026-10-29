@@ -16,7 +16,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
     {
         private BuildContext CaptureRegionFilter(params BlendShapeMeshExclusion[] rules)
         {
-            var filter = Filter(); filter.BlendShapeExclusions.AddRange(rules);
+            var filter = RenderingFilter(); filter.BlendShapeExclusions.AddRange(rules);
             var context = new BuildContext(root, null); BuildFilterPass.RemoveEarly(context); return context;
         }
 
@@ -133,7 +133,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         [TestCase("nonfiniteThreshold")] [TestCase("emptyName")]
         public void RegionSelectionValidationRejectsInvalidConfigurations(string invalid)
         {
-            MaterialDescriptor(); var filter = Filter(); renderer.sharedMesh = OcclusionMaskMesh();
+            MaterialDescriptor(); var filter = RenderingFilter(); renderer.sharedMesh = OcclusionMaskMesh();
             var row = new BlendShapeMeshExclusion { Renderer = renderer, BlendShapes = new() { "Region A" } }; filter.BlendShapeExclusions.Add(row);
             if (invalid == "scope") filter.ScopeRoot = PolicyChild("Scope").transform;
             if (invalid == "nullRenderer") row.Renderer = null;
@@ -147,7 +147,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         [Test]
         public void DisabledPlatformFilterDoesNotRemoveSelectedRegions()
         {
-            MaterialDescriptor(); var filter = Filter(); filter.ApplyOnPlatforms = OptimizationPlatforms.None;
+            MaterialDescriptor(); var filter = RenderingFilter(); filter.ApplyOnPlatforms = OptimizationPlatforms.None;
             var source = renderer.sharedMesh = OcclusionMaskMesh();
             filter.BlendShapeExclusions.Add(new BlendShapeMeshExclusion { Renderer = renderer, BlendShapes = new() { "Region A" } });
             var context = new BuildContext(root, null); BuildFilterPass.RemoveEarly(context); ApplyRegionFilter(context);

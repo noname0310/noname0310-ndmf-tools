@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.0.5
+
+- Install a connected instance of the bundled default settings prefab. Record avatar references, selected values and optional removals as instance overrides, preserving the link through Undo/Redo and nested avatar-prefab saves without changing the package asset.
+- Default the Installer to a Simple workflow with explicit AFK, feature, PhysBone and mesh choices. Keep the full UI in Advanced mode without resetting choices. Add a searchable PhysBone checklist with Hide Inactive PhysBones enabled by default; hidden entries retain their selections and no physics priorities are chosen automatically.
+- Initialize mobile component exclusions for recognized Light Limit Changer, marshmallow PB, Pudding and RealSweat authoring types without package dependencies or object-name matching. Keep all suggestions editable.
+- Add mesh-region presets and a Shinano original-face overlay preset containing only region names and geometry fingerprints. Ignore skinning, added BlendShapes, reordered vertices and duplicate positions. Apply unique exact matches initially; require selection for approximate distribution matches or ambiguous presets, without storing source geometry or asset references.
+- Evaluate AFK animation candidates and initialize full-detail face mesh selections when assigning the Installer's avatar. Keep manual list edits, retain an AFK refresh action for later animation changes, and remove the redundant face-mesh button.
+- Suggest a body mesh for occlusion removal from generic naming, material and BlendShape evidence when assigning an avatar. Select all of its BlendShapes initially, leave ambiguous cases for manual selection, and exclude nested avatars and EditorOnly meshes from discovery.
+- Describe Installer choices by their effects and group controls in Common, Mobile and Cross-platform frames with explicit platform labels. Offer Optimize Mobile Only and use a fixed 256-bit synchronization target in the installer.
+- Add an avatar setup installer and reusable settings template. Configure Common/mobile optimization, parameter preservation, feature filters, geometry and atlasing, then install one undoable hierarchy scoped to the avatar root. Validate references and optional dependencies; reject duplicate installations without overwriting existing settings.
+- Discover AFK BlendShape clips from the built-in parameter across descriptor and component controllers, including transition paths, overrides and supported Blend Trees. Review shared clips separately and recheck candidates before installation. Default body-region candidates to all BlendShapes.
+- Add ALTO Optimization Platform Filter for settings subtrees, without removing objects or affecting other packages. Keep cross-platform synchronization outside the installer's mobile-only Common group.
+- Include a generic Mobile Toon Standard reference material with white tint and culling disabled for material atlases.
+- Add ALTO Mesh Optimization Policy with one scope and platform selection for coordinate-space changes, rigid mesh conversion and material-slot reordering. Keep Trace And Optimize Meshes conservative by default. Remove its former per-option policy fields; configure the new component explicitly when upgrading.
+- Preserve per-input mesh permissions through optional external renderer mapping, internal merges and late SDK optimization. Narrower scopes can disable broader permissions; conflicting policies at the same scope and platform are rejected.
+- Split new filter setups into ALTO Build Exclusions for authoring objects, components and audio, and ALTO Rendering Filter for generated rendering output, material slots and BlendShape regions. Each component has an independent scope and platform selection. Existing combined Build Filter components remain supported.
+- Preserve rendering rules across early exclusions without treating deliberately removed targets as missing generated output. Document platform-first settings hierarchies and shared Android/iOS policy selection.
+
 ## 0.0.4
 
 - Persist all generated Animator dependencies after late SDK commits, including cloned Parameter Drivers and Tracking Controls. This fixes behaviours that worked in memory but were missing from saved build assets, affecting facial tracking and other state-driven features.

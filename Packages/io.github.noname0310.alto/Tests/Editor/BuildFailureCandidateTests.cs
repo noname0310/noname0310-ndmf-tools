@@ -24,9 +24,9 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         [Test]
         public void FailureCandidateIgnoresMessageTextRuntimeTypesAndAltoInfrastructure()
         {
-            root.AddComponent<DependencyAuthoringFixture>(); root.AddComponent<ALTOBuildFilter>();
+            root.AddComponent<DependencyAuthoringFixture>(); root.AddComponent<ALTOBuildExclusions>();
             var errors = new[] { new AvatarBuildErrorTrace { Message = typeof(DependencyAuthoringFixture).FullName,
-                StackTrace = "Example.Pass.Run (UnityEngine.SkinnedMeshRenderer renderer, Noname.AvatarTools.ALTOBuildFilter filter)\n" +
+                StackTrace = "Example.Pass.Run (UnityEngine.SkinnedMeshRenderer renderer, Noname.AvatarTools.ALTOBuildExclusions filter)\n" +
                     "Please remove " + typeof(DependencyAuthoringFixture).FullName + " (not a frame)" } };
             Assert.That(BuildFailureCandidates.Find(root, errors), Is.Empty);
         }
@@ -48,7 +48,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         public void FailureCandidateAdditionIsExplicitAndRespectsScopeAndPlatform()
         {
             root.AddComponent<VRCAvatarDescriptor>();
-            var filter = root.AddComponent<ALTOBuildFilter>(); filter.ApplyOnPlatforms = OptimizationPlatforms.All;
+            var filter = root.AddComponent<ALTOBuildExclusions>(); filter.ApplyOnPlatforms = OptimizationPlatforms.All;
             var candidate = root.AddComponent<DependencyAuthoringFixture>();
             BuildFailureCandidates.Validate(filter, candidate);
             Assert.That(filter.ExcludedComponents, Is.Empty);
@@ -63,7 +63,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         public void FailureCandidateTrialRebuildsFreshCopyAndLeavesOriginalFilterUntouched()
         {
             root.AddComponent<VRCAvatarDescriptor>(); root.AddComponent<Animator>();
-            var filter = root.AddComponent<ALTOBuildFilter>(); filter.ApplyOnPlatforms = OptimizationPlatforms.All;
+            var filter = root.AddComponent<ALTOBuildExclusions>(); filter.ApplyOnPlatforms = OptimizationPlatforms.All;
             var fixture = root.AddComponent<BuildFailureFixture>();
             AvatarBuildAnalysisResult baseline = null, trial = null;
             bool previous = UnityEngine.TestTools.LogAssert.ignoreFailingMessages;

@@ -19,7 +19,7 @@ namespace Noname.AvatarTools.Build
         internal static IReadOnlyList<BuildFailureCandidate> Find(GameObject avatar, IEnumerable<AvatarBuildErrorTrace> errors)
         {
             var components = avatar.GetComponentsInChildren<Component>(true).Where(c => c != null &&
-                c.GetType().Assembly != typeof(ALTOBuildFilter).Assembly && IsBuildOnly(c.GetType())).ToArray();
+                c.GetType().Assembly != typeof(ALTOBuildExclusions).Assembly && IsBuildOnly(c.GetType())).ToArray();
             var signatures = (errors ?? Array.Empty<AvatarBuildErrorTrace>()).Where(e => e != null)
                 .SelectMany(e => (e.StackTrace ?? "").Split('\n')).Select(s => s.Trim()).Where(IsFrame).Distinct().ToArray();
             var result = new List<BuildFailureCandidate>();
@@ -67,34 +67,34 @@ namespace Noname.AvatarTools.Build
             return matches[componentIndex];
         }
 
-        internal static AvatarBuildAnalysisResult Test(ALTOBuildFilter filter, Component candidate)
+        internal static AvatarBuildAnalysisResult Test(ALTOBuildExclusions filter, Component candidate)
         {
             var avatar = filter.FindDescriptor()?.gameObject;
             Validate(filter, candidate);
             return AvatarBuildAnalysis.Analyze(avatar, clone =>
             {
-                var clonedFilter = (ALTOBuildFilter)InClone(filter, avatar, clone);
+                var clonedFilter = (ALTOBuildExclusions)InClone(filter, avatar, clone);
                 var clonedCandidate = InClone(candidate, avatar, clone);
                 clonedFilter.ExcludedComponents ??= new();
                 if (!clonedFilter.ExcludedComponents.Contains(clonedCandidate)) clonedFilter.ExcludedComponents.Add(clonedCandidate);
             });
         }
 
-        internal static void Validate(ALTOBuildFilter filter, Component candidate)
+        internal static void Validate(ALTOBuildExclusions filter, Component candidate)
         {
-            if (filter == null || candidate == null || !IsBuildOnly(candidate.GetType()) || candidate.GetType().Assembly == typeof(ALTOBuildFilter).Assembly)
-                throw new InvalidOperationException("Choose an existing build-only component and Build Filter.");
+            if (filter == null || candidate == null || !IsBuildOnly(candidate.GetType()) || candidate.GetType().Assembly == typeof(ALTOBuildExclusions).Assembly)
+                throw new InvalidOperationException("Choose an existing build-only component and Build Exclusions.");
             var avatar = filter.FindDescriptor()?.gameObject;
             if (avatar == null || !candidate.transform.IsChildOf(avatar.transform))
                 throw new InvalidOperationException("The candidate must belong to this filter's avatar.");
             if (!OptimizationBuildScope.Applies(filter, EditorUserBuildSettings.activeBuildTarget))
-                throw new InvalidOperationException("The selected Build Filter is inactive on the current platform.");
+                throw new InvalidOperationException("The selected Build Exclusions is inactive on the current platform.");
             var scope = filter.ScopeRoot != null ? filter.ScopeRoot : filter.transform;
             if (!candidate.transform.IsChildOf(scope)) throw new InvalidOperationException("The candidate is outside this filter's Scope Root.");
             if ((filter.ExcludedComponents ?? new()).Contains(candidate)) throw new InvalidOperationException("The candidate is already excluded.");
         }
 
-        internal static void AddSelected(ALTOBuildFilter filter, Component candidate)
+        internal static void AddSelected(ALTOBuildExclusions filter, Component candidate)
         {
             Validate(filter, candidate);
             Undo.RecordObject(filter, "Add selected build exclusion");

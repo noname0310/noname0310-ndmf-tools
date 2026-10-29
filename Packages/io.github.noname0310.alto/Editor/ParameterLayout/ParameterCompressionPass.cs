@@ -48,16 +48,17 @@ namespace Noname.AvatarTools.ParameterLayout
         // Network representation is shared across platforms. A policy whose freezing
         // only runs on Android can still require native inputs in the PC contract.
         // Capture declarations still present here before policy markers are removed.
-        // Platform filters and generators that remove whole declarations remain a
-        // visibility boundary; replay still rejects incompatible preservation.
+        // Object-removing platform filters and generators remain a visibility boundary.
+        // ALTO's settings-only platform filter also contributes other-platform requirements;
+        // disabling their local optimization must not change the shared network contract.
         internal static void CapturePolicyPreservation(BuildContext context)
         {
             var avatar = context.AvatarRootObject;
             if (!avatar.GetComponentsInChildren<ALTOParameterCompression>(true).Any(c => c.enabled &&
-                c.TimeMultiplexing == ParameterMultiplexingMode.AutomaticByPriority && BuildPlatformFilters.Includes(c.transform, context))) return;
+                c.TimeMultiplexing == ParameterMultiplexingMode.AutomaticByPriority && BuildPlatformFilters.IncludesSettings(c.transform, context))) return;
             var state = context.GetState<TransportPolicyPreservation>();
             foreach (var policy in avatar.GetComponentsInChildren<ALTOAnimatorParameterPolicy>(true).Where(p => p.enabled &&
-                p.ApplyOnPlatforms != OptimizationPlatforms.None && BuildPlatformFilters.Includes(p.transform, context)))
+                BuildPlatformFilters.IncludesSettingsOnAnyPlatform(p.transform, context, p.ApplyOnPlatforms)))
                 CaptureSelection(context, policy.PreserveParameters, state.Names, state.Prefixes);
         }
 
@@ -65,7 +66,7 @@ namespace Noname.AvatarTools.ParameterLayout
         {
             var all = context.AvatarRootObject.GetComponentsInChildren<ALTOParameterCompression>(true);
             var enabled = all.Where(c => c.enabled && !ALTOPlugin.IsEditorOnly(c.transform) &&
-                BuildPlatformFilters.Includes(c.transform, context)).ToArray();
+                BuildPlatformFilters.IncludesSettings(c.transform, context)).ToArray();
             if (enabled.Length > 1) throw new InvalidOperationException("Use one enabled ALTO Parameter Compression per avatar.");
             if (enabled.Length != 0 && !hasLayout)
                 throw new InvalidOperationException("ALTO Parameter Compression requires ALTO Parameter Layout on the same avatar.");

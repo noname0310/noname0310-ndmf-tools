@@ -79,10 +79,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var pair = MergePair(); var first = pair.First.sharedMaterial; var other = Track(new Material(first));
             RepeatMaterialSlots(pair.First, new[] { first, other, first }); var source = pair.First.sharedMesh;
             MaterialDescriptor(); var settings = root.AddComponent<ALTOTraceAndOptimizeMeshes>(); settings.ScopeRoot = pair.First.transform;
-            Assert.That(settings.AllowMaterialSlotReordering, Is.True);
+            var permissions = MeshPolicy(coordinates: false);
+            Assert.That(permissions.AllowMaterialSlotReordering, Is.False);
             settings.MergeCompatibleSkinnedMeshes = false; settings.RebindStaticBones = settings.RemoveUnusedMeshData = false;
-            settings.MergeIdenticalMaterialSlots = mergeSlots; settings.AllowMaterialSlotReordering = enabled;
-            settings.MaterialSlotReorderingOnPlatforms = platforms;
+            settings.MergeIdenticalMaterialSlots = mergeSlots; permissions.AllowMaterialSlotReordering = enabled;
+            permissions.ApplyOnPlatforms = platforms;
             var context = new BuildContext(root, null);
             typeof(OptimizationBuildEnvironment).GetField("Target", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
                 .SetValue(context.GetState<OptimizationBuildEnvironment>(), target);

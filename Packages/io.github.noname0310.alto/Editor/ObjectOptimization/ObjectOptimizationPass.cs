@@ -47,7 +47,7 @@ namespace Noname.AvatarTools.ObjectOptimization
         internal static void Capture(BuildContext context)
         {
             var all = context.AvatarRootObject.GetComponentsInChildren<ALTOTraceAndOptimizeObjects>(true);
-            var enabled = all.Where(c => c.enabled && BuildPlatformFilters.Includes(c.transform, context)).ToArray();
+            var enabled = all.Where(c => c.enabled && BuildPlatformFilters.IncludesSettings(c.transform, context)).ToArray();
             if (enabled.Length > 1) throw new InvalidOperationException("Use one enabled ALTO Trace And Optimize Objects per avatar.");
             foreach (var disabled in all.Except(enabled)) UnityEngine.Object.DestroyImmediate(disabled);
             if (enabled.Length == 0) return;

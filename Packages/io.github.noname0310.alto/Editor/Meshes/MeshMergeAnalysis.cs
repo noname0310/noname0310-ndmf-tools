@@ -53,14 +53,14 @@ namespace Noname.AvatarTools.Meshes
             AvatarAnimationIndex animations, AvatarDependencyGraph references, ShaderPropertyUsage shaders, out string reason,
             MeshMergePolicy policy = null, InvariantComponentSettings invariants = null)
         {
-            bool makeRigid = renderer != null && policy?.ConvertRigidMeshes == true && RigidMeshConversion.Unweighted(renderer.sharedMesh);
+            bool makeRigid = renderer != null && policy?.ConvertsRigid(renderer) == true && RigidMeshConversion.Unweighted(renderer.sharedMesh);
             reason = makeRigid ? SkinnedMeshAssembler.ValidateGeometry(renderer, renderer.sharedMesh) : SkinnedMeshAssembler.Validate(renderer);
             if (reason != null) return null;
             var result = new MeshMergeCandidate { Renderer = renderer, Bounds = StoredBounds(renderer),
                 MaskCoverage = MaskCoverage(avatar, renderer.transform, animations, typeof(Renderer)) };
             string Unsupported()
             {
-                if (renderer.rootBone == null && policy?.AllowCoordinateSpaceChanges != true) return "no explicit root bone";
+                if (renderer.rootBone == null && policy?.AllowsCoordinates(renderer) != true) return "no explicit root bone";
                 if (renderer.updateWhenOffscreen && policy?.ExpandBounds != true) return "per-frame bounds depend on the original skinned vertex set";
                 if (renderer.HasPropertyBlock()) return "a material property block requires separate drawing";
                 if (renderer.GetComponent<Cloth>() != null) return "cloth simulation owns this mesh";
@@ -92,7 +92,7 @@ namespace Noname.AvatarTools.Meshes
                 var externalNames = Enumerable.Range(0, mesh.blendShapeCount).Select(mesh.GetBlendShapeName).Where(MmdMorphNames.All.Contains).ToArray();
                 if (externalNames.Length > 0) result.Pin("MMD names: " + string.Join(", ", externalNames.Take(5)));
                 string shaderIssue = ShaderIssue(renderer.sharedMaterials, shaders, addSkinning: makeRigid,
-                    allowCoordinateSpaceChanges: policy?.AllowCoordinateSpaceChanges == true);
+                    allowCoordinateSpaceChanges: policy?.AllowsCoordinates(renderer) == true);
                 if (shaderIssue != null) return shaderIssue;
                 result.Bindings = animations.ForObject(renderer).ToArray();
                 foreach (var use in result.Bindings)
@@ -206,7 +206,8 @@ namespace Noname.AvatarTools.Meshes
             if (!a.UpdateWhenOffscreen.Equals(b.UpdateWhenOffscreen)) return "different offscreen-update animation signals";
             if (a.Properties.Count != b.Properties.Count || !a.Properties.All(p => b.Properties.TryGetValue(p.Key, out var signal) && p.Value.Equals(signal)))
                 return "different material-property animation signals";
-            if (a.Properties.Count != 0 && !MaterialDefaultsMatch(x.sharedMaterials, y.sharedMaterials, policy?.AllowMaterialSlotReordering == true))
+            if (a.Properties.Count != 0 && !MaterialDefaultsMatch(x.sharedMaterials, y.sharedMaterials,
+                policy?.ReordersSlots(x) == true && policy.ReordersSlots(y)))
                 return "different animated material defaults";
             if (!(policy?.CoordinatesMatch(a, b) ?? MeshMergePolicy.CoordinateRoot(x) == MeshMergePolicy.CoordinateRoot(y)))
                 return "different coordinate systems or independent animated scale signs";

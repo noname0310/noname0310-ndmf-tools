@@ -26,7 +26,7 @@ namespace Noname.AvatarTools.AnimatorOptimization
             var state = context.GetState<AnimatorOptimizationState>();
             foreach (var component in context.AvatarRootObject.GetComponentsInChildren<ALTOTraceAndOptimizeAnimator>(true))
             {
-                if (!component.enabled || !BuildPlatformFilters.Includes(component.transform, context)) continue;
+                if (!component.enabled || !BuildPlatformFilters.IncludesSettings(component.transform, context)) continue;
                 if (component.FindDescriptor()?.gameObject != context.AvatarRootObject)
                     throw new InvalidOperationException("ALTO Trace And Optimize Animator requires a VRC Avatar Descriptor ancestor.");
                 var settings = AnimatorOptimizationSettings.From(component);

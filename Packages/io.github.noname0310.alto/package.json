@@ -1,7 +1,7 @@
 {
   "name": "io.github.noname0310.alto",
   "displayName": "ALTO — Avatar Link-Time Optimizer",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "unity": "2022.3",
   "description": "Static analysis-based optimization for VRChat avatars through NDMF. Optimize Animator logic, parameters, meshes, materials and physics.",
   "author": {
@@ -13,7 +13,7 @@
   "licensesUrl": "https://github.com/noname0310/noname0310-ndmf-tools/blob/main/LICENSE.md",
   "documentationUrl": "https://github.com/noname0310/noname0310-ndmf-tools/tree/main/Packages/io.github.noname0310.alto",
   "changelogUrl": "https://github.com/noname0310/noname0310-ndmf-tools/blob/main/Packages/io.github.noname0310.alto/CHANGELOG.md",
-  "url": "https://github.com/noname0310/noname0310-ndmf-tools/releases/download/alto-v0.0.4/io.github.noname0310.alto-0.0.4.zip",
+  "url": "https://github.com/noname0310/noname0310-ndmf-tools/releases/download/alto-v0.0.5/io.github.noname0310.alto-0.0.5.zip",
   "repo": "https://noname0310.github.io/noname0310-ndmf-tools/index.json",
   "vpmDependencies": {
     "nadena.dev.ndmf": ">=1.14.8 <2.0.0-a",

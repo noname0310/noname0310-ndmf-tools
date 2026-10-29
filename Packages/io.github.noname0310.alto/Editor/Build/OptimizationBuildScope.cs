@@ -56,6 +56,6 @@ namespace Noname.AvatarTools.Build
 
         internal static bool Applies(ALTOPlatformOptimizationComponent component, BuildContext context) =>
             Applies(component, context.GetState<OptimizationBuildEnvironment>().Target) &&
-            BuildPlatformFilters.Includes(component.transform, context);
+            BuildPlatformFilters.IncludesSettings(component.transform, context);
     }
 }

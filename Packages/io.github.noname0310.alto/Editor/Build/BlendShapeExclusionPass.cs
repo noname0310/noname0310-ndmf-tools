@@ -23,7 +23,7 @@ namespace Noname.AvatarTools.Build
 
         internal static void Apply(BuildContext context)
         {
-            var state = context.GetState<BuildFilterState>();
+            var state = context.GetState<RenderingFilterState>();
             if (state.Scope == null || state.BlendShapes.Count == 0) return;
             foreach (var target in state.BlendShapeTargets)
                 if (target.Key == null)

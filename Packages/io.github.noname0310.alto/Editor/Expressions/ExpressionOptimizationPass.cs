@@ -28,7 +28,7 @@ namespace Noname.AvatarTools.Expressions
         {
             var all = context.AvatarRootObject.GetComponentsInChildren<ALTOTraceAndOptimizeExpressions>(true);
             var enabled = all.Where(c => c.enabled && !ALTOPlugin.IsEditorOnly(c.transform) &&
-                BuildPlatformFilters.Includes(c.transform, context)).ToArray();
+                BuildPlatformFilters.IncludesSettings(c.transform, context)).ToArray();
             if (enabled.Length > 1) throw new InvalidOperationException("Use one enabled ALTO Trace And Optimize Expressions per avatar.");
             if (enabled.Length == 1)
             {

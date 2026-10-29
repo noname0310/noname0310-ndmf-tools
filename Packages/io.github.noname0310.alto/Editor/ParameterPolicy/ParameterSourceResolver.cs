@@ -35,6 +35,9 @@ namespace Noname.AvatarTools.ParameterPolicy
         internal static bool IsSupported(Object source) => source is RuntimeAnimatorController ||
             source is VRCExpressionParameters || source is GameObject || source is Component;
 
+        internal static RuntimeAnimatorController[] AvatarControllers(GameObject avatar) =>
+            Owners(avatar, true, avatar).SelectMany(Assets).OfType<RuntimeAnimatorController>().Distinct().ToArray();
+
         internal static ParameterSourceResult Resolve(AnimatorParameterSource selection, GameObject avatar, BuildContext context = null)
         {
             var result = new ParameterSourceResult();

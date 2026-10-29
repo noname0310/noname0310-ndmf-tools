@@ -16,7 +16,7 @@ namespace Noname.AvatarTools.Build
 
         internal static void Apply(BuildContext context)
         {
-            var state = context.GetState<BuildFilterState>();
+            var state = context.GetState<RenderingFilterState>();
             if (state.Scope == null || state.Materials.Count == 0 && !state.RemoveAdditionalMaterialPasses && state.ExcludedRendererTypes == RendererFilterTypes.None) return;
             foreach (var selection in state.SelectedRenderers)
                 if (selection.Key.Renderer == null)

@@ -12,10 +12,10 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
 {
     public sealed partial class BlendShapeOptimizationTests
     {
-        private ALTOBuildFilter Filter()
+        private ALTOBuildExclusions Filter()
         {
             if (root.GetComponent<VRCAvatarDescriptor>() == null) root.AddComponent<VRCAvatarDescriptor>();
-            var filter = root.AddComponent<ALTOBuildFilter>();
+            var filter = root.AddComponent<ALTOBuildExclusions>();
             filter.ApplyOnPlatforms = OptimizationPlatforms.All;
             return filter;
         }
@@ -35,7 +35,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             BuildFilterPass.RemoveEarly(new BuildContext(root, null));
             Assert.That(feature == null && child == null && collider == null, Is.True);
             Assert.That(kept != null, Is.True);
-            Assert.That(root.GetComponent<ALTOBuildFilter>(), Is.Null);
+            Assert.That(root.GetComponent<ALTOBuildExclusions>(), Is.Null);
         }
 
         [Test]
@@ -148,7 +148,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var feature = PolicyChild("Feature");
             filter.ExcludedObjects.Add(feature);
             BuildFilterPass.RemoveEarly(new BuildContext(root, null));
-            Assert.That(feature != null && root.GetComponent<ALTOBuildFilter>() == null, Is.True);
+            Assert.That(feature != null && root.GetComponent<ALTOBuildExclusions>() == null, Is.True);
         }
 
         [TestCase(false)]

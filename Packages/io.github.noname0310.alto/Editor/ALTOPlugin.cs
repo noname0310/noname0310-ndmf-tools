@@ -96,7 +96,12 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 .BeforePlugin("com.anatawa12.avatar-optimizer")
                 .BeforePlugin("net.rs64.tex-trans-tool")
                 .BeforePlugin("Meshia.MeshSimplification.Ndmf.Editor.NdmfPlugin")
-                .Run("Optimize avatar inputs and prepare atlases", OptimizationPipeline.BeforeAtlas);
+                .Run("Remove optimization platform markers", context =>
+                {
+                    foreach (var filter in context.AvatarRootObject.GetComponentsInChildren<ALTOOptimizationPlatformFilter>(true))
+                        UnityEngine.Object.DestroyImmediate(filter);
+                })
+                .Then.Run("Optimize avatar inputs and prepare atlases", OptimizationPipeline.BeforeAtlas);
             InPhase(BuildPhase.Optimizing).AfterPlugin("net.rs64.tex-trans-tool")
                 .BeforePlugin("com.anatawa12.avatar-optimizer")
                 .BeforePlugin("Meshia.MeshSimplification.Ndmf.Editor.NdmfPlugin")
@@ -135,7 +140,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             var state = context.GetState<OptimizationState>();
             foreach (var component in context.AvatarRootObject.GetComponentsInChildren<ALTOTraceAndOptimizeBlendShapes>(true))
             {
-                if (!component.enabled || !BuildPlatformFilters.Includes(component.transform, context)) continue;
+                if (!component.enabled || !BuildPlatformFilters.IncludesSettings(component.transform, context)) continue;
                 var descriptor = component.FindDescriptor();
                 var root = component.ScopeRoot != null ? component.ScopeRoot : component.transform;
                 if (descriptor == null || descriptor.gameObject != context.AvatarRootObject ||

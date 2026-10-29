@@ -13,31 +13,22 @@ using Object = UnityEngine.Object;
 
 namespace Noname.AvatarTools.Build
 {
-    internal sealed class BuildFilterState
-    {
-        internal OptimizationBuildScope Scope;
-        internal readonly List<MaterialExclusion> Materials = new();
-        internal readonly Dictionary<MaterialExclusion, string> SelectedRenderers = new();
-        internal readonly List<BlendShapeMeshExclusion> BlendShapes = new();
-        internal readonly Dictionary<SkinnedMeshRenderer, string> BlendShapeTargets = new();
-        internal bool RemoveAdditionalMaterialPasses;
-        internal RendererFilterTypes ExcludedRendererTypes;
-        internal readonly HashSet<ObjectReference> PreserveAutomaticRenderers = new();
-    }
-
     internal static class BuildFilterPass
     {
         internal static void RemoveEarly(BuildContext context)
         {
-            var all = context.AvatarRootObject.GetComponentsInChildren<ALTOBuildFilter>(true);
+            var all = context.AvatarRootObject.GetComponentsInChildren<ALTOBuildExclusions>(true);
             var enabled = all.Where(c => OptimizationBuildScope.Applies(c, context)).ToArray();
             if (enabled.Length > 1)
-                throw new InvalidOperationException("Use one enabled ALTO Build Filter per avatar and platform.");
+                throw new InvalidOperationException("Use one enabled ALTO Build Exclusions per avatar and platform.");
+            if (enabled.Length == 0) RenderingFilterPass.Capture(context, new HashSet<Object>());
             foreach (var filter in enabled) ApplyEarly(context, filter);
+            foreach (var filter in context.AvatarRootObject.GetComponentsInChildren<ALTORenderingFilter>(true))
+                Object.DestroyImmediate(filter);
             foreach (var filter in all) if (filter != null) Object.DestroyImmediate(filter);
         }
 
-        internal static void ApplyEarly(BuildContext context, ALTOBuildFilter filter)
+        internal static void ApplyEarly(BuildContext context, ALTOBuildExclusions filter)
         {
             var avatar = context.AvatarRootObject;
             var scope = OptimizationBuildScope.Capture(filter, avatar);
@@ -58,14 +49,14 @@ namespace Noname.AvatarTools.Build
             {
                 ValidateScope(scope, value.transform);
                 if (value == avatar || value.GetComponent<VRCAvatarDescriptor>() != null)
-                    throw new InvalidOperationException("ALTO Build Filter cannot remove an avatar root.");
+                    throw new InvalidOperationException("ALTO Build Exclusions cannot remove an avatar root.");
             }
             foreach (var component in components)
             {
                 ValidateScope(scope, component.transform);
                 if (component is Transform || component is VRCAvatarDescriptor ||
                     (component is Animator && component.gameObject == avatar))
-                    throw new InvalidOperationException("ALTO Build Filter cannot remove " + component.GetType().Name +
+                    throw new InvalidOperationException("ALTO Build Exclusions cannot remove " + component.GetType().Name +
                         " here. Exclude a feature's child object to remove its entire hierarchy.");
             }
             var removed = new HashSet<Object>(components);
@@ -75,46 +66,7 @@ namespace Noname.AvatarTools.Build
                     removed.Add(child.gameObject);
                     foreach (var component in child.GetComponents<Component>()) if (component != null) removed.Add(component);
                 }
-            var state = context.GetState<BuildFilterState>();
-            state.Scope = scope;
-            if ((filter.ExcludedRendererTypes & ~(RendererFilterTypes.ParticleSystems | RendererFilterTypes.Lines | RendererFilterTypes.Trails)) != 0)
-                throw new InvalidOperationException("Choose valid renderer exclusion types.");
-            state.RemoveAdditionalMaterialPasses = filter.RemoveAdditionalMaterialPasses;
-            state.ExcludedRendererTypes = filter.ExcludedRendererTypes;
-            foreach (var renderer in (filter.PreserveAutomaticRenderers ?? new()).Where(r => r != null))
-            {
-                ValidateScope(scope, renderer.transform);
-                state.PreserveAutomaticRenderers.Add(ObjectRegistry.GetReference(renderer));
-            }
-            foreach (var rule in filter.MaterialExclusions ?? new())
-            {
-                if (rule == null || (rule.Renderer == null && rule.Material == null && rule.Slot == -1)) continue;
-                if (rule.Slot < -1) throw new InvalidOperationException("Material exclusion Slot must be -1 or a nonnegative index.");
-                if (rule.Renderer != null)
-                {
-                    ValidateScope(scope, rule.Renderer.transform);
-                    if (removed.Contains(rule.Renderer)) continue;
-                    state.SelectedRenderers.Add(rule, AnimationUtility.CalculateTransformPath(rule.Renderer.transform, avatar.transform));
-                }
-                state.Materials.Add(rule);
-            }
-            foreach (var rule in filter.BlendShapeExclusions ?? new())
-            {
-                if (rule == null || rule.BlendShapes == null || rule.BlendShapes.Count == 0) continue;
-                if (rule.Renderer == null) throw new InvalidOperationException("BlendShape exclusion requires a Skinned Mesh Renderer.");
-                ValidateScope(scope, rule.Renderer.transform);
-                if (removed.Contains(rule.Renderer)) continue;
-                if (!Analysis.MotionAnalysis.Finite(rule.DisplacementThreshold) || rule.DisplacementThreshold < 0 || rule.BlendShapes.Any(string.IsNullOrEmpty))
-                    throw new InvalidOperationException("BlendShape exclusion requires valid names and a finite nonnegative displacement threshold.");
-                state.BlendShapes.Add(new BlendShapeMeshExclusion
-                {
-                    Renderer = rule.Renderer, DisplacementThreshold = rule.DisplacementThreshold,
-                    BlendShapes = new List<string>(rule.BlendShapes)
-                });
-                state.BlendShapeTargets[rule.Renderer] = AnimationUtility.CalculateTransformPath(rule.Renderer.transform, avatar.transform);
-            }
-            if (state.Materials.Count > 0)
-                context.GetState<OptimizationBuildReport>().Initialize(avatar, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
+            RenderingFilterPass.Capture(context, removed);
             if (removed.Count == 0) return;
             ValidatePreservation(context, removed);
             ValidateIncomingReferences(context, filter, removed);
@@ -151,7 +103,7 @@ namespace Noname.AvatarTools.Build
         private static void ValidateScope(OptimizationBuildScope scope, Transform target)
         {
             if (!scope.Contains(target))
-                throw new InvalidOperationException("Excluded objects and components must belong to the Build Filter's Scope Root: " + target.name);
+                throw new InvalidOperationException("Excluded objects and components must belong to the Build Exclusions' Scope Root: " + target.name);
         }
 
         internal static bool Requires(Component dependant, Component dependency) =>
@@ -159,13 +111,13 @@ namespace Noname.AvatarTools.Build
                 .SelectMany(a => new[] { a.m_Type0, a.m_Type1, a.m_Type2 })
                 .Any(type => type != null && type.IsInstanceOfType(dependency));
 
-        private static void ValidateIncomingReferences(BuildContext context, ALTOBuildFilter filter, HashSet<Object> removed)
+        private static void ValidateIncomingReferences(BuildContext context, ALTOBuildExclusions filter, HashSet<Object> removed)
         {
             var avatar = context.AvatarRootObject;
             var removedByObject = removed.OfType<Component>().GroupBy(c => c.gameObject).ToDictionary(g => g.Key, g => g.ToArray());
             foreach (var owner in avatar.GetComponentsInChildren<Component>(true))
             {
-                if (owner == null || owner == filter || removed.Contains(owner) || owner is Transform ||
+                if (owner == null || owner == filter || owner is ALTORenderingFilter || removed.Contains(owner) || owner is Transform ||
                     !BuildPlatformFilters.Includes(owner.transform, context)) continue;
                 if (owner is ALTOPlatformOptimizationComponent policy && !OptimizationBuildScope.Applies(policy, context)) continue;
                 if (removedByObject.TryGetValue(owner.gameObject, out var dependencies))
@@ -195,7 +147,7 @@ namespace Noname.AvatarTools.Build
                 .Where(c => OptimizationBuildScope.Applies(c, context)))
             {
                 if (removed.Contains(policy))
-                    throw new InvalidOperationException("ALTO Build Filter cannot remove an active parameter preservation policy.");
+                    throw new InvalidOperationException("ALTO Build Exclusions cannot remove an active parameter preservation policy.");
                 var names = new HashSet<string>(policy.PreserveParameters?.Names ?? new(), StringComparer.Ordinal);
                 var prefixes = (policy.PreserveParameters?.Prefixes ?? new()).Where(p => !string.IsNullOrEmpty(p)).ToArray();
                 if (names.Count > 0 || prefixes.Length > 0)
