@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.6
+
+- Report unreadable Material Atlas input meshes before accessing their UV data. Include the mesh name, the original model asset path when available, and instructions to enable Read/Write, instead of reporting a misleading missing UV0 channel.
+
 ## 0.0.5
 
 - Install a connected instance of the bundled default settings prefab. Record avatar references, selected values and optional removals as instance overrides, preserving the link through Undo/Redo and nested avatar-prefab saves without changing the package asset.

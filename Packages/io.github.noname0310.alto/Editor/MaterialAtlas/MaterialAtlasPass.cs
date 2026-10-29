@@ -225,6 +225,16 @@ namespace Noname.AvatarTools.MaterialAtlas
         internal static string ValidateMesh(Mesh mesh, int[] groups, out Rect domain)
         {
             domain = new Rect(0, 0, 1, 1);
+            if (!mesh.isReadable)
+            {
+                var source = ObjectRegistry.GetReference(mesh)?.Object as Mesh ?? mesh;
+                string path = AssetDatabase.GetAssetPath(source);
+                string action = !string.IsNullOrEmpty(path) && AssetImporter.GetAtPath(path) is ModelImporter
+                    ? "Select '" + path + "' in the Project window, open the Model tab, enable Read/Write, and click Apply."
+                    : "Enable Read/Write in the source model's Model import settings and click Apply. " +
+                      "For a generated mesh, ensure the generating tool keeps its mesh data readable until optimization finishes.";
+                return "mesh '" + mesh.name + "' has Read/Write disabled, so ALTO cannot read its vertex and UV data. " + action;
+            }
             var uv = mesh.uv;
             if (uv.Length != mesh.vertexCount || uv.Length == 0) return "a complete UV0 channel is required";
             if (mesh.subMeshCount != groups.Length) return "material slots must match submeshes; remove overlay passes first";
