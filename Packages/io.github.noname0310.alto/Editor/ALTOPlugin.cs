@@ -38,7 +38,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
     {
         internal Transform Root;
         internal HashSet<SkinnedMeshRenderer> OriginalRenderers;
-        internal bool Mmd, ZeroReset, IgnoreUnreachableStates;
+        internal bool Mmd, ZeroReset, IgnoreUnreachableStates, RemoveIneffective;
         internal HashSet<AnimationClip> ExcludedAnimations;
         internal int Depth;
     }
@@ -152,11 +152,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                     OriginalRenderers = new HashSet<SkinnedMeshRenderer>(root.GetComponentsInChildren<SkinnedMeshRenderer>(true)),
                     ExcludedAnimations = new HashSet<AnimationClip>((component.ExcludedAnimations ?? new List<AnimationClip>()).Where(c => c != null)),
                     Mmd = component.PreserveMmdBlendShapes, ZeroReset = component.OptimizeZeroResetAnimations,
-                    IgnoreUnreachableStates = component.IgnoreUnreachableStates });
+                    IgnoreUnreachableStates = component.IgnoreUnreachableStates, RemoveIneffective = component.RemoveIneffectiveBlendShapes });
             }
             // An equally specific overlap has no meaningful priority. Require matching settings instead of build-order dependence.
             foreach (var group in state.Scopes.GroupBy(s => s.Root))
-                if (group.Select(s => (s.Mmd, s.ZeroReset, s.IgnoreUnreachableStates)).Distinct().Count() > 1 ||
+                if (group.Select(s => (s.Mmd, s.ZeroReset, s.IgnoreUnreachableStates, s.RemoveIneffective)).Distinct().Count() > 1 ||
                     group.Any(s => !s.ExcludedAnimations.SetEquals(group.First().ExcludedAnimations)))
                     throw new InvalidOperationException("BlendShape optimization components with the same scope must use matching settings.");
             if (state.Scopes.Count > 0)
@@ -183,6 +183,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 var usage = AnimationUsage.Collect(context.AvatarRootObject, services.ControllerContext,
                     services.ObjectPathRemapper.GetVirtualToRealPathMap(), scopes.Any(s => s.IgnoreUnreachableStates), policy.Preserved);
                 var exclusions = scopes.ToDictionary(s => s, s => new ExcludedAnimationMatcher(s.ExcludedAnimations));
+                var fullVertexReaders = scopes.Any(s => s.RemoveIneffective)
+                    ? BlendShapeEffectAnalysis.FindFullVertexReaders(context.AvatarRootObject) : new HashSet<SkinnedMeshRenderer>();
                 var plans = new List<OptimizationPlan>();
                 foreach (var renderer in context.AvatarRootObject.GetComponentsInChildren<SkinnedMeshRenderer>(true))
                 {
@@ -193,7 +195,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                     var preserve = ProtectedNames(renderer, descriptor, scope.Mmd);
                     PreserveForOtherOptimizers(renderer, preserve);
                     plans.Add(OptimizationPlan.Create(renderer, usage, scope.ZeroReset, preserve, exclusions[scope].Matches,
-                        scope.IgnoreUnreachableStates));
+                        scope.IgnoreUnreachableStates, scope.RemoveIneffective, fullVertexReaders.Contains(renderer)));
                 }
                 var eyelidNames = CaptureEyelids(descriptor);
                 var outputs = new List<(OptimizationPlan plan, Mesh mesh)>();
@@ -213,11 +215,15 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                     context.AssetSaver.SaveAsset(mesh);
                     MeshOptimization.Apply(plan, mesh);
                     plan.RewriteCurves();
+                    if (plan.Ineffective.Count > 0)
+                        context.GetState<OptimizationBuildReport>().Messages.Add("Removed " + plan.Ineffective.Count +
+                            " ineffective BlendShapes from " + UnityEditor.AnimationUtility.CalculateTransformPath(plan.Renderer.transform, context.AvatarRootTransform) +
+                            ": " + string.Join(", ", plan.Ineffective.Select(s => s.Name)) + ".");
                 }
                 if (descriptor != null && outputs.Any(o => o.plan.Renderer == descriptor.customEyeLookSettings.eyelidsSkinnedMesh))
                     RestoreEyelids(descriptor, eyelidNames);
                 UnityEngine.Debug.Log($"[Noname BlendShapes] {outputs.Count} meshes, {usage.ClipCount} clips: " +
-                    $"froze {plans.Sum(p => p.Frozen.Count)} shapes; merged {plans.Sum(p => p.Groups.Sum(g => g.Inputs.Count))} " +
+                    $"removed {plans.Sum(p => p.Ineffective.Count)} ineffective shapes; froze {plans.Sum(p => p.Frozen.Count)} shapes; merged {plans.Sum(p => p.Groups.Sum(g => g.Inputs.Count))} " +
                     $"zero-reset shapes into {plans.Sum(p => p.Groups.Count)}; " +
                     $"{watch.ElapsedMilliseconds} ms.", context.AvatarRootObject);
                 if (usage.Reachability != null)

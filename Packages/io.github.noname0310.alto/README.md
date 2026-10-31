@@ -1191,8 +1191,22 @@ Shapes with identical clip usage are combined in their current default-weight
 proportions: defaults of 20, 60, and 80 become one shape at 100, with deformation
 `0.2 A + 0.6 B + 0.8 C`. Reset clips animate that shape to zero. Overlapping sets
 such as `abc`, `abcd`, and `abce` produce three independent groups: `abc`, `d`, and
-`e`. A group whose defaults are all zero retains an empty channel at zero so clip
-timing and state transitions remain intact.
+`e`.
+
+**Remove Ineffective BlendShapes** (enabled by default) removes shapes with
+exactly zero position, normal and tangent deltas on every vertex still indexed
+by any submesh, across every frame. This includes empty separator shapes and
+shapes affecting only geometry removed by earlier filters, even when animated.
+Renderer readers that may consume unindexed vertices retain those vertices in
+the check. Cloth, animated mesh references and immutable/shared bindings remain
+conservative. MMD, Descriptor and explicit shape protection takes precedence.
+
+Zero-reset groups whose combined deformation is empty are also removed. With
+this option disabled, these groups retain an empty channel. Removed bindings
+feed subsequent Animator and expression output analysis: a clip with no remaining
+outputs can expose dead Blend Trees, states, parameters and menu controls for
+cleanup when their respective optimization options are enabled. Clip timing,
+observable state behaviours and other remaining outputs are preserved.
 
 **Ignore Unreachable States** (enabled by default) analyzes the final state
 machines before deciding which BlendShapes are animated. It follows default,

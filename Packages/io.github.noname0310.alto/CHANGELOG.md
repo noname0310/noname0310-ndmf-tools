@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.8
+
+- Enable Remove Ineffective BlendShapes by default. Remove empty separator shapes and morphs affecting only removed geometry, including animated shapes, by checking exact position, normal and tangent deltas across all frames and remaining submesh indices. Preserve explicitly protected shapes, Descriptor/MMD channels and renderer-reader dependencies.
+- Remove empty generated zero-reset groups and their animation bindings. Feed the resulting lack of outputs into downstream Animator, parameter and menu analysis while retaining observable state behaviours and transition timing.
+- Preserve zero-duration clips when their last real binding is removed, and remove output-free static Direct Blend Tree branches when state-logic analysis proves them unobservable. Keep normalized, additive, masked and default-sensitive cases conservative.
+
 ## 0.0.7
 
 - Fix time-multiplexed parameters failing to update remote avatars at low frame rates. Replace short exit-time frame steps, use full normalized timer cycles, and receive each batch on its first observed publication before committing the complete snapshot.

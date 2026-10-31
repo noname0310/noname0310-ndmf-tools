@@ -64,6 +64,25 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             for (int i = 0; i < plan.Groups.Count; i++)
                 foreach (var shape in plan.Groups[i].Inputs)
                     AddAtWeight(plan.Source, shape.Index, shape.Weight, result.Groups[i], buffer);
+            if (plan.Effects != null)
+            {
+                // A zero-default group, or a group whose weighted deltas cancel,
+                // has no output. Feed its removed bindings into the same downstream
+                // dependency analysis as ineffective source shapes.
+                var retained = new List<ShapeDelta>();
+                int index = 0;
+                foreach (var group in plan.Groups.ToArray())
+                {
+                    var delta = result.Groups[index++];
+                    if (plan.Effects.HasEffect(delta)) retained.Add(delta);
+                    else
+                    {
+                        plan.Ineffective.AddRange(group.Inputs);
+                        plan.Groups.Remove(group);
+                    }
+                }
+                result.Groups = retained.ToArray();
+            }
             return result;
         }
 

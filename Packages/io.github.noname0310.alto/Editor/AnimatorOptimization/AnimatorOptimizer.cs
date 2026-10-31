@@ -52,7 +52,7 @@ namespace Noname.AvatarTools.AnimatorOptimization
                 removeDeadDriverOperations: settings.StateLogic || settings.MaterialOutputs && observableBinding != null,
                 followStateOutputs: settings.StateLogic, analysis: analysis, dependencyRoots: dependencyRoots, controllerEntries: controllerEntries);
             if (settings.StateLogic) UnusedStateLogic.Apply(controllers, report, observableBinding);
-            RewriteTrees(controllers, analysis, settings, report, additiveControllers);
+            RewriteTrees(controllers, analysis, settings, report, additiveControllers, observableBinding);
             if (settings.StateLogic && finalParameterDeclarations)
                 UnusedLayers.Apply(controllers.Where(c => additiveControllers?.Contains(c) != true).ToArray(), report, observableBinding, controllerEntries);
             // Late SDK generators may still read declarations/defaults that currently have
@@ -112,7 +112,8 @@ namespace Noname.AvatarTools.AnimatorOptimization
         }
 
         private static void RewriteTrees(VirtualAnimatorController[] controllers, AnimatorReachability analysis,
-            AnimatorOptimizationSettings settings, AnimatorOptimizationReport report, ISet<VirtualAnimatorController> additive)
+            AnimatorOptimizationSettings settings, AnimatorOptimizationReport report, ISet<VirtualAnimatorController> additive,
+            Func<VirtualClip, EditorCurveBinding, bool> observableBinding)
         {
             var blocked = new HashSet<VirtualMotion>();
             foreach (var controller in controllers)
@@ -136,7 +137,8 @@ namespace Noname.AvatarTools.AnimatorOptimization
                 {
                     if (settings.UnusedParameters)
                         report.Branches += children.RemoveAll(c => c.Motion is VirtualClip clip && MotionAnalysis.StaticClip(clip) &&
-                            !clip.GetFloatCurveBindings().Any());
+                            (!clip.GetFloatCurveBindings().Any() || settings.StateLogic && observableBinding != null &&
+                                !clip.GetFloatCurveBindings().Any(b => observableBinding(clip, b))));
                     if (settings.MergeClips)
                     {
                         for (int i = 0; i < children.Count; i++)

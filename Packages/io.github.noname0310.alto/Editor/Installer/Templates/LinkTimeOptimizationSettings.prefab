@@ -412,6 +412,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   ScopeRoot: {fileID: 0}
   PreserveMmdBlendShapes: 1
+  RemoveIneffectiveBlendShapes: 1
   OptimizeZeroResetAnimations: 1
   IgnoreUnreachableStates: 1
   ExcludedAnimations: []

@@ -14,6 +14,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             serializedObject.Update();
             EditorGUILayout.PropertyField(serializedObject.FindProperty("ScopeRoot"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("PreserveMmdBlendShapes"), new GUIContent("Preserve MMD BlendShapes"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("RemoveIneffectiveBlendShapes"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("OptimizeZeroResetAnimations"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("IgnoreUnreachableStates"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("ExcludedAnimations"), true);
@@ -31,8 +32,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             EditorGUILayout.HelpBox("An empty Scope Root uses this object's subtree. Animation analysis always covers the entire avatar. " +
                 "Unanimated shapes are baked at their current weights. Shapes animated only to zero are grouped by shared clip usage, " +
                 "with their current proportions stored in a new shape at weight 100. Changes apply during NDMF builds.", MessageType.Info);
+            EditorGUILayout.HelpBox("Remove Ineffective BlendShapes checks every frame against the vertices still used by any submesh. " +
+                "Empty separators and shapes affecting only removed geometry can be deleted even when animated. " +
+                "Any remaining position, normal or tangent delta keeps the shape eligible for the existing freeze/group analysis.", MessageType.Info);
             EditorGUILayout.HelpBox("Use BlendShape Optimization Exclude on a Skinned Mesh Renderer to preserve individual shapes. " +
-                "Descriptor eyelids and visemes are preserved automatically. Additive and nonlinear animated shapes are kept.", MessageType.None);
+                "Descriptor eyelids and visemes are preserved automatically. Additive and nonlinear animated shapes with remaining effects are kept.", MessageType.None);
         }
     }
 
