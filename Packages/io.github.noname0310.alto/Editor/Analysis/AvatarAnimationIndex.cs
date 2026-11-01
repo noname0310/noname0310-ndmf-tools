@@ -39,6 +39,7 @@ namespace Noname.AvatarTools.Analysis
         }
 
         internal readonly List<BindingUse> Bindings = new();
+        internal GameObject Avatar;
         internal readonly HashSet<string> PreservedParameters = new(StringComparer.Ordinal);
         internal VirtualAnimatorController[] Controllers;
         internal IDictionary<object, VirtualAnimatorController> ControllerEntries;
@@ -59,7 +60,7 @@ namespace Noname.AvatarTools.Analysis
             IDictionary<object, VirtualAnimatorController> controllers, IReadOnlyDictionary<string, string> paths,
             IEnumerable<string> preservedParameters = null)
         {
-            var result = new AvatarAnimationIndex { Controllers = controllers.Values.Distinct().ToArray(), ControllerEntries = controllers, Paths = paths };
+            var result = new AvatarAnimationIndex { Avatar = avatar, Controllers = controllers.Values.Distinct().ToArray(), ControllerEntries = controllers, Paths = paths };
             var owners = new Dictionary<VirtualClip, HashSet<Transform>>();
             var clipControllers = new Dictionary<VirtualClip, HashSet<VirtualAnimatorController>>();
             foreach (var pair in controllers)

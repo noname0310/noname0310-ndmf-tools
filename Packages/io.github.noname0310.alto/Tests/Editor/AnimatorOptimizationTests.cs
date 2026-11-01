@@ -160,11 +160,17 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(output.controller.Layers.First().StateMachine.DefaultState.Transitions, Is.Empty);
         }
 
-        [Test]
-        public void SameWeightClipMergeMatchesUnityAtSeveralWeightsAndKeepsSources()
+        [TestCase(false)] [TestCase(true)]
+        public void SameWeightClipMergeMatchesUnityAtSeveralWeightsAndKeepsSources(bool timedClips)
         {
             Mesh("a", "b");
             var source = TreeController(("P", StaticCurve(Binding("a"), 20)), ("P", StaticCurve(Binding("b"), 70)));
+            if (timedClips)
+            {
+                var children = ((BlendTree)source.layers[0].stateMachine.defaultState.motion).children;
+                AnimationUtility.SetEditorCurve((AnimationClip)children[0].motion, Binding("a"), AnimationCurve.Constant(0, 1, 20));
+                AnimationUtility.SetEditorCurve((AnimationClip)children[1].motion, Binding("b"), AnimationCurve.Constant(0, 2, 70));
+            }
             source.AddParameter("Q", AnimatorControllerParameterType.Float);
             var output = OptimizeAnimator(source, new() { MergeClips = true });
             Assert.That(output.report.MergedClips, Is.EqualTo(1));
@@ -179,7 +185,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(((BlendTree)source.layers[0].stateMachine.defaultState.motion).children.Length, Is.EqualTo(2));
         }
 
-        [TestCase("WDOff")] [TestCase("Normalized")] [TestCase("Duration")] [TestCase("Overlap")] [TestCase("TimeScale")]
+        [TestCase("WDOff")] [TestCase("Normalized")] [TestCase("ObservedDuration")] [TestCase("Overlap")] [TestCase("TimeScale")]
         public void IncompatibleDirectTreesAreNotMerged(string reason)
         {
             var first = StaticCurve(Binding("a"), 20); var second = StaticCurve(Binding(reason == "Overlap" ? "a" : "b"), 70);
@@ -188,7 +194,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             if (reason == "WDOff") state.writeDefaultValues = false;
             if (reason == "Normalized") using (var serialized = new SerializedObject(tree))
                 { serialized.FindProperty("m_NormalizedBlendValues").boolValue = true; serialized.ApplyModifiedPropertiesWithoutUndo(); }
-            if (reason == "Duration") AnimationUtility.SetEditorCurve(second, Binding("b"), AnimationCurve.Constant(0, 1, 70));
+            if (reason == "ObservedDuration")
+            {
+                AnimationUtility.SetEditorCurve(second, Binding("b"), AnimationCurve.Constant(0, 1, 70));
+                var transition = state.AddExitTransition(); transition.hasExitTime = true; transition.exitTime = .5f;
+            }
             if (reason == "TimeScale") { var children = tree.children; children[1].timeScale = 2; tree.children = children; }
             Assert.That(OptimizeAnimator(controller, new() { MergeClips = true }).report.MergedClips, Is.Zero);
         }

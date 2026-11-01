@@ -301,18 +301,27 @@ records the wire contract; other platforms reuse it, including the exact generat
 names and bit order. No VRCFury, MA or AAO implementation is required.
 
 **Integers** explicitly selects synchronized Int inputs and an inclusive transmitted
-range within 0..255. An optional source resolves names through NDMF remapping. For
-example, 0..7 uses three Bool slots instead of eight bits. Ranges may contain 2 to
-128 values; larger ranges cannot save bits. Empty lists select no integers. Menu
-values are never taken as proof that OSC cannot supply other values.
+range within the input's SDK representation: unsigned 0..255 or signed -128..127,
+with smaller limits for inputs already using fewer bits. An optional source resolves
+names through NDMF remapping. Full power-of-two ranges, such as 0..7 or -4..3, use
+the SDK's three-bit integer representation directly and need no Animator codec.
+Other ranges use packed Bool slots and a decoder. Ranges may contain 2 to 128 values
+and must reduce the existing wire cost. Empty lists select no integers. Menu values
+are never taken as proof that OSC cannot supply other values.
 
 The local logical parameter keeps its name, Int type, default and Saved setting,
 so menus and OSC continue to use it. Generated Bool slots are not Saved. The owner
 encodes the local value and the remote Animator reconstructs it. Values outside
 the selected range are clamped **only in the transmitted representation**. Each
-integer adds one FX layer. Independent bit delivery can temporarily decode an
+packed integer adds one FX layer. Independent bit delivery can temporarily decode an
 intermediate value, and state evaluation adds latency; this is not atomic Int
 synchronization. The integer codec does not reduce Float precision.
+
+Layout records preserve bit width and signed representation across platforms.
+Multiplex payloads share slots only when their wire encodings match. Nonzero custom
+SDK interpolation remains native because reusing one interpolated payload for
+unrelated parameters would change its temporal behavior. Native integer narrowing
+retains that interpolation; packed integer ranges require immediate interpolation.
 
 **Time Multiplexing** defaults to **Automatic By Priority**. On the reference
 platform, including PC, it runs only when the remaining synchronized cost exceeds
@@ -1243,6 +1252,14 @@ to preserve. Selections survive changes in mesh ordering and missing shapes.
 The optional Avatar Optimizer integration also prevents automatic freezing of
 these protected names. Explicit destructive mesh tools can still remove them.
 
+Native Face Tracking uses the Descriptor's enabled tracking keys, viseme mapping
+and parameter-behavior targets. Its active morphs are protected unless **Remove
+Ineffective BlendShapes** proves they have no geometric effect. Blend-set controls,
+set-weight dependencies and forwarded Animator values participate in output
+liveness, so dead native outputs can also release their controls, parameters and
+menus. Compatible face meshes can merge while sharing the same native morph name;
+independent Animator writers, initial values or extrapolation ranges stay separate.
+
 The pass runs in **Optimizing**, after Transforming passes such as Modular Avatar
 and VRCFury, and before Avatar Optimizer. Other plugins which introduce animation
 later must run before `noname.alto`. Scope membership
@@ -1265,11 +1282,11 @@ Animators. Disable individual optimizations in the Inspector:
 
 | Option | Behavior |
 | --- | --- |
-| Remove Unreachable States | Remove impossible transitions and unreachable states when the layer's Write Defaults binding coverage survives. Default states and layer indices are retained. |
+| Remove Unreachable States | Remove impossible transitions and unreachable states while preserving each layer's Write Defaults binding coverage. At the final runtime boundary, compatible unreachable motions share one binding-only clip. Default states, shared states, layer indices and unsupported motion metadata are retained. |
 | Remove Unused Parameter Curves | Trace backward from visible output, state conditions, expression/platform parameters and Parameter Driver consumers. Remove unobserved parameter computations, including feedback cycles with no observable consumer. With unused material analysis enabled, also remove unused internal Set/Add/Copy Driver operations. |
 | Remove Unused Parameter Declarations | After SDK generators finish, remove internal declarations with no remaining controller references. Keep Expression, menu, sensor, platform, external and preserved names, including defaults shared across controllers. Early NDMF passes leave declarations available to later generators. |
 | Simplify Unused State Logic | Follow state conditions and timing back from actual outputs instead of treating every transition as a consumer. Remove unused internal AAP/Set/Add/Copy calculations and collapse empty state machines to their original default state. Replace dead ordinary Direct/1D trees with an existing empty leaf while retaining implicit Write Defaults effects. At the final SDK boundary, remove proven empty Write Defaults On override layers. Keep additive, masked, synchronized, default-sensitive and referenced layers; preserve cross-playable layer-control indices. Preserved input values and their observable consumers survive; input preservation does not retain effect-free state logic. |
-| Simplify Constant Blend Trees | Replace static 1D or Direct trees with a selected child when parameter analysis proves its weight is one and all binding coverage is preserved. |
+| Simplify Constant Blend Trees | Replace static 1D or Direct trees with a selected child when parameter analysis proves its weight is one. Also collapse 1D trees whose branches reference the same constant clip with identical sampling settings, even with a dynamic input. Preserve zero-valued writes, binding coverage and observable timing. |
 | Merge Same Weight Clips | Combine disjoint static clips driven by the same parameter in a non-normalized Direct tree. |
 | Bake Constant Material Properties | Bake invariant Float/Range material properties into renderer-specific build copies. Color and Vector channels remain animated because Unity writes their combined property-block value. Animated material slots, ambiguous targets and unproven weights are preserved. |
 | Remove Unused Material Properties | Remove complete material-property tracks only when every possible material shader is proven not to use the property. Preserved inputs and their live outputs remain dynamic; they do not retain unused properties in the same clip. Reanalyze dependent computations after material conversion. Preserve active Color/Vector channels and unknown shader consumers. |
@@ -1422,7 +1439,7 @@ targets. Unsupported GPU capabilities preserve the mesh and report the reason.
 
 ## Requirements
 
-Unity 2022.3, NDMF 1.14.8 to before 2.0, and VRChat Avatars SDK 3.10.5 to before
+Unity 2022.3, NDMF 1.14.8 to before 2.0, and VRChat Avatars SDK 3.10.6 to before
 3.11 are required by the package manifest.
 
 Optional integrations load within these version ranges:

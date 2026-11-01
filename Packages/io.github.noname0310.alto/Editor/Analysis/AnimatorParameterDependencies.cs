@@ -334,6 +334,7 @@ namespace Noname.AvatarTools.Analysis
                 Visit(state.Motion, stateInputs.TryGetValue(state, out var inputs) ? inputs : new(), new());
             }
             var behaviours = behaviourInputs.Keys;
+            var faceTracking = new NativeFaceTracking(avatar);
             foreach (var behaviour in behaviours)
             {
                 if (behaviour is VRC_AvatarParameterDriver driver)
@@ -368,6 +369,22 @@ namespace Noname.AvatarTools.Analysis
                                 if (ordered != null) live.UnionWith(ordered[index]);
                                 else { inputs.Add(operation.name); live.Add(operation.name); }
                             }
+                        }
+                    }
+                }
+                else if (behaviour is VRC_AnimatorFaceTrackingBlendshapesSet faceControl)
+                {
+                    foreach (var control in NativeFaceTracking.Controls(faceControl))
+                    {
+                        var outputs = faceTracking.SetOutputs(control.blendshapesSetName);
+                        var inputs = new HashSet<string>(behaviourInputs[behaviour], StringComparer.Ordinal);
+                        if (control.type == VRC_AnimatorFaceTrackingBlendshapesSet.SourceType.Parameter && !string.IsNullOrEmpty(control.sourceParameter))
+                            inputs.Add(control.sourceParameter);
+                        if (outputs.Geometry) live.UnionWith(inputs);
+                        foreach (string name in outputs.Parameters)
+                        {
+                            if (!dependencies.TryGetValue(name, out var readers)) dependencies.Add(name, readers = new());
+                            readers.UnionWith(inputs);
                         }
                     }
                 }

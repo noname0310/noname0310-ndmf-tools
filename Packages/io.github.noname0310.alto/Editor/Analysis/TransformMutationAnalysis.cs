@@ -70,7 +70,7 @@ namespace Noname.AvatarTools.Analysis
                 if (!(behaviour is VRC_AvatarParameterDriver) && !(behaviour is VRC_AnimatorLayerControl) &&
                     !(behaviour is VRC_PlayableLayerControl) && !(behaviour is VRC_AnimatorTrackingControl) &&
                     !(behaviour is VRC_AnimatorLocomotionControl) && !(behaviour is VRC_AnimatorTemporaryPoseSpace) &&
-                    !(behaviour is VRC_AnimatorPlayAudio))
+                    !(behaviour is VRC_AnimatorPlayAudio) && !(behaviour is VRC_AnimatorFaceTrackingBlendshapesSet))
                     result.Uncertain ??= "unverified StateMachineBehaviour: " + behaviour.GetType().FullName;
                 ReadReferences(behaviour, t => result.Add(t, behaviour), new HashSet<Object>());
             }
@@ -102,6 +102,28 @@ namespace Noname.AvatarTools.Analysis
             {
                 if (component == null || component is Transform || component is Renderer || component is MeshFilter ||
                     component is Animator || component is INDMFEditorOnly || component is IEditorOnly) continue;
+                var type = component.GetType();
+                if (type == typeof(VRCAvatarDescriptor))
+                {
+                    var descriptor = (VRCAvatarDescriptor)component;
+                    if (descriptor.lipSync == VRC_AvatarDescriptor.LipSyncStyle.JawFlapBone)
+                        result.Add(descriptor.lipSyncJawBone, descriptor, false);
+                    if (descriptor.enableEyeLook)
+                    {
+                        var eyes = descriptor.customEyeLookSettings;
+                        if (eyes.eyeGazeMode != VRCAvatarDescriptor.CustomEyeLookSettings.EyeGazeMode.FaceTracking)
+                        { result.Add(eyes.leftEye, descriptor, false); result.Add(eyes.rightEye, descriptor, false); }
+                        if (eyes.eyelidType == VRCAvatarDescriptor.EyelidType.Bones)
+                            foreach (var lid in new[] { eyes.lowerLeftEyelid, eyes.upperLeftEyelid, eyes.lowerRightEyelid, eyes.upperRightEyelid })
+                                result.Add(lid, descriptor, false);
+                    }
+                    // Native FT mesh references and shader Contact targets are outputs,
+                    // not Transform writers. Their geometry/dependencies are indexed separately.
+                    continue;
+                }
+                if (type == typeof(VRCContactSender) || type == typeof(VRCContactReceiver) || type == typeof(VRCPhysBoneCollider)) continue;
+                if (type == typeof(VRCRaycast))
+                { result.Add(((VRCRaycast)component).ResultTransform, component, false); continue; }
                 if (KnownConstraintWriter(component, out var constraintTarget, out bool writesScale))
                 {
                     // Sources and world-up transforms are readers. SDK constraints
@@ -113,16 +135,8 @@ namespace Noname.AvatarTools.Analysis
                     component.GetType().Assembly.GetName().Name == "VRC.SDK3.Dynamics.Constraint") result.Add(component.transform, component);
                 // Keep separate traversals per writer so shared assets retain every
                 // reader's provenance, including an overlapping PhysBone.
-                // Contacts/colliders consume transform frames; Descriptor eye/jaw
-                // controls use rotations. Their references do not write local scale.
-                // Keep conservative transform retention, but do not invent independent
-                // scale-sign changes. Parameter-driven scale animation is indexed above.
-                // Exact SDK types only: custom subclasses keep the unknown-writer rule.
-                var type = component.GetType();
-                bool mayWriteReferencedScale = type != typeof(VRCAvatarDescriptor) &&
-                    type != typeof(VRCContactSender) && type != typeof(VRCContactReceiver) &&
-                    type != typeof(VRCPhysBoneCollider);
-                ReadReferences(component, t => result.Add(t, component, mayWriteReferencedScale), new HashSet<Object>());
+                // Custom subclasses retain the conservative unknown-writer rule.
+                ReadReferences(component, t => result.Add(t, component), new HashSet<Object>());
             }
             return result;
         }

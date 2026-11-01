@@ -23,6 +23,8 @@ namespace Noname.AvatarTools.ObjectOptimization
             foreach (var behaviour in ParameterSpecialization.Behaviours(nodes))
             {
                 if (behaviour == null) continue;
+                if (behaviour is VRC_AnimatorFaceTrackingBlendshapesSet faceControl)
+                { result.UnionWith(NativeFaceTracking.Reads(faceControl)); continue; }
                 if (behaviour is VRC_AvatarParameterDriver driver)
                 {
                     result.UnionWith((driver.parameters ?? new()).Where(p => p != null).Select(p => p.name));

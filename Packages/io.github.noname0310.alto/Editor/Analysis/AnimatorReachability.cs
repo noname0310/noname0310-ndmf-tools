@@ -45,7 +45,7 @@ namespace Noname.AvatarTools.Analysis
             "VelocityMagnitude", "Upright", "Grounded", "Seated", "AFK", "TrackingType", "VRMode",
             "MuteSelf", "InStation", "Earmuffs", "IsOnFriendsList", "AvatarVersion", "IsAnimatorEnabled",
             "ScaleModified", "ScaleFactor", "ScaleFactorInverse", "EyeHeightAsMeters", "EyeHeightAsPercent",
-            "VRCEmote", "VRCFaceBlendH", "VRCFaceBlendV"
+            "VRCEmote", "VRCFaceBlendH", "VRCFaceBlendV", "UserEyeTracking", "UserFaceTracking"
         };
 
         private readonly VirtualAnimatorController[] controllers;
@@ -301,6 +301,7 @@ namespace Noname.AvatarTools.Analysis
                     }
                 }
                 else if (!(behaviour is VRC_AnimatorLayerControl) && !(behaviour is VRC_PlayableLayerControl) &&
+                         !(behaviour is VRC_AnimatorFaceTrackingBlendshapesSet) &&
                          !(behaviour is VRC_AnimatorTrackingControl) && !(behaviour is VRC_AnimatorLocomotionControl) &&
                          !(behaviour is VRC_AnimatorTemporaryPoseSpace) && !(behaviour is VRC_AnimatorPlayAudio))
                     PreserveAll("A reachable state uses an unsupported state machine behaviour.");

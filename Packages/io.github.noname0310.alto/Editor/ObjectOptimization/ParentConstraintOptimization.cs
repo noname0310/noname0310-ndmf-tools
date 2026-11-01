@@ -41,7 +41,7 @@ namespace Noname.AvatarTools.ObjectOptimization
                     constraint.GetComponents<Component>().Any(c => c != null && c != constraint && BuildFilterPass.Requires(c, constraint))) continue;
                 var target = constraint.TargetTransform != null ? constraint.TargetTransform : constraint.transform;
                 if (target == avatar.transform || !settings.Scope.Contains(target) || settings.Protected(target) ||
-                    !constraint.Locked || constraint.FreezeToWorld ||
+                    !constraint.Locked || constraint.FreezeToWorld || constraint.SmoothingFactor != 0 ||
                     mutation.WrittenByOther(target, constraint) ||
                     !proof.IsConstant(constraint)) continue;
                 string path = AnimationUtility.CalculateTransformPath(constraint.transform, avatar.transform);

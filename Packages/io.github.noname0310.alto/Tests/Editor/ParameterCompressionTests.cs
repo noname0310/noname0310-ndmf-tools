@@ -41,7 +41,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 Assert.That(encoding.Decode(encoding.Encode(value)), Is.EqualTo(Math.Max(minimum, Math.Min(maximum, value))));
         }
 
-        [TestCase(-1, 7)] [TestCase(1, 1)] [TestCase(8, 7)] [TestCase(0, 128)] [TestCase(0, 256)]
+        [TestCase(-129, 7)] [TestCase(1, 1)] [TestCase(8, 7)] [TestCase(0, 128)] [TestCase(0, 256)]
         public void IntegerCompressionRejectsInvalidOrNonSavingDomains(int minimum, int maximum) =>
             Assert.Throws<InvalidOperationException>(() => IntegerContract(minimum, maximum));
 
@@ -159,11 +159,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var descriptor = LayoutDescriptor();
             var source = Track(ScriptableObject.CreateInstance<VRCExpressionParameters>());
             source.parameters = new[] { LayoutParameter("Mode", ValueType.Int), LayoutParameter("Unused") };
-            source.parameters[0].defaultValue = 3; descriptor.expressionParameters = source;
+            source.parameters[0].defaultValue = 13; descriptor.expressionParameters = source;
             string before = EditorJsonUtility.ToJson(source);
             var layout = root.AddComponent<ALTOParameterLayout>();
             var marker = root.AddComponent<ALTOParameterCompression>();
-            marker.Integers.Add(new CompressedIntegerParameter { Name = "Mode", Maximum = 7 });
+            marker.Integers.Add(new CompressedIntegerParameter { Name = "Mode", Minimum = 10, Maximum = 17 });
             var context = new BuildContext(root, null); ParameterLayoutPass.Capture(context);
             var settings = context.GetState<ParameterLayoutState>().Settings;
             Assert.That(marker == null && layout == null, Is.True);
@@ -235,7 +235,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 { type = VRCAvatarDescriptor.AnimLayerType.FX, isDefault = false, animatorController = controller } };
             string original = EditorJsonUtility.ToJson(source), originalController = EditorJsonUtility.ToJson(controller);
             var settings = new ParameterCompressionSettings();
-            settings.Integers.Add(new CompressedIntegerParameter { Name = "Mode", Maximum = 7 });
+            settings.Integers.Add(new CompressedIntegerParameter { Name = "Mode", Maximum = conflict == "identity" ? 6 : 7 });
             if (conflict == "preserved") settings.KeepNative.Add("Mode");
             var record = conflict == "wire collision" ? new ParameterLayoutRecord { IntegerEncodings = new() { encoding } } : null;
             var context = new BuildContext(root, null);
@@ -275,10 +275,10 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             {
                 var descriptor = LayoutDescriptor();
                 var input = Track(ScriptableObject.CreateInstance<VRCExpressionParameters>());
-                input.parameters = new[] { LayoutParameter("Mode", ValueType.Int) }; input.parameters[0].defaultValue = 5;
+                input.parameters = new[] { LayoutParameter("Mode", ValueType.Int) }; input.parameters[0].defaultValue = 15;
                 descriptor.expressionParameters = input;
                 root.AddComponent<ALTOParameterLayout>();
-                root.AddComponent<ALTOParameterCompression>().Integers.Add(new CompressedIntegerParameter { Name = "Mode", Maximum = 7 });
+                root.AddComponent<ALTOParameterCompression>().Integers.Add(new CompressedIntegerParameter { Name = "Mode", Minimum = 10, Maximum = 17 });
                 var context = new BuildContext(root, folder);
                 ParameterLayoutPass.Capture(context);
                 ParameterLayoutSdkSession.Begin(root);

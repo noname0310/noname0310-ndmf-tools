@@ -8,6 +8,7 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
 using VRC.SDK3.Avatars.Components;
+using VRC.SDK3.Dynamics.Contact.Components;
 using Object = UnityEngine.Object;
 
 namespace Noname.AvatarTools.Meshes
@@ -17,6 +18,12 @@ namespace Noname.AvatarTools.Meshes
     internal sealed class MeshMergeCandidate
     {
         internal SkinnedMeshRenderer Renderer;
+        internal GameObject Avatar;
+        internal ShaderPropertyUsage Shaders;
+        internal AvatarAnimationIndex Animations;
+        internal readonly HashSet<VRCContactReceiver> MaterialContacts = new();
+        internal bool NativeFaceInterface;
+        internal readonly HashSet<string> NativeFaceShapes = new(StringComparer.Ordinal);
         internal bool Pinned;
         internal readonly HashSet<string> PinReasons = new(StringComparer.Ordinal);
         internal void Pin(string reason) { Pinned = true; PinReasons.Add(reason); }
@@ -56,8 +63,16 @@ namespace Noname.AvatarTools.Meshes
             bool makeRigid = renderer != null && policy?.ConvertsRigid(renderer) == true && RigidMeshConversion.Unweighted(renderer.sharedMesh);
             reason = makeRigid ? SkinnedMeshAssembler.ValidateGeometry(renderer, renderer.sharedMesh) : SkinnedMeshAssembler.Validate(renderer);
             if (reason != null) return null;
-            var result = new MeshMergeCandidate { Renderer = renderer, Bounds = StoredBounds(renderer),
+            var result = new MeshMergeCandidate { Renderer = renderer, Avatar = avatar, Shaders = shaders, Animations = animations, Bounds = StoredBounds(renderer),
                 MaskCoverage = MaskCoverage(avatar, renderer.transform, animations, typeof(Renderer)) };
+            result.MaterialContacts.UnionWith(ContactOutputs.Writers(avatar, renderer));
+            var nativeFace = new NativeFaceTracking(avatar);
+            result.NativeFaceInterface = nativeFace.Meshes.Contains(renderer);
+            if (result.NativeFaceInterface)
+            {
+                result.NativeFaceShapes.UnionWith(nativeFace.ShapeNames());
+                result.ReservedShapeNames.UnionWith(result.NativeFaceShapes.Where(n => renderer.sharedMesh.GetBlendShapeIndex(n) < 0));
+            }
             string Unsupported()
             {
                 if (renderer.rootBone == null && policy?.AllowsCoordinates(renderer) != true) return "no explicit root bone";
@@ -73,9 +88,10 @@ namespace Noname.AvatarTools.Meshes
                 if (renderer.lightmapIndex >= 0 || renderer.realtimeLightmapIndex >= 0) return "lightmapped renderer";
                 if (references.ReferenceOwners.TryGetValue(renderer, out var readers))
                 {
-                    if (readers.Any(r => !(r is VRCAvatarDescriptor))) return "renderer readers: " + string.Join(", ",
-                        readers.Where(r => !(r is VRCAvatarDescriptor)).Select(r => r.GetType().Name + " on '" + r.name + "'"));
-                    if (readers.Count > 0) result.Pin("Descriptor renderer reference");
+                    if (readers.Any(r => !(r is VRCAvatarDescriptor) && !(r is VRCContactReceiver))) return "renderer readers: " + string.Join(", ",
+                        readers.Where(r => !(r is VRCAvatarDescriptor) && !(r is VRCContactReceiver)).Select(r => r.GetType().Name + " on '" + r.name + "'"));
+                    if (readers.OfType<VRCAvatarDescriptor>().Any(d => !result.NativeFaceInterface ||
+                        d.VisemeSkinnedMesh == renderer || d.customEyeLookSettings.eyelidsSkinnedMesh == renderer)) result.Pin("Descriptor renderer reference");
                     foreach (var descriptor in readers.OfType<VRCAvatarDescriptor>())
                     {
                         if (descriptor.VisemeSkinnedMesh == renderer)
@@ -200,6 +216,28 @@ namespace Noname.AvatarTools.Meshes
         internal static string Incompatibility(MeshMergeCandidate a, MeshMergeCandidate b, MeshMergePolicy policy = null)
         {
             var x = a.Renderer; var y = b.Renderer;
+            foreach (var contact in a.MaterialContacts.Union(b.MaterialContacts))
+                if (a.MaterialContacts.Contains(contact) != b.MaterialContacts.Contains(contact) &&
+                    (ContactOutputs.MaterialReads(contact, x, a.Shaders ?? new ShaderPropertyUsage(), a.Animations) ||
+                     ContactOutputs.MaterialReads(contact, y, b.Shaders ?? new ShaderPropertyUsage(), b.Animations)))
+                    return "different observable Material Contact writers";
+            foreach (string name in a.NativeFaceShapes.Intersect(b.NativeFaceShapes))
+            {
+                int first = x.sharedMesh.GetBlendShapeIndex(name), second = y.sharedMesh.GetBlendShapeIndex(name);
+                if (first < 0 || second < 0) continue;
+                if (x.GetBlendShapeWeight(first) != y.GetBlendShapeWeight(second)) return "different native face morph defaults";
+                var firstWriters = a.Bindings.Where(u => u.Binding.propertyName == "blendShape." + name).ToArray();
+                var secondWriters = b.Bindings.Where(u => u.Binding.propertyName == "blendShape." + name).ToArray();
+                if (firstWriters.Length != secondWriters.Length || firstWriters.Any(u => !secondWriters.Any(v =>
+                    u.Clip == v.Clip && u.Binding.isDiscreteCurve == v.Binding.isDiscreteCurve && MeshAnimationSignal.SameCurve(u.Curve, v.Curve))))
+                    return "independent Animator writers of a shared native face morph";
+                foreach (var pair in new[] { (Mesh: x.sharedMesh, Shape: first), (Mesh: y.sharedMesh, Shape: second) })
+                    if (pair.Mesh.GetBlendShapeFrameCount(pair.Shape) == 0 || Enumerable.Range(0, pair.Mesh.GetBlendShapeFrameCount(pair.Shape))
+                        .Any(f => !MotionAnalysis.Finite(pair.Mesh.GetBlendShapeFrameWeight(pair.Shape, f)) || pair.Mesh.GetBlendShapeFrameWeight(pair.Shape, f) <= 0))
+                        return "unsupported shared native face morph interpolation";
+                if (FaceMorphExtrapolation(x.sharedMesh, first) != FaceMorphExtrapolation(y.sharedMesh, second))
+                    return "different shared native face morph extrapolation ranges";
+            }
             if (a.Pinned && b.Pinned) return "independent external morph interfaces";
             if (a.MaskCoverage != b.MaskCoverage) return "different Animator mask coverage";
             if (a.Visibility.Count != b.Visibility.Count || !a.Visibility.All(s => b.Visibility.Contains(s))) return "different activation or enabled signals";
@@ -227,6 +265,13 @@ namespace Noname.AvatarTools.Meshes
             if (x.skinnedMotionVectors != y.skinnedMotionVectors || x.motionVectorGenerationMode != y.motionVectorGenerationMode) return "different motion-vector settings";
             if (x.sortingLayerID != y.sortingLayerID || x.sortingOrder != y.sortingOrder || x.rendererPriority != y.rendererPriority) return "different sorting settings";
             return null;
+        }
+
+        internal static (float Previous, float Last) FaceMorphExtrapolation(Mesh mesh, int shape)
+        {
+            int count = mesh.GetBlendShapeFrameCount(shape);
+            return (count > 1 ? mesh.GetBlendShapeFrameWeight(shape, count - 2) : 0,
+                mesh.GetBlendShapeFrameWeight(shape, count - 1));
         }
 
         private static bool MaterialDefaultsMatch(Material[] first, Material[] second, bool reorder)

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Noname.AvatarTools.BlendShapeOptimization;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -172,7 +173,8 @@ namespace Noname.AvatarTools.Meshes
         internal static SkinnedMeshAssembly Create(IReadOnlyList<SkinnedMeshRenderer> sources, bool mergeMaterialSlots,
             IEnumerable<string> reservedShapeNames = null, bool removeUnusedData = false,
             IReadOnlyDictionary<SkinnedMeshRenderer, StaticSkinningPlan> skinning = null,
-            ISet<SkinnedMeshRenderer> reverseWinding = null, bool reorderMaterialSlots = false)
+            ISet<SkinnedMeshRenderer> reverseWinding = null, bool reorderMaterialSlots = false,
+            IReadOnlyDictionary<SkinnedMeshRenderer, HashSet<string>> nativeFaceShapes = null)
         {
             if (sources == null || sources.Count == 0 || sources.Distinct().Count() != sources.Count)
                 throw new ArgumentException("Mesh assembly requires unique source renderers.");
@@ -190,7 +192,7 @@ namespace Noname.AvatarTools.Meshes
                 CopyAttributes(inputs, result.Mesh, vertexCount, normals, reverseWinding);
                 CopySkinning(inputs, result, vertexCount, skinning);
                 CopyTopology(inputs, result, mergeMaterialSlots, reverseWinding, reorderMaterialSlots);
-                CopyShapes(inputs, result, vertexCount, reservedShapeNames);
+                CopyShapes(inputs, result, vertexCount, reservedShapeNames, nativeFaceShapes);
                 result.Mesh.RecalculateBounds();
                 return result;
             }
@@ -324,35 +326,68 @@ namespace Noname.AvatarTools.Meshes
             for (int slot = 0; slot < indices.Count; slot++) output.Mesh.SetTriangles(indices[slot], slot, calculateBounds: false);
         }
 
-        private static void CopyShapes(IReadOnlyList<Input> sources, SkinnedMeshAssembly output, int count, IEnumerable<string> reserved)
+        private static void CopyShapes(IReadOnlyList<Input> sources, SkinnedMeshAssembly output, int count, IEnumerable<string> reserved,
+            IReadOnlyDictionary<SkinnedMeshRenderer, HashSet<string>> nativeFaceShapes)
         {
-            var names = new HashSet<string>(reserved ?? Array.Empty<string>(), StringComparer.Ordinal); var weights = new List<float>();
+            var names = new HashSet<string>(reserved ?? Array.Empty<string>(), StringComparer.Ordinal);
+            if (nativeFaceShapes != null) names.UnionWith(nativeFaceShapes.Values.SelectMany(v => v));
+            var groups = new Dictionary<string, List<(Input Source, int Shape, int Offset)>>(StringComparer.Ordinal);
+            var weights = new List<float>();
             var vertices = new Vector3[count]; var normals = new Vector3[count]; var tangents = new Vector3[count];
             int offset = 0;
             for (int input = 0; input < sources.Count; input++)
             {
                 var source = sources[input]; var renderer = source.Renderer; var mesh = renderer.sharedMesh;
                 var mapping = new Dictionary<string, string>(StringComparer.Ordinal); output.ShapeNames.Add(renderer, mapping);
-                var dv = new Vector3[mesh.vertexCount]; var dn = new Vector3[mesh.vertexCount]; var dt = new Vector3[mesh.vertexCount];
                 for (int shape = 0; shape < mesh.blendShapeCount; shape++)
                 {
                     string sourceName = mesh.GetBlendShapeName(shape);
-                    string name = input == 0 ? sourceName : "__AdvancedMerged_" + input + "_" + sourceName;
-                    while (!names.Add(name)) name = "_" + name;
-                    mapping.Add(sourceName, name); weights.Add(renderer.GetBlendShapeWeight(shape));
-                    for (int frame = 0; frame < mesh.GetBlendShapeFrameCount(shape); frame++)
+                    bool shared = nativeFaceShapes != null && nativeFaceShapes.TryGetValue(renderer, out var sharedNames) && sharedNames.Contains(sourceName);
+                    string name = shared || input == 0 ? sourceName : "__AdvancedMerged_" + input + "_" + sourceName;
+                    if (!shared) while (!names.Add(name)) name = "_" + name;
+                    mapping.Add(sourceName, name);
+                    if (!groups.TryGetValue(name, out var group)) groups.Add(name, group = new());
+                    group.Add((source, shape, offset));
+                }
+                offset += source.Vertices.Length;
+            }
+            var samples = sources.ToDictionary(s => s, s => new ShapeDelta(s.Mesh.vertexCount));
+            var buffers = sources.ToDictionary(s => s, s => new ShapeDelta(s.Mesh.vertexCount));
+            foreach (var pair in groups)
+            {
+                var members = pair.Value;
+                float initial = members[0].Source.Renderer.GetBlendShapeWeight(members[0].Shape);
+                if (members.Any(m => m.Source.Renderer.GetBlendShapeWeight(m.Shape) != initial))
+                    throw new InvalidOperationException("Cannot combine independently initialized native face morphs: " + pair.Key);
+                weights.Add(initial);
+                var frames = members.SelectMany(m => Enumerable.Range(0, m.Source.Mesh.GetBlendShapeFrameCount(m.Shape))
+                    .Select(f => m.Source.Mesh.GetBlendShapeFrameWeight(m.Shape, f))).Distinct().OrderBy(w => w).ToArray();
+                if (members.Count > 1 && (frames.Length == 0 || frames.Any(w => !Finite(w) || w <= 0)))
+                    throw new InvalidOperationException("Unsupported native face morph frame range: " + pair.Key);
+                if (members.Count > 1 && members.Select(m => MeshMergeAnalysis.FaceMorphExtrapolation(m.Source.Mesh, m.Shape)).Distinct().Count() != 1)
+                    throw new InvalidOperationException("Cannot preserve shared native face morph extrapolation: " + pair.Key);
+                Array.Clear(vertices, 0, count); Array.Clear(normals, 0, count); Array.Clear(tangents, 0, count);
+                foreach (float weight in frames)
+                {
+                    foreach (var member in members)
                     {
-                        mesh.GetBlendShapeFrameVertices(shape, frame, dv, dn, dt);
+                        var source = member.Source; var mesh = source.Mesh; var sample = samples[source];
+                        int exact = Enumerable.Range(0, mesh.GetBlendShapeFrameCount(member.Shape))
+                            .Where(f => mesh.GetBlendShapeFrameWeight(member.Shape, f) == weight).DefaultIfEmpty(-1).First();
+                        if (exact >= 0) sample.Read(mesh, member.Shape, exact);
+                        else
+                        {
+                            Array.Clear(sample.Vertices, 0, mesh.vertexCount); Array.Clear(sample.Normals, 0, mesh.vertexCount); Array.Clear(sample.Tangents, 0, mesh.vertexCount);
+                            MeshOptimization.AddAtWeight(mesh, member.Shape, weight, sample, buffers[source]);
+                        }
                         for (int vertex = 0; vertex < source.Vertices.Length; vertex++)
                         {
-                            int original = source.Vertices[vertex];
-                            vertices[offset + vertex] = dv[original]; normals[offset + vertex] = dn[original]; tangents[offset + vertex] = dt[original];
+                            int original = source.Vertices[vertex], target = member.Offset + vertex;
+                            vertices[target] = sample.Vertices[original]; normals[target] = sample.Normals[original]; tangents[target] = sample.Tangents[original];
                         }
-                        output.Mesh.AddBlendShapeFrame(name, mesh.GetBlendShapeFrameWeight(shape, frame), vertices, normals, tangents);
                     }
+                    output.Mesh.AddBlendShapeFrame(pair.Key, weight, vertices, normals, tangents);
                 }
-                Array.Clear(vertices, offset, source.Vertices.Length); Array.Clear(normals, offset, source.Vertices.Length); Array.Clear(tangents, offset, source.Vertices.Length);
-                offset += source.Vertices.Length;
             }
             output.ShapeWeights = weights.ToArray();
         }

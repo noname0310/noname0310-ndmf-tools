@@ -9,6 +9,18 @@ package. The reviewed source is version **1.9.20**, commit
 AAO is licensed under MIT. Its copyright and permission notice are reproduced
 in [ThirdPartyNotices.txt](ThirdPartyNotices.txt).
 
+SDK 3.10.6 compatibility was additionally reviewed against
+[AAO 1.9.21](https://github.com/anatawa12/AvatarOptimizer/releases/tag/v1.9.21),
+particularly `Editor/APIInternal/ComponentInfos.VRCSDK.cs`: native facial morph
+interfaces and key selection, Material Contact outputs, advanced Contact parameters,
+and Raycast 1.1 semantics. ALTO's blend-set dependency graph, backwards output
+liveness, shared-morph merge proof and shader-consumer analysis are independently
+implemented. The SDK declarations and official
+[Face Tracking](https://creators.vrchat.com/avatars/face-tracking/),
+[Contacts](https://creators.vrchat.com/common-components/contacts/) and
+[Expression Parameters](https://creators.vrchat.com/avatars/expression-menu-and-controls/)
+specifications were also checked on 2026-11-01.
+
 The following table distinguishes adapted data, interoperability, and design
 references. A design reference does not mean that AAO's implementation was
 copied, that behavior is identical, or that feature parity has been completed.

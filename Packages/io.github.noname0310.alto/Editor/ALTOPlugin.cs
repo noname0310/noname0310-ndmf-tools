@@ -1,4 +1,5 @@
 using System;
+using Noname.AvatarTools.Analysis;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -192,7 +193,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                     var scope = scopes.Where(s => s.OriginalRenderers.Contains(renderer) ||
                         (s.Root != null && renderer.transform.IsChildOf(s.Root))).OrderByDescending(s => s.Depth).FirstOrDefault();
                     if (scope == null) continue;
-                    var preserve = ProtectedNames(renderer, descriptor, scope.Mmd);
+                    var preserve = ProtectedNames(renderer, descriptor, scope.Mmd, scope.RemoveIneffective, fullVertexReaders.Contains(renderer));
                     PreserveForOtherOptimizers(renderer, preserve);
                     plans.Add(OptimizationPlan.Create(renderer, usage, scope.ZeroReset, preserve, exclusions[scope].Matches,
                         scope.IgnoreUnreachableStates, scope.RemoveIneffective, fullVertexReaders.Contains(renderer)));
@@ -222,6 +223,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 }
                 if (descriptor != null && outputs.Any(o => o.plan.Renderer == descriptor.customEyeLookSettings.eyelidsSkinnedMesh))
                     RestoreEyelids(descriptor, eyelidNames);
+                new NativeFaceTracking(descriptor).ClearMissingShapes(new HashSet<string>(outputs.SelectMany(o => o.plan.Ineffective.Select(s => s.Name))));
                 UnityEngine.Debug.Log($"[Noname BlendShapes] {outputs.Count} meshes, {usage.ClipCount} clips: " +
                     $"removed {plans.Sum(p => p.Ineffective.Count)} ineffective shapes; froze {plans.Sum(p => p.Frozen.Count)} shapes; merged {plans.Sum(p => p.Groups.Sum(g => g.Inputs.Count))} " +
                     $"zero-reset shapes into {plans.Sum(p => p.Groups.Count)}; " +
@@ -242,7 +244,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             }
         }
 
-        internal static HashSet<string> ProtectedNames(SkinnedMeshRenderer renderer, VRCAvatarDescriptor descriptor, bool mmd)
+        internal static HashSet<string> ProtectedNames(SkinnedMeshRenderer renderer, VRCAvatarDescriptor descriptor, bool mmd,
+            bool removeIneffective = false, bool observeAllVertices = false)
         {
             var names = new HashSet<string>(StringComparer.Ordinal);
             var marker = renderer.GetComponent<BlendShapeOptimizationExclude>();
@@ -250,6 +253,17 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             if (mmd) names.UnionWith(MmdMorphNames.All);
             if (descriptor != null)
             {
+                var native = new NativeFaceTracking(descriptor);
+                if (native.Meshes.Contains(renderer))
+                {
+                    var effects = removeIneffective && renderer.sharedMesh != null && renderer.sharedMesh.isReadable
+                        ? new BlendShapeEffectAnalysis(renderer.sharedMesh, observeAllVertices) : null;
+                    foreach (string name in native.ShapeNames())
+                    {
+                        int shape = renderer.sharedMesh != null ? renderer.sharedMesh.GetBlendShapeIndex(name) : -1;
+                        if (shape < 0 || effects == null || effects.HasEffect(shape)) names.Add(name);
+                    }
+                }
                 if (descriptor.VisemeSkinnedMesh == renderer)
                 {
                     if (descriptor.VisemeBlendShapes != null) names.UnionWith(descriptor.VisemeBlendShapes.Where(n => n != null));

@@ -7,16 +7,32 @@ using Parameter = VRC.SDK3.Avatars.ScriptableObjects.VRCExpressionParameters.Par
 namespace Noname.AvatarTools.ParameterLayout
 {
     [Serializable]
-    internal sealed class ParameterLayoutEntry
+    internal class ParameterLayoutEntry
     {
         public string Name;
         public VRCExpressionParameters.ValueType Type;
+        // Zero in a pre-3.10.6 record means the historical eight-bit encoding.
+        public int BitWidth;
+        public bool FlippedRepresentation;
+        internal int Cost => Type == VRCExpressionParameters.ValueType.Bool ? 1 : BitWidth == 0 ? 8 : BitWidth;
+        internal (VRCExpressionParameters.ValueType Type, int Bits, bool Flipped) Encoding
+            => (Type, Cost, Type != VRCExpressionParameters.ValueType.Bool && FlippedRepresentation);
+        internal bool SameEncoding(ParameterLayoutEntry other) => other != null && Encoding == other.Encoding;
+        internal bool SameEncoding(Parameter other) => SameEncoding(Capture(other));
+        internal static ParameterLayoutEntry Capture(Parameter parameter) => new() {
+            Name = parameter.name, Type = parameter.valueType, BitWidth = parameter.GetBitWidthByType(),
+            FlippedRepresentation = parameter.flippedRepresentation };
+        internal Parameter Declaration(string name = null) => new() {
+            name = name ?? Name, valueType = Type, bitWidth = (byte)Cost, flippedRepresentation = FlippedRepresentation,
+            networkSynced = true, saved = false };
+        internal bool Valid => Enum.IsDefined(typeof(VRCExpressionParameters.ValueType), Type) &&
+            (Type == VRCExpressionParameters.ValueType.Bool || Cost >= Parameter.MinBitWidth && Cost <= Parameter.MaxBitWidth);
     }
 
     [Serializable]
     internal sealed class ParameterLayoutRecord
     {
-        public int Version = 3;
+        public int Version = 4;
         public string BlueprintId;
         public ParameterLayoutPlatform ReferencePlatform;
         public string UploadedUtc;
@@ -63,17 +79,17 @@ namespace Noname.AvatarTools.ParameterLayout
         }
 
         internal static List<ParameterLayoutEntry> Capture(Parameter[] parameters) => Read(parameters)
-            .Where(p => p.networkSynced).Select(p => new ParameterLayoutEntry { Name = p.name, Type = p.valueType }).ToList();
+            .Where(p => p.networkSynced).Select(ParameterLayoutEntry.Capture).ToList();
 
         internal static void Validate(ParameterLayoutRecord record, bool allowInvalidated = false)
         {
-            if (record == null || record.Version < 1 || record.Version > 3 || record.Parameters == null ||
+            if (record == null || record.Version < 1 || record.Version > 4 || record.Parameters == null ||
                 !Enum.IsDefined(typeof(ParameterLayoutPlatform), record.ReferencePlatform))
                 throw new InvalidOperationException("Unsupported or incomplete parameter layout record. Upload the reference platform again.");
             var names = new HashSet<string>(StringComparer.Ordinal);
             foreach (var entry in record.Parameters)
                 if (entry == null || string.IsNullOrEmpty(entry.Name) || !names.Add(entry.Name) ||
-                    !Enum.IsDefined(typeof(VRCExpressionParameters.ValueType), entry.Type))
+                    !entry.Valid)
                     throw new InvalidOperationException("The parameter layout record contains invalid or duplicate declarations.");
             if (record.IntegerEncodings == null || record.Version == 1 && record.IntegerEncodings.Count != 0)
                 throw new InvalidOperationException("Invalid integer encoding metadata in the parameter layout record.");
@@ -83,6 +99,13 @@ namespace Noname.AvatarTools.ParameterLayout
             {
                 if (encoding == null) throw new InvalidOperationException("Missing integer encoding metadata.");
                 encoding.Validate();
+                if (encoding.IsNative)
+                {
+                    if (record.Version < 4 || !logicalNames.Add(encoding.Name) || !record.Parameters.Any(p => p.Name == encoding.Name &&
+                        p.Type == VRCExpressionParameters.ValueType.Int && p.Cost == encoding.NativeBitWidth && p.FlippedRepresentation == encoding.SignedRepresentation))
+                        throw new InvalidOperationException("Missing or conflicting native integer declaration: " + encoding.Name);
+                    continue;
+                }
                 if (!logicalNames.Add(encoding.Name) || names.Contains(encoding.Name))
                     throw new InvalidOperationException("Duplicate or synchronized logical integer in the parameter layout: " + encoding.Name);
                 foreach (var bit in encoding.Bits)
@@ -101,7 +124,7 @@ namespace Noname.AvatarTools.ParameterLayout
                         throw new InvalidOperationException("Conflicting multiplexed logical input: " + input.Name);
                 foreach (var parameter in record.Multiplexing.WireDeclarations())
                     if (!wireNames.Add(parameter.name) || logicalNames.Contains(parameter.name) ||
-                        !record.Parameters.Any(p => p.Name == parameter.name && p.Type == parameter.valueType))
+                        !record.Parameters.Any(p => p.Name == parameter.name && p.SameEncoding(parameter)))
                         throw new InvalidOperationException("Missing or conflicting multiplexing wire declaration: " + parameter.name);
             }
             if (!allowInvalidated && !string.IsNullOrEmpty(record.InvalidatedUtc))
@@ -112,7 +135,9 @@ namespace Noname.AvatarTools.ParameterLayout
         internal static Parameter Copy(Parameter source) => new()
         {
             name = source.name, valueType = source.valueType, defaultValue = source.defaultValue,
-            saved = source.saved, networkSynced = source.networkSynced
+            saved = source.saved, networkSynced = source.networkSynced,
+            bitWidth = source.bitWidth, flippedRepresentation = source.flippedRepresentation,
+            useCustomLerpDuration = source.useCustomLerpDuration, customLerpDuration = source.customLerpDuration
         };
 
         internal static ParameterLayoutResult Align(ParameterLayoutRecord record, Parameter[] current,
@@ -132,9 +157,9 @@ namespace Noname.AvatarTools.ParameterLayout
                 var entry = record.Parameters[slot];
                 if (synchronized.TryGetValue(entry.Name, out var parameter))
                 {
-                    if (parameter.valueType != entry.Type)
-                        throw new InvalidOperationException("Parameter type differs from the reference upload: " + entry.Name +
-                            " (" + entry.Type + " -> " + parameter.valueType + ").");
+                    if (!entry.SameEncoding(parameter))
+                        throw new InvalidOperationException("Parameter type, bit width or signed representation differs from the reference upload: " + entry.Name +
+                            " (" + entry.Encoding + " -> " + ParameterLayoutEntry.Capture(parameter).Encoding + ").");
                     output.Add(Copy(parameter)); synchronized.Remove(entry.Name);
                 }
                 else
@@ -143,7 +168,7 @@ namespace Noname.AvatarTools.ParameterLayout
                     // sensor or menu may still observe its local value.
                     string stem = "__AdvancedParameterPadding_" + slot; string name = stem;
                     for (int suffix = 1; !occupied.Add(name); suffix++) name = stem + "_" + suffix;
-                    output.Add(new Parameter { name = name, valueType = entry.Type, networkSynced = true, saved = false, defaultValue = 0 });
+                    output.Add(entry.Declaration(name));
                     result.Padding++;
                     result.PaddingNames.Add(name);
                     result.PaddingReferenceNames.Add(name, entry.Name);
@@ -166,8 +191,8 @@ namespace Noname.AvatarTools.ParameterLayout
 
         internal static void ValidateLateDeclarations(IReadOnlyList<ParameterLayoutEntry> before, Parameter[] current)
         {
-            var after = Capture(current).ToDictionary(p => p.Name, p => p.Type, StringComparer.Ordinal);
-            if (before.Count != after.Count || before.Any(p => !after.TryGetValue(p.Name, out var type) || p.Type != type))
+            var after = Capture(current).ToDictionary(p => p.Name, StringComparer.Ordinal);
+            if (before.Count != after.Count || before.Any(p => !after.TryGetValue(p.Name, out var entry) || !p.SameEncoding(entry)))
                 throw new InvalidOperationException("A later build processor changed synchronized parameter declarations after NDMF. " +
                     "Rebuild the reference platform with matching transport settings and records. " +
                     "ALTO Parameter Layout cannot infer an external transport protocol.");
@@ -181,8 +206,8 @@ namespace Noname.AvatarTools.ParameterLayout
         {
             var input = Read(current);
             var after = Capture(input);
-            var byName = after.ToDictionary(p => p.Name, p => p.Type, StringComparer.Ordinal);
-            if (before.Count == after.Count && before.All(p => byName.TryGetValue(p.Name, out var type) && p.Type == type))
+            var byName = after.ToDictionary(p => p.Name, StringComparer.Ordinal);
+            if (before.Count == after.Count && before.All(p => byName.TryGetValue(p.Name, out var entry) && p.SameEncoding(entry)))
                 return input;
             var names = new HashSet<string>(before.Select(p => p.Name), StringComparer.Ordinal);
             var replacements = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -194,7 +219,7 @@ namespace Noname.AvatarTools.ParameterLayout
                 {
                     var expected = before[slot]; var actual = after[slot];
                     if (!padding.Contains(expected.Name) || byName.ContainsKey(expected.Name) || names.Contains(actual.Name) ||
-                        expected.Type != actual.Type || !isUnobserved(expected.Name)) continue;
+                        !expected.SameEncoding(actual) || !isUnobserved(expected.Name)) continue;
                     if (locals.TryGetValue(actual.Name, out var original))
                     {
                         // A late layout tool may re-enable a known local input under
@@ -203,7 +228,7 @@ namespace Noname.AvatarTools.ParameterLayout
                         // and local declaration match. Never discard its consumers.
                         var changed = input.Single(p => p.name == actual.Name);
                         if (referenceNames == null || !referenceNames.TryGetValue(expected.Name, out var referenceName) ||
-                            referenceName != actual.Name || original.valueType != actual.Type ||
+                            referenceName != actual.Name || !actual.SameEncoding(original) ||
                             original.defaultValue != changed.defaultValue || original.saved != changed.saved) continue;
                         restoredLocals.Add(actual.Name, Copy(original));
                     }
@@ -214,7 +239,7 @@ namespace Noname.AvatarTools.ParameterLayout
             var normalized = input.Where(p => !restored.Contains(p.name)).Select(p =>
             {
                 if (!replacements.TryGetValue(p.name, out var name)) return p;
-                return new Parameter { name = name, valueType = p.valueType, networkSynced = true, saved = false, defaultValue = 0 };
+                return ParameterLayoutEntry.Capture(p).Declaration(name);
             }).Concat(restoredLocals.Values).ToArray();
             ValidateLateDeclarations(before, normalized);
             return normalized;

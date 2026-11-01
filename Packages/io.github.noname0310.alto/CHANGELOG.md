@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.0.9
+
+- Support VRChat SDK 3.10.6 Native Face Tracking in BlendShape protection, Animator reachability, parameter specialization and output liveness. Follow blend-set controls through other sets and forwarded Animator values, and remove dead controls, parameters and menus when their outputs disappear.
+- Merge compatible Native Face Tracking meshes while retaining shared morph names, matching Animator writers and interpolation frames. Preserve independent defaults and incompatible extrapolation ranges. Correct multi-frame sampling above the last frame to match Unity's native deformation.
+- Track advanced Contact parameter outputs and Material Contact shader consumers. Keep shader readers and animated material swaps in the dependency graph, remap renderer targets during compatible merges, and collect contacts whose outputs become unused.
+- Support parameter-only Raycast 1.1 components and include constraint smoothing in parenting equivalence checks. Distinguish Native FT/Contact renderer references from Transform writers.
+- Preserve SDK parameter bit widths, signed representation and custom interpolation when copying or aligning layouts. Record the full wire encoding, group multiplex payloads by encoding, and retain custom temporal interpolation on native inputs. Use native reduced-width signed/unsigned integers for compatible explicit ranges without generating Animator codecs.
+- Consolidate compatible unreachable Animator states into a single binding-only clip per layer at the final runtime boundary. Preserve Write Defaults coverage, live states and transitions; keep shared states and unsupported motion metadata intact. Controlled by Remove Unreachable States.
+- Simplify 1D Blend Trees whose branches reference the same constant clip under Simplify Constant Blend Trees, preserving zero-valued writes, binding coverage and timing safeguards. Keep Direct weighting, changed child sampling and ambiguous thresholds intact.
+- Remove output-free nested Blend Trees beneath unnormalized Direct trees after their animated targets disappear. Separate constant-pose analysis from motion timing so clips with nonzero duration can be simplified when no transition, synchronized layer, behaviour or animated sibling observes that timing. Preserve normalized blending, masks, additive layers and Write Defaults Off contexts.
+- Remove missing-target animation bindings at the final runtime boundary, retaining clip duration and SDK proxy/humanoid clips. Feed removals back into dependency analysis without repeatedly rewriting duration placeholders.
+- Show an explicit Enable Platform Filter checkbox in the optimization platform filter Inspector, including its disabled status when Unity omits the component header checkbox.
+- Require VRChat Avatars SDK 3.10.6. Add editor fixtures using actual SDK components, native mesh deformation and complete output-finalization passes.
+
 ## 0.0.8
 
 - Enable Remove Ineffective BlendShapes by default. Remove empty separator shapes and morphs affecting only removed geometry, including animated shapes, by checking exact position, normal and tangent deltas across all frames and remaining submesh indices. Preserve explicitly protected shapes, Descriptor/MMD channels and renderer-reader dependencies.

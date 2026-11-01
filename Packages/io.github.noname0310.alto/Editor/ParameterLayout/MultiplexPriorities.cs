@@ -67,7 +67,8 @@ namespace Noname.AvatarTools.ParameterLayout
                 Add(computed, operation.name);
                 if (operation.type != VRC_AvatarParameterDriver.ChangeType.Set) Add(dataWriters, operation.name);
             }
-            var sensors = AvatarParameterInputs.Sensors(avatar).Select(s => s.Name).ToHashSet(StringComparer.Ordinal);
+            var sensors = AvatarParameterInputs.Sensors(avatar).Select(s => s.Name)
+                .Concat(new NativeFaceTracking(avatar).ForwardedParameters()).ToHashSet(StringComparer.Ordinal);
             var runtimeSeeds = sensors.Concat(puppets).Concat(AnimatorReachability.BuiltIns.Where(n => n != "IsLocal"));
             var runtime = graph.AffectedByWriters(runtimeSeeds, ClipWrites, DynamicWrites);
             var external = ExternalParameterAccess.Collect();
@@ -113,7 +114,9 @@ namespace Noname.AvatarTools.ParameterLayout
             if (MultiplexEncoding.Cost(parameters) <= budget)
                 return MultiplexEncoding.Plan(parameters, new HashSet<string>(), budget, hold, occupied);
             var selected = new HashSet<string>(StringComparer.Ordinal);
-            var ranked = parameters.Where(p => p.networkSynced && Candidates.ContainsKey(p.name))
+            foreach (var parameter in parameters.Where(p => p.networkSynced && !MultiplexEncoding.CanMultiplex(p)))
+                messages.Add("Kept SDK interpolation native: " + parameter.name);
+            var ranked = parameters.Where(p => p.networkSynced && Candidates.ContainsKey(p.name) && MultiplexEncoding.CanMultiplex(p))
                 .GroupBy(p => Candidates[p.name]).OrderBy(g => g.Key).ToArray();
             foreach (var group in ranked)
             {
@@ -126,7 +129,7 @@ namespace Noname.AvatarTools.ParameterLayout
                 // number of selected inputs can leave one slot and a very long cycle.
                 // Cheap inputs are removed first to retain more native logical inputs.
                 // The subset is inclusion-minimal at this cycle length, not globally.
-                foreach (var parameter in group.OrderBy(p => MultiplexEncoding.Cost(p.valueType)).ThenBy(p => p.name, StringComparer.Ordinal))
+                foreach (var parameter in group.OrderBy(MultiplexEncoding.Cost).ThenBy(p => p.name, StringComparer.Ordinal))
                 {
                     selected.Remove(parameter.name);
                     if (!MultiplexEncoding.CanFit(parameters, selected, budget, shortest)) selected.Add(parameter.name);
@@ -145,7 +148,7 @@ namespace Noname.AvatarTools.ParameterLayout
             }
             string summary = string.Join("; ", parameters.Where(p => p.networkSynced).GroupBy(p =>
                     Protected.TryGetValue(p.name, out var reason) ? reason : Candidates.TryGetValue(p.name, out var priority) ? priority.ToString() : "Native wire")
-                .OrderBy(g => g.Key, StringComparer.Ordinal).Select(g => g.Key + "=" + g.Sum(p => MultiplexEncoding.Cost(p.valueType)) + " bits"));
+                .OrderBy(g => g.Key, StringComparer.Ordinal).Select(g => g.Key + "=" + g.Sum(MultiplexEncoding.Cost) + " bits"));
             messages.Add("Priority multiplexing cannot meet the budget: " + summary);
             throw new InvalidOperationException("Cannot fit the synchronized parameter budget without overriding protected or momentary inputs. " + summary);
         }

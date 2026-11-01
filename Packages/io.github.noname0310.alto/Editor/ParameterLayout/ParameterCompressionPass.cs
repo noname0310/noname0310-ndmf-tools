@@ -193,10 +193,12 @@ namespace Noname.AvatarTools.ParameterLayout
             var declared = input.ToDictionary(p => p.name, StringComparer.Ordinal);
             var occupied = new HashSet<string>(input.Select(p => p.name).Concat(controllers.SelectMany(c => c.Parameters.Keys)), StringComparer.Ordinal);
             occupied.UnionWith(AvatarParameterInputs.Sensors(avatar).Select(p => p.Name));
+            occupied.UnionWith(new NativeFaceTracking(avatar).ForwardedParameters());
             occupied.UnionWith(ExpressionMenuOptimizer.Menus(descriptor.expressionsMenu).SelectMany(m => m.controls ?? new())
                 .Where(c => c != null).SelectMany(ExpressionMenuOptimizer.Parameters));
             var encodings = reference?.IntegerEncodings ?? settings.Integers.Select(rule =>
-                IntegerEncoding.Create(rule.Name, rule.Minimum, rule.Maximum, occupied)).ToList();
+                declared.TryGetValue(rule.Name, out var parameter) ? IntegerEncoding.CreateForSdk(parameter, rule.Minimum, rule.Maximum, occupied)
+                    : throw new InvalidOperationException("Compressed integer is absent: " + rule.Name)).ToList();
             var active = new List<IntegerEncoding>();
             foreach (var encoding in encodings)
             {
@@ -225,6 +227,10 @@ namespace Noname.AvatarTools.ParameterLayout
                 if (unused.Contains(copy.name)) copy.networkSynced = false;
                 return new[] { copy };
             }).ToArray();
+            // Each explicitly encoded integer has one recorded transport contract.
+            // Do not multiplex a native narrowed integer or its packed wire bits again.
+            preserve.UnionWith(encodings.Select(e => e.Name));
+            preserve.UnionWith(encodings.SelectMany(e => e.Bits));
             MultiplexEncoding multiplex = reference?.Multiplexing;
             if (multiplex != null && settings.Multiplexing == ParameterMultiplexingMode.Disabled)
                 throw new InvalidOperationException("The reference upload uses time multiplexing. Enable it on this platform too.");
@@ -273,10 +279,11 @@ namespace Noname.AvatarTools.ParameterLayout
                 foreach (var member in multiplex.Inputs)
                 {
                     outputByName.TryGetValue(member.Name, out var logical);
-                    if (logical != null && logical.valueType != member.Type)
-                        throw new InvalidOperationException("Multiplexed parameter type differs from the reference upload: " + member.Name);
+                    if (logical != null && !member.SameEncoding(logical))
+                        throw new InvalidOperationException("Multiplexed parameter encoding differs from the reference upload: " + member.Name);
                     if (logical?.networkSynced == true)
                     {
+                        if (!MultiplexEncoding.CanMultiplex(logical)) throw new InvalidOperationException("Custom interpolation conflicts with recorded multiplexing: " + member.Name + ". Rebuild the reference platform to keep this input native.");
                         if (preserve.Contains(member.Name)) throw new InvalidOperationException("Preservation conflicts with recorded multiplexing: " + member.Name);
                         if (controllers.Any(c => c.Parameters.TryGetValue(member.Name, out var p) && p.type == AnimatorControllerParameterType.Trigger))
                             throw new InvalidOperationException("Multiplexing does not support Trigger parameters: " + member.Name);
@@ -287,7 +294,7 @@ namespace Noname.AvatarTools.ParameterLayout
                 output = output.Concat(multiplex.WireDeclarations()).ToArray();
                 occupied.UnionWith(multiplex.WireDeclarations().Select(p => p.name));
             }
-            if (active.Count != 0 || multiplex != null)
+            if (active.Any(e => !e.IsNative) || multiplex != null)
             {
                 if (entries.TryGetValue(VRCAvatarDescriptor.AnimLayerType.FX, out var existingFx))
                     ParameterTransportIdentity.Read(existingFx);
@@ -313,8 +320,8 @@ namespace Noname.AvatarTools.ParameterLayout
                 if (original != null) ObjectRegistry.RegisterReplacedObject(original, copy);
                 descriptor.expressionParameters = copy;
             }
-            int before = input.Where(p => p.networkSynced).Sum(p => p.valueType == VRCExpressionParameters.ValueType.Bool ? 1 : 8);
-            int after = output.Where(p => p.networkSynced).Sum(p => p.valueType == VRCExpressionParameters.ValueType.Bool ? 1 : 8);
+            int before = MultiplexEncoding.Cost(input);
+            int after = MultiplexEncoding.Cost(output);
             report.Messages.Add("Parameter transport: " + before + " -> " + after + " bits; " + active.Count +
                 " Ints encoded; " + unused.Count + " unused synchronized inputs kept local. Logical names and Saved values retained.");
             foreach (var name in unused.OrderBy(n => n, StringComparer.Ordinal)) report.Messages.Add("Unused synchronized input kept local: " + name);

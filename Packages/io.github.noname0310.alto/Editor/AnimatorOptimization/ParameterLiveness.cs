@@ -21,7 +21,8 @@ namespace Noname.AvatarTools.AnimatorOptimization
             var graph = AnimatorParameterDependencies.Collect(avatar, controllers, forExpressions: followStateOutputs,
                 observableBinding: observableBinding, analysis: analysis, controllerEntries: controllerEntries);
             var roots = new HashSet<string>(StringComparer.Ordinal);
-            if (followStateOutputs) roots.UnionWith(AvatarParameterInputs.ExternalNames(avatar));
+            if (followStateOutputs) roots.UnionWith(AvatarParameterInputs.ExpressionNames(avatar)
+                .Concat(AvatarParameterInputs.Sensors(avatar).Select(s => s.Name)));
             var protectedRoots = dependencyRoots ?? preservedParameters ?? Array.Empty<string>();
             roots.UnionWith(protectedRoots);
             var live = graph.FindLive(roots);
@@ -44,7 +45,11 @@ namespace Noname.AvatarTools.AnimatorOptimization
             {
                 report.DriverOperations += operations.RemoveUnused(driver, live.ForBehaviour(driver));
             }
-            bool Empty(StateMachineBehaviour behaviour) => behaviour is VRC_AvatarParameterDriver driver && driver.parameters?.Count == 0;
+            var faceTracking = new NativeFaceTracking(avatar);
+            report.NativeFaceOperations += faceTracking.Prune(live.Names, nodes.OfType<VirtualState>().SelectMany(s => s.Behaviours)
+                .Concat(nodes.OfType<VirtualStateMachine>().SelectMany(s => s.Behaviours)).OfType<VRC_AnimatorFaceTrackingBlendshapesSet>());
+            bool Empty(StateMachineBehaviour behaviour) => behaviour is VRC_AvatarParameterDriver driver && driver.parameters?.Count == 0 ||
+                behaviour is VRC_AnimatorFaceTrackingBlendshapesSet faceControl && faceControl.blendSets?.Count == 0;
             foreach (var state in nodes.OfType<VirtualState>())
             {
                 var kept = state.Behaviours.Where(b => !Empty(b)).ToImmutableList();

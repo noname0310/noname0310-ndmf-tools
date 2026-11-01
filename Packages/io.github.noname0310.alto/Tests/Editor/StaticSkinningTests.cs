@@ -79,6 +79,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             if (writer == "Descriptor")
             {
                 var descriptor = root.AddComponent<VRCAvatarDescriptor>(); var eye = descriptor.customEyeLookSettings;
+                descriptor.enableEyeLook = true;
                 eye.leftEye = bone; descriptor.customEyeLookSettings = eye;
             }
             if (writer == "ObjectKey") AnimationUtility.SetObjectReferenceCurve(clip,

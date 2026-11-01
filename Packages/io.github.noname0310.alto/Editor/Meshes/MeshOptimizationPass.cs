@@ -281,18 +281,34 @@ namespace Noname.AvatarTools.Meshes
             var sources = group.Select(c => c.Renderer).ToArray(); var destination = sources[0];
             var bounds = expandBounds ? MeshMergePolicy.UnionBounds(group) : group[0].Bounds;
             using var assembly = SkinnedMeshAssembler.Create(sources, mergeSlots, group[0].ReservedShapeNames, removeUnusedData, skinning,
-                MeshMergePolicy.ReversedInputs(group), reorderMaterialSlots);
+                MeshMergePolicy.ReversedInputs(group), reorderMaterialSlots,
+                group.Where(c => c.NativeFaceInterface).ToDictionary(c => c.Renderer, c => c.NativeFaceShapes));
             var rewrites = new List<(AvatarAnimationIndex.BindingUse Use, EditorCurveBinding? Replacement)>();
-            foreach (var candidate in group.Skip(1))
+            foreach (var candidate in group)
                 foreach (var use in candidate.Bindings)
                 {
+                    if (candidate == group[0])
+                    {
+                        if (!use.Binding.propertyName.StartsWith("blendShape.", StringComparison.Ordinal)) continue;
+                        string originalName = use.Binding.propertyName.Substring("blendShape.".Length);
+                        if (assembly.ShapeNames[candidate.Renderer].TryGetValue(originalName, out var firstName))
+                        { if (originalName == firstName) continue; }
+                        else if (assembly.Mesh.GetBlendShapeIndex(originalName) < 0) continue;
+                        // A native morph name arriving from another renderer can make
+                        // an originally missing destination binding active. Remove that
+                        // binding before adding the shared runtime interface.
+                    }
                     EditorCurveBinding? replacement = null;
                     if (use.Binding.propertyName.StartsWith("blendShape.", StringComparison.Ordinal) &&
                         assembly.ShapeNames[candidate.Renderer].TryGetValue(use.Binding.propertyName.Substring("blendShape.".Length), out var shapeName))
                     {
                         var binding = use.Binding; binding.path = destinationPath; binding.type = typeof(SkinnedMeshRenderer);
                         binding.propertyName = "blendShape." + shapeName;
-                        if (use.Clip.GetFloatCurve(binding) != null)
+                        var existing = use.Clip.GetFloatCurve(binding);
+                        bool movedAway = rewrites.Any(r => r.Use.Clip == use.Clip && r.Use.Binding.Equals(binding) &&
+                            (!r.Replacement.HasValue || !r.Replacement.Value.Equals(binding)));
+                        bool shared = candidate.NativeFaceShapes.Contains(shapeName) && MeshAnimationSignal.SameCurve(existing, use.Curve);
+                        if (existing != null && !movedAway && !shared)
                             throw new InvalidOperationException("A merged morph would overwrite an existing animation binding: " + binding.propertyName);
                         replacement = binding;
                     }
@@ -322,6 +338,13 @@ namespace Noname.AvatarTools.Meshes
             }
             // Keep source objects, transforms and unrelated components. They may still be
             // bones or activation/reference targets. The object collector owns their removal.
+            if (group[0].Avatar != null) ContactOutputs.Remap(group[0].Avatar, sources, destination);
+            if (group[0].Avatar != null)
+            {
+                var descriptor = group[0].Avatar.GetComponent<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor>();
+                if (descriptor != null && descriptor.faceTrackingMeshes != null)
+                    descriptor.faceTrackingMeshes = descriptor.faceTrackingMeshes.Select(r => r != null && sources.Contains(r) ? destination : r).Distinct().ToList();
+            }
             foreach (var source in sources.Skip(1)) Object.DestroyImmediate(source);
             assembly.Mesh = null;
         }

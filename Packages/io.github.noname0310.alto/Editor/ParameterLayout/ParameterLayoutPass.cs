@@ -115,6 +115,7 @@ namespace Noname.AvatarTools.ParameterLayout
             ParameterCompressionPass.Apply(context, settings.Compression, record, report, save);
             source = descriptor.expressionParameters;
             var reserved = new HashSet<string>(AvatarParameterInputs.Sensors(avatar).Select(s => s.Name), StringComparer.Ordinal);
+            reserved.UnionWith(new NativeFaceTracking(avatar).ForwardedParameters());
             foreach (var (_, runtime, _) in VRChatPlatformAnimatorBindings.Instance.GetInnateControllers(avatar))
             {
                 var controller = runtime;

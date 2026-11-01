@@ -52,6 +52,7 @@ namespace Noname.AvatarTools.ParameterPolicy
         {
             var result = MenuInputs(avatar);
             result.UnionWith(AvatarParameterInputs.Sensors(avatar).Select(s => s.Name));
+            result.UnionWith(new NativeFaceTracking(avatar).ForwardedParameters());
             return result;
         }
 

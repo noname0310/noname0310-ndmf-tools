@@ -155,13 +155,15 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             if (reader == "Descriptor")
             {
                 var descriptor = root.AddComponent<VRCAvatarDescriptor>();
+                descriptor.enableEyeLook = true;
                 var eyes = descriptor.customEyeLookSettings; eyes.leftEye = frame; descriptor.customEyeLookSettings = eyes;
             }
             var clip = Clip();
             if (animated) AnimationUtility.SetEditorCurve(clip,
                 EditorCurveBinding.FloatCurve(frame.name, typeof(Transform), "m_LocalScale.x"), AnimationCurve.Linear(0, 1, 1, -1));
             var policy = MergePolicy(true, clip);
-            Assert.That(policy.Mutations.Mutable, Does.Contain(frame), "Runtime transform interfaces remain retained.");
+            Assert.That(policy.Mutations.Mutable.Contains(frame), Is.EqualTo(animated || reader == "Descriptor"),
+                "Contacts and colliders read transforms; enabled Descriptor eye tracking writes rotation.");
             Assert.That(policy.Mutations.MayChangeScale(frame), Is.EqualTo(animated));
             Assert.That(MeshMergeAnalysis.Group(MergeCandidates(new[] { pair.First, pair.Second }), true, policy).Count,
                 Is.EqualTo(animated ? 2 : 1), "Only actual independent scale writers prevent the opted-in coordinate merge.");

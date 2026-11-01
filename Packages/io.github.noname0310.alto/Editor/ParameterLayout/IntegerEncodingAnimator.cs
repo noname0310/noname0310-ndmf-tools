@@ -16,6 +16,7 @@ namespace Noname.AvatarTools.ParameterLayout
             Action<UnityEngine.Object> save = null)
         {
             encoding.Validate();
+            if (encoding.IsNative) return;
             var identityType = ParameterTransportIdentity.Ensure(controller);
             bool writeDefaults = ParameterTransportDefaults.Read(controller);
             AddParameter(encoding.Name, AnimatorControllerParameterType.Int, initial);

@@ -103,6 +103,7 @@ namespace Noname.AvatarTools.Analysis
         private void Build(ObjectOptimizationState settings, bool collectObjects)
         {
             Root(avatar.transform);
+            var shaderUsage = new ShaderPropertyUsage();
             var animatedGlobals = new HashSet<Component>(animations.Bindings.Where(u => u.Binding.type != null &&
                 typeof(VRCPhysBoneColliderBase).IsAssignableFrom(u.Binding.type) &&
                 (u.Binding.propertyName.StartsWith("globalCollision", StringComparison.Ordinal) || u.Binding.propertyName == "isGlobalCollider"))
@@ -133,6 +134,13 @@ namespace Noname.AvatarTools.Analysis
                     var result = ((VRCRaycast)component).ResultTransform;
                     if (result != null) Edge(result, component);
                 }
+                if (component is VRCContactReceiver materialContact)
+                    foreach (var renderer in ContactOutputs.Targets(materialContact))
+                        if (ContactOutputs.MaterialReads(materialContact, renderer, shaderUsage, animations))
+                        {
+                            if (CanEnable(renderer)) Edge(renderer, component);
+                            if (!IsHierarchyObject(renderer)) Root(component);
+                        }
                 // Head Chop scales its configured bones in first-person views. A live
                 // target (or descendant) keeps this writer, just like a constraint;
                 // the writer alone must not keep an unused target hierarchy alive.
@@ -208,12 +216,12 @@ namespace Noname.AvatarTools.Analysis
                 {
                     // Disabled receivers may reset their parameter. Removal requires proof
                     // that the output itself became unobservable, not just inactive drawing.
-                    if (!settings.PrunedSensorInputs.Contains(receiver.parameter ?? "")) Root(component);
+                    if (ContactOutputs.Parameters(receiver).Any(p => !settings.PrunedSensorInputs.Contains(p))) Root(component);
                 }
                 else if (component.GetType() == typeof(VRCRaycast))
                 {
                     var raycast = (VRCRaycast)component;
-                    bool parametersObserved = !string.IsNullOrEmpty(raycast.Parameter) &&
+                    bool parametersObserved = AvatarParameterInputs.RaycastProduces(raycast) && !string.IsNullOrEmpty(raycast.Parameter) &&
                         AvatarParameterInputs.RaycastSuffixes.Any(suffix => !settings.PrunedSensorInputs.Contains(raycast.Parameter + suffix));
                     if (parametersObserved || raycast.ResultTransform != null && !IsHierarchyObject(raycast.ResultTransform)) Root(component);
                 }
@@ -277,7 +285,11 @@ namespace Noname.AvatarTools.Analysis
                     property.propertyPath == "m_Script") continue;
                 var reference = property.objectReferenceValue;
                 if (reference == null) continue;
-                Edge(owner, reference);
+                // Native FT mesh references are output destinations, not input
+                // dependencies. A hidden, otherwise unused output must remain collectible.
+                bool nativeFaceOutput = owner is VRCAvatarDescriptor && property.propertyPath.StartsWith("faceTrackingMeshes.", StringComparison.Ordinal);
+                bool materialContactOutput = owner is VRCContactReceiver && property.propertyPath.StartsWith("shaderTargetRenderers.", StringComparison.Ordinal);
+                if (!nativeFaceOutput && !materialContactOutput) Edge(owner, reference);
                 if (!ReferenceOwners.TryGetValue(reference, out var readers)) ReferenceOwners.Add(reference, readers = new());
                 readers.Add(owner);
                 // Traverse assets which can hold indirect scene references, without walking

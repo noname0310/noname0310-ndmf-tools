@@ -9,19 +9,19 @@ namespace Noname.AvatarTools
     [UnityEngine.Scripting.APIUpdating.MovedFrom(true, "Noname.AvatarTools", "Noname.AdvancedAvatarOptimizer", "AdvancedTraceAndOptimizeAnimator")]
     public sealed class ALTOTraceAndOptimizeAnimator : MonoBehaviour, INDMFEditorOnly
     {
-        [Tooltip("Remove unreachable states and transitions when controller binding coverage is preserved.")]
+        [Tooltip("Remove unreachable states and transitions while preserving Write Defaults binding coverage. After all build generators finish, consolidate compatible unreachable motions into one binding-only clip per layer.")]
         public bool RemoveUnreachableStates = true;
 
-        [Tooltip("Remove Animator parameter curves whose results cannot reach an observable output, including unused feedback loops.")]
+        [Tooltip("Remove Animator parameter curves whose results cannot reach an observable output, including unused feedback loops and output-free branches of non-normalized Direct Blend Trees.")]
         public bool RemoveUnusedParameterCurves = true;
 
         [Tooltip("After SDK generators finish, remove internal Animator parameter declarations with no remaining references in any controller. Expression parameters, menu controls, platform inputs, sensors and explicitly preserved names remain intact.")]
         public bool RemoveUnusedParameterDeclarations = true;
 
-        [Tooltip("Remove unused internal calculations and collapse state machines with no observable output. After SDK generation, remove proven empty override layers while preserving layer controls, network outputs, behaviours and implicit Write Defaults effects.")]
+        [Tooltip("Remove unused internal calculations and collapse state machines with no observable output. After SDK generation, remove missing-target bindings and proven empty override layers while preserving timing, layer controls, network outputs, behaviours and implicit Write Defaults effects.")]
         public bool SimplifyUnusedStateLogic = true;
 
-        [Tooltip("Simplify constant-weight, static Blend Trees without changing their binding coverage.")]
+        [Tooltip("Simplify constant-weight Blend Trees and 1D trees whose branches use the same constant clip, without changing binding coverage or observable timing.")]
         public bool SimplifyConstantBlendTrees = true;
 
         [Tooltip("Merge disjoint static clips with identical weights in non-normalized Direct Blend Trees.")]

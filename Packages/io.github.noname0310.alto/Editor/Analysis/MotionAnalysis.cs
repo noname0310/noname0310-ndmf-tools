@@ -76,9 +76,13 @@ namespace Noname.AvatarTools.Analysis
         // Restrict structural rewrites to zero-duration clips. Changing a tree's duration changes
         // normalized state time, synchronized children and exit-time transitions even for constant poses.
         internal static bool StaticClip(VirtualClip clip)
+            => ConstantPoseClip(clip) && clip.Settings.stopTime == 0 && EndTime(clip) == 0;
+
+        // Constancy of the pose is distinct from constancy of the motion's duration.
+        // A caller must separately prove that changing duration cannot be observed.
+        internal static bool ConstantPoseClip(VirtualClip clip)
             => !clip.IsMarkerClip && !clip.Legacy && clip.AdditiveReferencePoseClip == null &&
                Source(clip) is AnimationClip source && !source.humanMotion && source.events.Length == 0 &&
-               clip.Settings.stopTime == 0 && EndTime(clip) == 0 &&
                !clip.GetObjectCurveBindings().Any() && clip.GetFloatCurveBindings().All(b =>
                    !b.isDiscreteCurve && Constant(clip.GetFloatCurve(b), out _));
 

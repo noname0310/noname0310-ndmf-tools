@@ -27,11 +27,11 @@ namespace Noname.AvatarTools.AnimatorOptimization
 
     internal sealed class AnimatorOptimizationReport
     {
-        internal int Layers, States, Transitions, ParameterCurves, DriverOperations, Behaviours, Branches, Trees, MergedClips, MaterialCurves, StateMachines, ParameterDeclarations;
-        internal int Changes => Layers + States + Transitions + ParameterCurves + DriverOperations + Behaviours + Branches + Trees + MergedClips + MaterialCurves + StateMachines + ParameterDeclarations;
+        internal int Layers, States, Transitions, ParameterCurves, DriverOperations, NativeFaceOperations, Behaviours, Branches, Trees, MergedClips, MaterialCurves, StateMachines, ParameterDeclarations, MissingBindings;
+        internal int Changes => Layers + States + Transitions + ParameterCurves + DriverOperations + NativeFaceOperations + Behaviours + Branches + Trees + MergedClips + MaterialCurves + StateMachines + ParameterDeclarations + MissingBindings;
         internal string Fallback;
         public override string ToString() => $"removed {States} states, {Transitions} transitions, {ParameterCurves} unused parameter curves, " +
-            $"{Layers} unused layers, {ParameterDeclarations} unused parameter declarations, {DriverOperations} unused Driver operations, {Behaviours} empty behaviours, {Branches} empty branches; simplified {StateMachines} unused state machines and {Trees} trees; merged {MergedClips} clips; baked {MaterialCurves} material curves" +
+            $"{Layers} unused layers, {ParameterDeclarations} unused parameter declarations, {DriverOperations} unused Driver operations, {NativeFaceOperations} unused native FT operations, {Behaviours} empty behaviours, {Branches} empty branches, {MissingBindings} missing-target curves; simplified {StateMachines} unused state machines and {Trees} trees; merged {MergedClips} clips; baked {MaterialCurves} material curves" +
             (Fallback == null ? "" : "; conservative fallback: " + Fallback);
     }
 
@@ -47,7 +47,9 @@ namespace Noname.AvatarTools.AnimatorOptimization
             var report = new AnimatorOptimizationReport { Fallback = analysis.FallbackReason };
             if (analysis.FallbackReason != null) return report;
             if ((settings.StateLogic || settings.ParameterDeclarations) && (report.Fallback = ObjectOptimization.ObjectOptimizationSafety.UnsupportedRuntime(avatar)) != null) return report;
-            if (settings.Unreachable) PruneStates(controllers, analysis, report);
+            if (settings.StateLogic && finalParameterDeclarations)
+                MissingAnimationBindings.Apply(controllers, observableBinding, report);
+            if (settings.Unreachable) PruneStates(controllers, analysis, report, finalParameterDeclarations);
             if (settings.UnusedParameters || settings.StateLogic) ParameterLiveness.RemoveUnusedCurves(avatar, controllers, report, preservedParameters, observableBinding,
                 removeDeadDriverOperations: settings.StateLogic || settings.MaterialOutputs && observableBinding != null,
                 followStateOutputs: settings.StateLogic, analysis: analysis, dependencyRoots: dependencyRoots, controllerEntries: controllerEntries);
@@ -62,9 +64,16 @@ namespace Noname.AvatarTools.AnimatorOptimization
             return report;
         }
 
-        private static void PruneStates(IEnumerable<VirtualAnimatorController> controllers, AnimatorReachability analysis,
-            AnimatorOptimizationReport report)
+        private static void PruneStates(VirtualAnimatorController[] controllers, AnimatorReachability analysis,
+            AnimatorOptimizationReport report, bool finalRuntimeBoundary)
         {
+            bool consolidate = finalRuntimeBoundary && UnreachableBindingCoverage.HasKnownBehaviourEffects(controllers);
+            // A shared state is mutable through every owner. Its binding coverage must not
+            // be narrowed or widened based on just one layer's requirements.
+            var shared = new HashSet<VirtualState>(controllers.Distinct().SelectMany(c => c.Layers)
+                .SelectMany(l => l.AllReachableNodes().OfType<VirtualStateMachine>())
+                .SelectMany(m => m.States).Select(s => s.State).Where(s => s != null)
+                .GroupBy(s => s).Where(g => g.Count() > 1).Select(g => g.Key));
             foreach (var controller in controllers)
             {
                 var removed = new HashSet<VirtualState>();
@@ -74,8 +83,9 @@ namespace Noname.AvatarTools.AnimatorOptimization
                     var machines = layer.AllReachableNodes().OfType<VirtualStateMachine>().ToArray();
                     var defaults = new HashSet<VirtualState>(machines.Select(m => m.DefaultState));
                     var states = machines.SelectMany(m => m.States).Select(c => c.State).Where(s => s != null).Distinct().ToArray();
-                    var candidates = new HashSet<VirtualState>(states.Where(s => !analysis.IsReachable(s) && !defaults.Contains(s)));
-                    var coverage = new HashSet<EditorCurveBinding>(states.Where(s => !candidates.Contains(s))
+                    var candidates = states.Where(s => !analysis.IsReachable(s) && !defaults.Contains(s) && !shared.Contains(s)).ToArray();
+                    var candidateSet = new HashSet<VirtualState>(candidates);
+                    var coverage = new HashSet<EditorCurveBinding>(states.Where(s => !candidateSet.Contains(s))
                         .SelectMany(s => MotionAnalysis.Bindings(s.Motion)));
                     // Unreachable clips still contribute to Unity's Write Defaults binding set. Retain
                     // a representative whenever deleting it would change that set, including PPtr curves.
@@ -85,6 +95,10 @@ namespace Noname.AvatarTools.AnimatorOptimization
                         if (!bindings.IsSubsetOf(coverage)) coverage.UnionWith(bindings);
                         else removed.Add(state);
                     }
+                    // Late generators may inspect source motions. Compact the remaining
+                    // coverage representatives only after all generators have completed.
+                    if (consolidate)
+                        UnreachableBindingCoverage.Consolidate(states, candidates.Where(s => !removed.Contains(s)).ToArray(), removed);
                     foreach (var machine in machines)
                         machine.States = machine.States.Where(s => !removed.Contains(s.State)).ToImmutableList();
                 }
@@ -125,6 +139,9 @@ namespace Noname.AvatarTools.AnimatorOptimization
 
             var replacements = new Dictionary<VirtualMotion, VirtualMotion>();
             var visiting = new HashSet<VirtualMotion>();
+            var outputs = new StaticMotionOutputs(settings.StateLogic ? observableBinding : null);
+            var timeIndependentOutputs = new StaticMotionOutputs(settings.StateLogic ? observableBinding : null, MotionAnalysis.ConstantPoseClip);
+            var timing = new MotionTimeAnalysis(controllers);
             VirtualMotion Rewrite(VirtualMotion motion)
             {
                 if (!(motion is VirtualBlendTree tree) || blocked.Contains(motion)) return motion;
@@ -132,25 +149,26 @@ namespace Noname.AvatarTools.AnimatorOptimization
                 if (!visiting.Add(motion)) return motion;
                 var children = tree.Children.Select(child => Copy(child, Rewrite(child.Motion))).ToList();
                 tree.Children = children.ToImmutableList();
+                bool timeIndependent = timing.CanChangeDuration(tree);
+                Func<VirtualClip, bool> safeClip = timeIndependent ? MotionAnalysis.ConstantPoseClip : MotionAnalysis.StaticClip;
+                var safeOutputs = timeIndependent ? timeIndependentOutputs : outputs;
                 if (tree.BlendType == BlendTreeType.Direct && !tree.NormalizedBlendValues &&
-                    MotionAnalysis.Clips(tree).All(MotionAnalysis.StaticClip))
+                    MotionAnalysis.Clips(tree).All(safeClip))
                 {
                     if (settings.UnusedParameters)
-                        report.Branches += children.RemoveAll(c => c.Motion is VirtualClip clip && MotionAnalysis.StaticClip(clip) &&
-                            (!clip.GetFloatCurveBindings().Any() || settings.StateLogic && observableBinding != null &&
-                                !clip.GetFloatCurveBindings().Any(b => observableBinding(clip, b))));
+                        report.Branches += children.RemoveAll(c => Identity(c) && safeOutputs.IsUnobserved(c.Motion));
                     if (settings.MergeClips)
                     {
                         for (int i = 0; i < children.Count; i++)
                         {
-                            if (!(children[i].Motion is VirtualClip first) || !MotionAnalysis.StaticClip(first) || !Identity(children[i])) continue;
+                            if (!(children[i].Motion is VirtualClip first) || !safeClip(first) || !Identity(children[i])) continue;
                             var bindings = MotionAnalysis.Bindings(first);
                             VirtualClip merged = null;
                             for (int j = i + 1; j < children.Count; j++)
                             {
                                 var child = children[j];
                                 if (child.DirectBlendParameter != children[i].DirectBlendParameter || !Identity(child) ||
-                                    !(child.Motion is VirtualClip next) || !MotionAnalysis.StaticClip(next)) continue;
+                                    !(child.Motion is VirtualClip next) || !safeClip(next)) continue;
                                 var other = MotionAnalysis.Bindings(next);
                                 if (bindings.Overlaps(other)) continue;
                                 if (merged == null) { merged = first.Clone(); merged.Name = first.Name + " (merged)"; }
@@ -164,11 +182,20 @@ namespace Noname.AvatarTools.AnimatorOptimization
                 tree.Children = children.ToImmutableList();
                 VirtualMotion result = tree;
                 if (settings.ConstantTrees && children.Count > 0 && children.All(Identity) &&
-                    MotionAnalysis.Clips(tree).All(MotionAnalysis.StaticClip))
+                    MotionAnalysis.Clips(tree).All(safeClip))
                 {
                     VirtualMotion selected = null;
                     var contributing = MotionAnalysis.Constant1DChildren(tree, analysis);
                     if (contributing?.Length == 1) selected = contributing[0].Motion;
+                    // Valid 1D interpolation partitions unit weight. Repeated references
+                    // to the same constant leaf therefore have the same output for every
+                    // input value, including values outside the threshold range. Keep
+                    // the leaf (and its zero-valued writes), not an empty motion. Direct
+                    // trees and nested calculations need different equivalence proofs.
+                    if (tree.BlendType == BlendTreeType.Simple1D && children[0].Motion is VirtualClip shared &&
+                        children.All(c => c.Motion == shared && MotionAnalysis.Finite(c.Threshold)) &&
+                        children.Zip(children.Skip(1), (a, b) => a.Threshold < b.Threshold).All(ordered => ordered))
+                        selected = shared;
                     if (tree.BlendType == BlendTreeType.Direct && children.All(c => analysis.Values(c.DirectBlendParameter).TryGetConstant(out _)))
                     {
                         var active = children.Where(c => { analysis.Values(c.DirectBlendParameter).TryGetConstant(out float w); return w != 0; }).ToArray();

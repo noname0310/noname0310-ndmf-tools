@@ -27,6 +27,7 @@ namespace Noname.AvatarTools.ParameterLayout
             uncertain = external.Uncertain || ObjectOptimizationSafety.UnsupportedRuntime(avatar) != null;
             observed.UnionWith(AnimatorReachability.BuiltIns);
             observed.UnionWith(AvatarParameterInputs.Sensors(avatar).Select(p => p.Name));
+            observed.UnionWith(new NativeFaceTracking(avatar).ForwardedParameters());
             observed.UnionWith(ExpressionMenuOptimizer.Menus(avatar.GetComponent<VRCAvatarDescriptor>()?.expressionsMenu)
                 .SelectMany(m => m.controls ?? new()).Where(c => c != null).SelectMany(ExpressionMenuOptimizer.Parameters));
             var controllers = VRChatPlatformAnimatorBindings.Instance.GetInnateControllers(avatar).Select(c => c.Item2)
@@ -49,7 +50,7 @@ namespace Noname.AvatarTools.ParameterLayout
                     !(behaviour is VRC_AvatarParameterDriver) && !(behaviour is VRC_AnimatorLayerControl) &&
                     !(behaviour is VRC_PlayableLayerControl) && !(behaviour is VRC_AnimatorTrackingControl) &&
                     !(behaviour is VRC_AnimatorLocomotionControl) && !(behaviour is VRC_AnimatorTemporaryPoseSpace) &&
-                    !(behaviour is VRC_AnimatorPlayAudio)) uncertain = true;
+                    !(behaviour is VRC_AnimatorPlayAudio) && !(behaviour is VRC_AnimatorFaceTrackingBlendshapesSet)) uncertain = true;
                 // Include transition/tree/time parameter names even when no corresponding
                 // declaration exists. Strings in behaviours can also name reads or writes.
                 // CollectDependencies does not enumerate unsaved controller subobjects.

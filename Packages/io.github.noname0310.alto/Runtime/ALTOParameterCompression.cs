@@ -13,8 +13,8 @@ namespace Noname.AvatarTools
         [Tooltip("Optional owning object or controller. Without a source, Name uses the final avatar namespace.")]
         public UnityEngine.Object Source;
         public string Name;
-        [Range(0, 255)] public int Minimum;
-        [Range(0, 255)] public int Maximum = 7;
+        [Range(-128, 255)] public int Minimum;
+        [Range(-128, 255)] public int Maximum = 7;
     }
 
     [AddComponentMenu("Noname/ALTO Parameter Compression")]
@@ -35,7 +35,7 @@ namespace Noname.AvatarTools
         public bool RemoveUnusedSynchronization = true;
         [Tooltip("Keep these inputs and their upstream computations in their original network representation.")]
         public AnimatorParameterSelection KeepNativeParameters = new();
-        [Tooltip("Transmit each selected Int as N Bool parameters. Remote values are clamped to the specified inclusive range. Local values and names are unchanged. Independent bit delivery can briefly decode an intermediate value.")]
+        [Tooltip("Reduce the wire cost of selected Ints. Full signed or unsigned ranges use the SDK bit width directly; other ranges use N Bool parameters and a decoder. Remote values are clamped to the specified range. Packed bits can briefly decode an intermediate value during delivery.")]
         public List<CompressedIntegerParameter> Integers = new();
     }
 }

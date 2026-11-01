@@ -31,7 +31,7 @@ namespace Noname.AvatarTools.ParameterLayout
             var groups = parameters.Where(p => p.networkSynced).GroupBy(p =>
                 Eligible.Contains(p.name) ? "eligible" : Primary(Excluded.TryGetValue(p.name, out var reason) ? reason : MultiplexExclusion.NoPersistentMenu));
             return string.Join("; ", groups.OrderBy(g => g.Key, StringComparer.Ordinal)
-                .Select(g => g.Key + "=" + g.Sum(p => MultiplexEncoding.Cost(p.valueType)) + " bits (" + g.Count() + " inputs)"));
+                .Select(g => g.Key + "=" + g.Sum(MultiplexEncoding.Cost) + " bits (" + g.Count() + " inputs)"));
         }
 
         private static string Primary(MultiplexExclusion reason)
@@ -72,7 +72,8 @@ namespace Noname.AvatarTools.ParameterLayout
                 ? (driver.parameters ?? new()).Where(p => p != null &&
                     p.type is VRC_AvatarParameterDriver.ChangeType.Add or VRC_AvatarParameterDriver.ChangeType.Random).Select(p => p.name)
                 : Array.Empty<string>();
-            var influenced = graph.AffectedByWriters(AvatarParameterInputs.Sensors(avatar).Select(s => s.Name),
+            var influenced = graph.AffectedByWriters(AvatarParameterInputs.Sensors(avatar).Select(s => s.Name)
+                .Concat(new NativeFaceTracking(avatar).ForwardedParameters()),
                 ClipSources, BehaviourSources);
             var external = ExternalParameterAccess.Collect();
             if (external.Uncertain)

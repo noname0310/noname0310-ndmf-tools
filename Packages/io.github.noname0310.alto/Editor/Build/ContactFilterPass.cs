@@ -119,8 +119,11 @@ namespace Noname.AvatarTools.Build
             {
                 if (!(contact is VRCContactSender || contact is VRCContactReceiver) || !state.Scope.Contains(contact.transform))
                     throw new InvalidOperationException("Contact removal requires scoped SDK Contact components.");
-                if (contact is VRCContactReceiver receiver && !string.IsNullOrEmpty(receiver.parameter) && preserved.Contains(receiver.parameter))
-                    throw new InvalidOperationException("Contact removal conflicts with preserved parameter '" + receiver.parameter + "' on " + receiver.name + ".");
+                if (contact is VRCContactReceiver receiver)
+                {
+                    var conflict = ContactOutputs.Parameters(receiver).FirstOrDefault(preserved.Contains);
+                    if (conflict != null) throw new InvalidOperationException("Contact removal conflicts with preserved parameter '" + conflict + "' on " + receiver.name + ".");
+                }
             }
             foreach (var owner in avatar.GetComponentsInChildren<Component>(true))
             {

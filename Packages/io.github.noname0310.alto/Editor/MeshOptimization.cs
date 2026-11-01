@@ -100,6 +100,16 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             }
             frames.Sort((a, b) => a.weight.CompareTo(b.weight));
             if (frames.Count < 2) throw new InvalidOperationException("A blendshape has no usable frame range.");
+            // Unity drops the preceding frame's contribution above the last frame,
+            // but still uses its weight as the lower end of the extrapolation range.
+            // This differs from extrapolating the final interpolation segment.
+            if (weight > frames[frames.Count - 1].weight)
+            {
+                var last = frames[frames.Count - 1]; var previous = frames[frames.Count - 2];
+                buffer.Read(mesh, shape, last.index);
+                destination.Add(buffer, (weight - previous.weight) / (last.weight - previous.weight));
+                return;
+            }
             int right = 1;
             while (right < frames.Count - 1 && weight > frames[right].weight) right++;
             var a = frames[right - 1]; var b = frames[right];

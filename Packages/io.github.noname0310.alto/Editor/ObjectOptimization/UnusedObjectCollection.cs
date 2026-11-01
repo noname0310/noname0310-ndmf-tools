@@ -81,9 +81,10 @@ namespace Noname.AvatarTools.ObjectOptimization
                 MotionAnalysis.RemoveCurves(group.Key, bindings); curves += bindings.Length;
             }
             int componentCount = components.Count(c => c == null), objectCount = objects.Count(o => o == null);
+            int nativeOutputs = new NativeFaceTracking(avatar).CleanupRemovedOutputs();
             messages.Add("Collected " + componentCount + " unused components, " + objectCount + " objects and " + curves +
                 " orphaned animation curves using runtime dependency reachability.");
-            return componentCount + objectCount + curves;
+            return componentCount + objectCount + curves + nativeOutputs;
         }
     }
 }

@@ -94,7 +94,7 @@ namespace Noname.AvatarTools.ParameterPolicy
             behaviour == null || behaviour is VRC_AvatarParameterDriver || behaviour is VRC_AnimatorLayerControl ||
             behaviour is VRC_PlayableLayerControl || behaviour is VRC_AnimatorTrackingControl ||
             behaviour is VRC_AnimatorLocomotionControl || behaviour is VRC_AnimatorTemporaryPoseSpace ||
-            behaviour is VRC_AnimatorPlayAudio;
+            behaviour is VRC_AnimatorPlayAudio || behaviour is VRC_AnimatorFaceTrackingBlendshapesSet;
 
         internal static IEnumerable<string> Reads(IEnumerable<VirtualNode> source)
         {
@@ -117,6 +117,8 @@ namespace Noname.AvatarTools.ParameterPolicy
             foreach (var driver in Behaviours(nodes).OfType<VRC_AvatarParameterDriver>())
                 foreach (var operation in driver.parameters ?? new())
                     if (operation != null && operation.type == VRC_AvatarParameterDriver.ChangeType.Copy) yield return operation.source;
+            foreach (var control in Behaviours(nodes).OfType<VRC_AnimatorFaceTrackingBlendshapesSet>())
+                foreach (string name in NativeFaceTracking.Reads(control)) yield return name;
         }
 
         internal static void Validate(VirtualAnimatorController[] controllers, IReadOnlyDictionary<string, ParameterConstant> constants)
@@ -155,6 +157,7 @@ namespace Noname.AvatarTools.ParameterPolicy
                             throw new InvalidOperationException("A Driver writes to an internal parameter constant: " + operation.name);
                     continue;
                 }
+                if (behaviour is VRC_AnimatorFaceTrackingBlendshapesSet) continue;
                 if (!SupportsBehaviour(behaviour))
                     throw new InvalidOperationException("Parameter freezing cannot prove the inputs of StateMachineBehaviour: " + behaviour.GetType().FullName);
                 // Play Audio's parameter mode requires an Expression Parameter, so a private local
@@ -228,6 +231,14 @@ namespace Noname.AvatarTools.ParameterPolicy
                     { var y = Read(tree.BlendParameterY); if (y != tree.BlendParameterY) tree.BlendParameterY = y; }
                 }
             var changedBehaviours = new HashSet<StateMachineBehaviour>();
+            foreach (var control in Behaviours(nodes).OfType<VRC_AnimatorFaceTrackingBlendshapesSet>())
+                foreach (var operation in NativeFaceTracking.Controls(control))
+                    if (operation.type == VRC_AnimatorFaceTrackingBlendshapesSet.SourceType.Parameter)
+                    {
+                        var replacement = Read(operation.sourceParameter);
+                        if (replacement != operation.sourceParameter)
+                        { operation.sourceParameter = replacement; changedBehaviours.Add(control); }
+                    }
             foreach (var driver in Behaviours(nodes).OfType<VRC_AvatarParameterDriver>())
             {
                 if (driver.parameters == null) continue;
