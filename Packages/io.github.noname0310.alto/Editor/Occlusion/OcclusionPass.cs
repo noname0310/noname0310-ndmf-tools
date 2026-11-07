@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using nadena.dev.ndmf;
 using Noname.AvatarTools.Analysis;
+using Noname.AvatarTools.BlendShapeOptimization;
 using Noname.AvatarTools.Build;
 using Noname.AvatarTools.ObjectOptimization;
 using Noname.AvatarTools.ParameterPolicy;
@@ -30,7 +31,9 @@ namespace Noname.AvatarTools.Occlusion
             foreach (var inactive in all.Except(enabled)) Object.DestroyImmediate(inactive);
             if (enabled.Length == 0) return;
             var state = context.GetState<OcclusionBuildState>();
-            state.Settings = enabled[0]; state.Scope = OptimizationBuildScope.Capture(state.Settings, context.AvatarRootObject);
+            state.Settings = enabled[0];
+            RemoveUnavailableRenderers(state.Settings);
+            state.Scope = OptimizationBuildScope.Capture(state.Settings, context.AvatarRootObject);
             OcclusionEvaluation.Validate(state.Settings, state.Scope);
             foreach (var pose in new[] { state.Settings.ReferencePose }.Concat(state.Settings.AdditionalPoses ?? new()))
             {
@@ -53,11 +56,7 @@ namespace Noname.AvatarTools.Occlusion
                 var avatar = context.AvatarRootObject; var settings = state.Settings;
                 var report = context.GetState<OptimizationBuildReport>();
                 report.Initialize(avatar, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
-                // Explicit authoring references removed by another generator no longer
-                // select anything. Do not replace them with a guessed body or outfit.
-                settings.Targets ??= new(); settings.Occluders ??= new();
-                settings.Targets.RemoveAll(t => t?.Renderer == null);
-                settings.Occluders.RemoveAll(t => t?.Renderer == null);
+                RemoveUnavailableRenderers(settings);
                 if (settings.Targets.Count == 0) return;
                 using var lease = OptimizationSession.Acquire(context);
                 var services = lease.Services;
@@ -87,6 +86,16 @@ namespace Noname.AvatarTools.Occlusion
             var state = context.GetState<OcclusionBuildState>();
             state.AfterMaterialConversion = state.Settings != null &&
                 context.GetState<MaterialAtlas.MaterialAtlasState>().Settings != null;
+        }
+
+        private static void RemoveUnavailableRenderers(ALTORemoveOccludedMesh settings)
+        {
+            // EditorOnly removal and other generators can run before Capture or
+            // between Capture and Apply. These references select no build output;
+            // never replace them with a guessed renderer or a broader selection.
+            settings.Targets ??= new(); settings.Occluders ??= new();
+            settings.Targets.RemoveAll(t => t?.Renderer == null || ALTOPlugin.IsEditorOnly(t.Renderer.transform));
+            settings.Occluders.RemoveAll(t => t?.Renderer == null || ALTOPlugin.IsEditorOnly(t.Renderer.transform));
         }
     }
 }

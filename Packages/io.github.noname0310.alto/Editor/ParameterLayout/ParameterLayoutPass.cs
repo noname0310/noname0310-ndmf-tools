@@ -154,6 +154,7 @@ namespace Noname.AvatarTools.ParameterLayout
             internal Object Container;
             internal IObjectRegistry Registry;
             internal BuildContext Context;
+            internal ParameterLayoutStore Store;
             internal bool Prepared;
             internal ParameterLayoutRecord Candidate;
             internal readonly HashSet<string> Padding = new(StringComparer.Ordinal);
@@ -169,28 +170,59 @@ namespace Noname.AvatarTools.ParameterLayout
         {
             if (!Sessions.TryGetValue(context.AvatarRootObject, out var session)) return false;
             session.Settings = settings; session.Platform = platform; session.Report = report;
-            // Prepare an over-budget transport before late SDK optimizers inspect its cost.
-            // Finalization still rejects external protocol changes. No external tool API or
-            // callback patch is used, and only successful uploads commit the candidate.
-            if (platform != settings.ReferencePlatform ||
-                settings.Compression != null && settings.Compression.Multiplexing != ParameterMultiplexingMode.Disabled &&
-                MultiplexEncoding.Cost(ParameterLayoutModel.Read(context.AvatarRootObject.GetComponent<VRCAvatarDescriptor>()
-                    .expressionParameters?.parameters)) > settings.Compression.Budget)
+            session.Store = store;
+            CaptureDeclarations(context.AvatarRootObject, session);
+            session.Container = context.AssetSaver.CurrentContainer; session.Registry = ObjectRegistry.ActiveRegistry;
+            session.Context = context;
+            return true;
+        }
+
+        internal static void Prepare(GameObject avatar, Action<Object> saveForTests = null, ParameterLayoutStore storeForTests = null)
+        {
+            if (!Sessions.TryGetValue(avatar, out var session) || session.Settings == null || session.Prepared) return;
+            var settings = session.Settings;
+            if (session.Platform == settings.ReferencePlatform &&
+                (settings.Compression == null || settings.Compression.Multiplexing == ParameterMultiplexingMode.Disabled ||
+                 MultiplexEncoding.Cost(ParameterLayoutModel.Read(avatar.GetComponent<VRCAvatarDescriptor>()
+                     .expressionParameters?.parameters)) <= settings.Compression.Budget)) return;
+
+            using var measurement = OptimizationMeasurement.Begin(session.Report, "SDK preparation", "parameter transport");
+            try
             {
-                session.Candidate = ParameterLayoutPass.ApplyFinal(context.AvatarRootObject, settings, platform, report,
-                    context.AssetSaver.SaveAsset, store ?? ParameterLayoutStore.Project, context,
+                // Keep generator validation on the original logical declarations, then
+                // prepare transport before late cost-based optimizers can encode it.
+                ValidateDeclarations(avatar, session);
+                if (saveForTests == null && (session.Container == null || !EditorUtility.IsPersistent(session.Container)))
+                    throw new InvalidOperationException("Parameter transport preparation requires the generated NDMF asset container.");
+                using var registry = new ObjectRegistryScope(session.Registry);
+                using var saver = saveForTests == null ? new SingleAssetSaver(session.Container) : null;
+                session.Candidate = ParameterLayoutPass.ApplyFinal(avatar, settings, session.Platform, session.Report,
+                    saveForTests ?? saver.SaveAsset, storeForTests ?? session.Store ?? ParameterLayoutStore.Project, session.Context,
                     aligned => {
                         session.Padding.UnionWith(aligned.PaddingNames);
                         foreach (var entry in aligned.PaddingReferenceNames) session.PaddingReferences.Add(entry.Key, entry.Value);
                     });
                 session.Prepared = true;
+                CaptureDeclarations(avatar, session);
+                measurement?.Complete();
             }
-            session.Before = ParameterLayoutModel.Capture(context.AvatarRootObject.GetComponent<VRCAvatarDescriptor>().expressionParameters?.parameters);
-            session.LocalBefore = ParameterLayoutModel.Read(context.AvatarRootObject.GetComponent<VRCAvatarDescriptor>().expressionParameters?.parameters)
+            finally { AvatarBuildAnalysis.PublishReport(avatar, session.Report); }
+        }
+
+        private static void CaptureDeclarations(GameObject avatar, Session session)
+        {
+            var parameters = avatar.GetComponent<VRCAvatarDescriptor>()?.expressionParameters?.parameters;
+            session.Before = ParameterLayoutModel.Capture(parameters);
+            session.LocalBefore = ParameterLayoutModel.Read(parameters)
                 .Where(p => !p.networkSynced).Select(ParameterLayoutModel.Copy).ToArray();
-            session.Container = context.AssetSaver.CurrentContainer; session.Registry = ObjectRegistry.ActiveRegistry;
-            session.Context = context;
-            return true;
+        }
+
+        private static VRCExpressionParameters.Parameter[] ValidateDeclarations(GameObject avatar, Session session)
+        {
+            var parameters = avatar.GetComponent<VRCAvatarDescriptor>()?.expressionParameters?.parameters;
+            var padding = new Lazy<ParameterPaddingUsage>(() => new ParameterPaddingUsage(avatar));
+            return ParameterLayoutModel.ReconcileLatePadding(session.Before, parameters,
+                session.Padding, name => padding.Value.IsUnobserved(name), session.PaddingReferences, session.LocalBefore);
         }
 
         internal static void Complete(GameObject avatar, Action<Object> saveForTests = null, ParameterLayoutStore storeForTests = null)
@@ -206,10 +238,7 @@ namespace Noname.AvatarTools.ParameterLayout
 
         private static void Apply(GameObject avatar, Session session, Action<Object> saveForTests, ParameterLayoutStore storeForTests)
         {
-            var parameters = avatar.GetComponent<VRCAvatarDescriptor>()?.expressionParameters?.parameters;
-            var padding = new Lazy<ParameterPaddingUsage>(() => new ParameterPaddingUsage(avatar));
-            var normalized = ParameterLayoutModel.ReconcileLatePadding(session.Before, parameters,
-                session.Padding, name => padding.Value.IsUnobserved(name), session.PaddingReferences, session.LocalBefore);
+            var normalized = ValidateDeclarations(avatar, session);
             if (saveForTests == null && (session.Container == null || !EditorUtility.IsPersistent(session.Container)))
                 throw new InvalidOperationException("Parameter layout finalization requires the generated NDMF asset container.");
             using var registry = new ObjectRegistryScope(session.Registry);
@@ -217,7 +246,7 @@ namespace Noname.AvatarTools.ParameterLayout
             var candidate = session.Candidate;
             if (!session.Prepared)
                 candidate = ParameterLayoutPass.ApplyFinal(avatar, session.Settings, session.Platform, session.Report,
-                    saveForTests ?? saver.SaveAsset, storeForTests ?? ParameterLayoutStore.Project, session.Context);
+                    saveForTests ?? saver.SaveAsset, storeForTests ?? session.Store ?? ParameterLayoutStore.Project, session.Context);
             else if (candidate != null)
             {
                 candidate.Parameters = ParameterLayoutModel.Capture(avatar.GetComponent<VRCAvatarDescriptor>().expressionParameters?.parameters);

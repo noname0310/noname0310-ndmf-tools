@@ -191,6 +191,71 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(root.GetComponent<ALTORemoveOccludedMesh>(), Is.Null);
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void OcclusionCaptureSkipsEditorOnlyReferencesRegardlessOfRemovalOrder(bool removeBeforeCapture)
+        {
+            var settings = OcclusionFixture(out var shell);
+            settings.OccluderSelection = RendererSelectionMode.SelectedRenderers;
+            settings.Occluders.Add(new OcclusionOccluder { Renderer = shell });
+            var editorOnly = PolicyChild("EditorOnlyParent"); editorOnly.tag = "EditorOnly";
+            var child = PolicyChild("EditorOnlyMesh"); child.transform.SetParent(editorOnly.transform, false);
+            var ignored = child.AddComponent<SkinnedMeshRenderer>();
+            settings.Targets.Add(new OcclusionTarget { Renderer = ignored });
+            settings.Occluders.Add(new OcclusionOccluder { Renderer = ignored });
+            if (removeBeforeCapture) Object.DestroyImmediate(editorOnly);
+
+            var context = new BuildContext(root, null);
+            Assert.DoesNotThrow(() => OcclusionPass.Capture(context));
+            Assert.That(settings.Targets.Select(t => t.Renderer), Is.EqualTo(new[] { renderer }));
+            Assert.That(settings.Occluders.Select(t => t.Renderer), Is.EqualTo(new[] { shell }));
+            Assert.That(settings.OccluderSelection, Is.EqualTo(RendererSelectionMode.SelectedRenderers));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void OcclusionBuildSkipsDeletedReferencesWithoutSelectingReplacement(bool removeBeforeCapture)
+        {
+            var settings = OcclusionFixture(out var shell); var source = renderer.sharedMesh;
+            var removed = PolicyChild("GeneratedAway").AddComponent<SkinnedMeshRenderer>();
+            settings.Targets.Clear(); settings.Targets.Add(new OcclusionTarget { Renderer = removed });
+            settings.OccluderSelection = RendererSelectionMode.SelectedRenderers;
+            settings.Occluders.Add(new OcclusionOccluder { Renderer = shell });
+            var context = new BuildContext(root, null);
+            if (!removeBeforeCapture) OcclusionPass.Capture(context);
+            Object.DestroyImmediate(removed.gameObject); Object.DestroyImmediate(shell.gameObject);
+            if (removeBeforeCapture) Assert.DoesNotThrow(() => OcclusionPass.Capture(context));
+
+            Assert.DoesNotThrow(() => OcclusionPass.Apply(context));
+            Assert.That(renderer.sharedMesh, Is.SameAs(source));
+            Assert.That(source.triangles, Is.EqualTo(new[] { 0, 1, 2 }));
+            Assert.That(root.GetComponent<ALTORemoveOccludedMesh>(), Is.Null);
+        }
+
+        [TestCase("DuplicateTarget")] [TestCase("OutsideTarget")]
+        [TestCase("DuplicateOccluder")] [TestCase("OutsideOccluder")]
+        public void OcclusionCaptureStillRejectsInvalidLiveReferences(string invalid)
+        {
+            var settings = OcclusionFixture(out var shell);
+            if (invalid == "DuplicateTarget") settings.Targets.Add(new OcclusionTarget { Renderer = renderer });
+            if (invalid == "OutsideTarget")
+            {
+                var outside = PolicyChild("Outside").AddComponent<SkinnedMeshRenderer>();
+                outside.transform.SetParent(null, false);
+                settings.Targets.Add(new OcclusionTarget { Renderer = outside });
+            }
+            if (invalid == "DuplicateOccluder")
+            {
+                settings.Occluders.Add(new OcclusionOccluder { Renderer = shell });
+                settings.Occluders.Add(new OcclusionOccluder { Renderer = shell });
+            }
+            if (invalid == "OutsideOccluder")
+            {
+                shell.transform.SetParent(null, false);
+                settings.Occluders.Add(new OcclusionOccluder { Renderer = shell });
+            }
+            var context = new BuildContext(root, null);
+            Assert.Throws<InvalidOperationException>(() => OcclusionPass.Capture(context));
+        }
+
         [TestCase("ShaderValue", true)] [TestCase("PropertyBlock", true)]
         [TestCase("Active", false)] [TestCase("Enabled", false)] [TestCase("MaterialSwap", false)]
         public void ExplicitOpaqueGeometryPolicyOnlyOverridesNumericShaderState(string mode, bool removed)

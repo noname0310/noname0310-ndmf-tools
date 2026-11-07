@@ -140,6 +140,18 @@ namespace Noname.AvatarTools.Build
         }
     }
 
+    internal sealed class AvatarParameterSdkBuildPrepare : IVRCSDKPreprocessAvatarCallback
+    {
+        // After ordinary generator/material validation, before late cost-based
+        // compression (int.MaxValue - 100). Uses only the SDK callback contract.
+        public int callbackOrder => int.MaxValue - 200;
+        public bool OnPreprocessAvatar(GameObject avatarGameObject)
+        {
+            try { ParameterLayout.ParameterLayoutSdkSession.Prepare(avatarGameObject); return true; }
+            catch (Exception exception) { Debug.LogException(exception, avatarGameObject); return false; }
+        }
+    }
+
     internal sealed class AvatarOutputSdkBuildFinish : IVRCSDKPreprocessAvatarCallback
     {
         // Runs after late compression (int.MaxValue - 100), before emulator finalization and

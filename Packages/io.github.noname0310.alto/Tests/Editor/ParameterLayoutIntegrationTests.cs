@@ -25,6 +25,79 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
 {
     public sealed partial class BlendShapeOptimizationTests
     {
+        [TestCase(ParameterTransmissionMode.Guarded)] [TestCase(ParameterTransmissionMode.LowLatency)]
+        public void SdkTransportPreparationMatchesDirectBakeAndPreservesGeneratorDeclarations(ParameterTransmissionMode transmission)
+        {
+            var descriptor = LayoutDescriptor();
+            var source = Track(ScriptableObject.CreateInstance<VRCExpressionParameters>());
+            source.parameters = MultiplexInputs(4, 4, 8); descriptor.expressionParameters = source;
+            string original = EditorJsonUtility.ToJson(source);
+            var settings = new ParameterLayoutSettings { Compression = new ParameterCompressionSettings
+                { Multiplexing = ParameterMultiplexingMode.SelectedInputs, Budget = 32, HoldSeconds = .1f, Transmission = transmission } };
+            settings.Compression.MultiplexNames.UnionWith(source.parameters.Select(p => p.name));
+            using var fixture = new LayoutTestStore();
+            ParameterLayoutPass.ApplyFinal(root, settings, ParameterLayoutPlatform.PC, new OptimizationBuildReport(),
+                value => Track(value), fixture.Store, new BuildContext(root, null));
+            var expected = descriptor.expressionParameters.parameters.Select(p =>
+                (p.name, p.valueType, p.networkSynced, p.saved, p.defaultValue)).ToArray();
+            foreach (var layer in descriptor.baseAnimationLayers)
+                if (layer.animatorController is AnimatorController controller) TrackControllerAssets(controller);
+            descriptor.expressionParameters = source;
+            descriptor.baseAnimationLayers = Array.Empty<VRCAvatarDescriptor.CustomAnimLayer>();
+
+            ParameterLayoutSdkSession.Begin(root);
+            var report = new OptimizationBuildReport(); report.Initialize(root, "PC");
+            var context = new BuildContext(root, null);
+            Assert.That(ParameterLayoutSdkSession.Defer(context, settings, ParameterLayoutPlatform.PC, report), Is.True);
+            Assert.That(descriptor.expressionParameters, Is.SameAs(source));
+            Assert.That(source.parameters.All(p => p.networkSynced), Is.True,
+                "Earlier SDK validation must still see native synchronized parameters, including Bools");
+            Assert.That(descriptor.baseAnimationLayers, Is.Empty, "Deferral cannot install transport drivers");
+            context.AssetSaver.Dispose();
+
+            ParameterLayoutSdkSession.Prepare(root, value => Track(value), fixture.Store);
+            var prepared = descriptor.expressionParameters;
+            Assert.That(prepared.CalcTotalCost(), Is.LessThanOrEqualTo(32), "Later cost-based compressors must see the reduced budget");
+            Assert.That(prepared.parameters.Select(p => (p.name, p.valueType, p.networkSynced, p.saved, p.defaultValue)), Is.EqualTo(expected));
+            var fx = (AnimatorController)descriptor.baseAnimationLayers.Single(l => l.type == VRCAvatarDescriptor.AnimLayerType.FX).animatorController;
+            TrackControllerAssets(fx);
+            int layerCount = fx.layers.Length;
+            Assert.That(fx.layers.SelectMany(l => l.stateMachine.states).SelectMany(s => s.state.behaviours)
+                .OfType<VRCAvatarParameterDriver>().Any(), Is.True);
+            ParameterLayoutSdkSession.Prepare(root, value => Track(value), fixture.Store);
+            Assert.That(descriptor.expressionParameters, Is.SameAs(prepared));
+            Assert.That(fx.layers.Length, Is.EqualTo(layerCount), "Repeated preparation cannot add a second transport");
+            ParameterLayoutSdkSession.Complete(root, value => Track(value), fixture.Store);
+            Assert.That(descriptor.expressionParameters, Is.SameAs(prepared));
+            Assert.That(EditorJsonUtility.ToJson(source), Is.EqualTo(original));
+            Assert.That(fixture.Store.Read(LayoutId), Is.Null, "A build cannot confirm an upload contract");
+        }
+
+        [TestCase("Added")] [TestCase("Removed")] [TestCase("MadeLocal")]
+        public void SdkTransportPreparationRejectsUnverifiedEarlierWireChanges(string change)
+        {
+            var descriptor = LayoutDescriptor();
+            var source = Track(ScriptableObject.CreateInstance<VRCExpressionParameters>());
+            source.parameters = MultiplexInputs(4, 4, 8); descriptor.expressionParameters = source;
+            var settings = new ParameterLayoutSettings { Compression = new ParameterCompressionSettings
+                { Multiplexing = ParameterMultiplexingMode.AllSynchronizedInputs, Budget = 32 } };
+            ParameterLayoutSdkSession.Begin(root);
+            var report = new OptimizationBuildReport(); report.Initialize(root, "PC");
+            ParameterLayoutSdkSession.Defer(new BuildContext(root, null), settings, ParameterLayoutPlatform.PC, report);
+            var parameters = source.parameters.Select(ParameterLayoutModel.Copy).ToList();
+            if (change == "Added") parameters.Add(LayoutParameter("Unknown transport", ValueType.Int));
+            if (change == "Removed") parameters.RemoveAt(0);
+            if (change == "MadeLocal") parameters[0].networkSynced = false;
+            source.parameters = parameters.ToArray();
+            string before = EditorJsonUtility.ToJson(source);
+            using var fixture = new LayoutTestStore();
+            Assert.Throws<InvalidOperationException>(() => ParameterLayoutSdkSession.Prepare(root, value => Track(value), fixture.Store));
+            Assert.That(EditorJsonUtility.ToJson(source), Is.EqualTo(before));
+            Assert.That(descriptor.baseAnimationLayers, Is.Empty);
+            Assert.That(fixture.Store.Read(LayoutId), Is.Null);
+            Assert.That(report.Measurements.Single().Succeeded, Is.False);
+        }
+
         [TestCase(false)] [TestCase(true)]
         public void SdkLayoutPersistsAlignedAssetsAfterNdmfDisposalWithoutChangingItsReference(bool additionalLocal)
         {
@@ -53,7 +126,9 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 var report = context.GetState<OptimizationBuildReport>();
                 Assert.That(ParameterLayoutSdkSession.Defer(context, settings, ParameterLayoutPlatform.Android,
                     report, fixture.Store), Is.True);
+                Assert.That(descriptor.expressionParameters, Is.SameAs(source));
                 context.AssetSaver.Dispose();
+                ParameterLayoutSdkSession.Prepare(root, storeForTests: fixture.Store);
 
                 // A late processor may replace the asset, reorder declarations and
                 // add local inputs without introducing a different wire protocol.
@@ -63,7 +138,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 descriptor.expressionParameters = late;
                 string lateOriginal = EditorJsonUtility.ToJson(late);
                 ParameterLayoutSdkSession.Complete(root, storeForTests: fixture.Store);
-                var measurement = report.Measurements.Single();
+                var measurement = report.Measurements.Single(m => m.Name == "parameter layout");
                 Assert.That(measurement.Name, Is.EqualTo("parameter layout"));
                 Assert.That(measurement.Completed && measurement.Succeeded, Is.True);
                 Assert.That(measurement.After, Is.Not.Null);

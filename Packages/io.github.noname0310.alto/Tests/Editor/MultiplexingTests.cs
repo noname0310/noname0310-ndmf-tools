@@ -142,6 +142,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             {
                 ParameterLayoutSdkSession.Begin(root);
                 Assert.That(ParameterLayoutSdkSession.Defer(context, layout, ParameterLayoutPlatform.PC, new OptimizationBuildReport()), Is.True);
+                Assert.That(descriptor.expressionParameters, Is.SameAs(input), "Generator validation must still see the logical declarations");
+                ParameterLayoutSdkSession.Prepare(root, value => Track(value), fixture.Store);
                 Assert.That(descriptor.expressionParameters.CalcTotalCost(), Is.LessThanOrEqualTo(32), "Late SDK processors must see the compressed budget");
                 ParameterLayoutSdkSession.Complete(root, value => Track(value), fixture.Store);
             }
@@ -247,6 +249,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 { Multiplexing = ParameterMultiplexingMode.AutomaticMenuInputs, Budget = 16 } };
             ParameterLayoutSdkSession.Begin(root);
             ParameterLayoutSdkSession.Defer(context, settings, ParameterLayoutPlatform.Android, new OptimizationBuildReport(), fixture.Store);
+            ParameterLayoutSdkSession.Prepare(root, value => Track(value), fixture.Store);
             var before = descriptor.expressionParameters;
             Track(before);
             var fx = (AnimatorController)descriptor.baseAnimationLayers.Single(l => l.type == VRCAvatarDescriptor.AnimLayerType.FX).animatorController;
@@ -284,9 +287,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 ParameterLayoutSdkSession.Begin(root);
                 ParameterLayoutSdkSession.Defer(context, context.GetState<ParameterLayoutState>().Settings,
                     ParameterLayoutPlatform.PC, new OptimizationBuildReport());
-                var generated = descriptor.expressionParameters;
+                Assert.That(descriptor.expressionParameters, Is.SameAs(input));
                 context.AssetSaver.Dispose();
                 using var fixture = new LayoutTestStore();
+                ParameterLayoutSdkSession.Prepare(root, storeForTests: fixture.Store);
+                var generated = descriptor.expressionParameters;
                 ParameterLayoutSdkSession.Complete(root, storeForTests: fixture.Store);
                 Assert.That(descriptor.expressionParameters, Is.SameAs(generated));
                 Assert.That(EditorUtility.IsPersistent(generated), Is.True);

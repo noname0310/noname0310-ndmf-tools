@@ -36,6 +36,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             fixture.Store.Commit(LayoutRecord(LayoutParameter("Face"), LayoutParameter("LocalInput", type)));
             var context = new BuildContext(root, null); ParameterLayoutSdkSession.Begin(root);
             ParameterLayoutSdkSession.Defer(context, new ParameterLayoutSettings(), ParameterLayoutPlatform.Android, new OptimizationBuildReport(), fixture.Store);
+            ParameterLayoutSdkSession.Prepare(root, value => Track(value), fixture.Store);
             var prepared = Track(descriptor.expressionParameters);
             string padding = prepared.parameters.Single(p => p.networkSynced && p.name != "Face").name;
             var late = Track(UnityEngine.Object.Instantiate(prepared));
@@ -126,6 +127,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var context = new BuildContext(root, null);
             ParameterLayoutSdkSession.Begin(root);
             ParameterLayoutSdkSession.Defer(context, new ParameterLayoutSettings(), ParameterLayoutPlatform.Android, new OptimizationBuildReport(), fixture.Store);
+            Assert.That(descriptor.expressionParameters, Is.SameAs(source));
+            ParameterLayoutSdkSession.Prepare(root, value => Track(value), fixture.Store);
             var prepared = Track(descriptor.expressionParameters);
             Assert.That(prepared.parameters.Select(p => p.valueType), Is.EqualTo(new[] { ValueType.Float, ValueType.Bool, ValueType.Bool }));
             var late = Track(UnityEngine.Object.Instantiate(prepared));

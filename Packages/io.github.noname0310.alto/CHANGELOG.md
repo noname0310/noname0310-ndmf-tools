@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.12
+
+- Ignore removed and EditorOnly occlusion targets and occluders both when capturing build settings and before evaluation. Keep explicit selection modes and reject invalid live references, so third-party pass ordering cannot turn an otherwise valid build into a missing-target error.
+- Prepare SDK parameter compression and mobile layout alignment after ordinary generator validation, while retaining precedence over late budget-based compressors. This keeps RealWet's original synchronized Bool contract visible during its early checks. Preserve direct NDMF bake behavior, generated asset persistence, transport validation and upload-only layout recording.
+
 ## 0.0.11
 
 - Extend compatible skinned mesh merging with per-state visibility analysis. Recognize equivalent constant-leaf toggle trees across separate clips, including nested 1D/2D trees and unnormalized Direct composition with Write Defaults On. Preserve initial values, ancestor gates, masks, missing-track history and independent layer/controller contexts; keep unsupported evaluation on the existing exact-writer proof.

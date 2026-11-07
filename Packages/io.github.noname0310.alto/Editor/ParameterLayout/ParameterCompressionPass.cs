@@ -299,7 +299,8 @@ namespace Noname.AvatarTools.ParameterLayout
                 if (entries.TryGetValue(VRCAvatarDescriptor.AnimLayerType.FX, out var existingFx))
                     ParameterTransportIdentity.Read(existingFx);
                 // Use NDMF's public serialization lifecycle, including layer-index remapping
-                // and generated-asset ownership. Reopen after all late SDK processors finish.
+                // and generated-asset ownership. Reopen the current controllers so SDK
+                // preparation also includes edits made after the NDMF passes finished.
                 var current = new VirtualControllerContext(); current.OnActivate(context);
                 try
                 {
