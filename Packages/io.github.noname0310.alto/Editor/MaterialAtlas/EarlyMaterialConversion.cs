@@ -28,6 +28,7 @@ namespace Noname.AvatarTools.MaterialAtlas
         private readonly Dictionary<string, Input> inputs = new(StringComparer.Ordinal);
         private readonly Dictionary<Object, Input> origins = new();
         private readonly Dictionary<Renderer, Input[]> preparedRenderers = new();
+        internal readonly DeferredMaterialConsumers DeferredConsumers = new();
         private Transform avatarRoot;
 
         internal void RegisterCopies(GameObject avatar)
@@ -132,11 +133,21 @@ namespace Noname.AvatarTools.MaterialAtlas
                 if (!parents.TryGetValue(asset, out var uses)) continue;
                 foreach (var user in uses) if (affected.Add(user)) pending.Enqueue(user);
             }
+            var deferred = new HashSet<Renderer>();
+            var renderingFilter = context.GetState<RenderingFilterState>();
             foreach (var consumer in affected.OfType<Component>())
+            {
+                if (consumer is Renderer excluded && !selected.Contains(excluded) &&
+                    AutomaticRenderingRules.RemovalCandidate(renderingFilter, excluded))
+                {
+                    deferred.Add(excluded);
+                    continue;
+                }
                 if (!state.Scope.Contains(consumer.transform) || consumer is Renderer renderer && !selected.Contains(renderer))
                     throw new InvalidOperationException("Before Generators material conversion shares an input with an unselected or out-of-scope consumer: " +
                         AnimationUtility.CalculateTransformPath(consumer.transform, context.AvatarRootTransform) +
                         ". Include that consumer, separate the shared asset, or choose After Generators.");
+            }
             foreach (var candidate in candidates)
                 foreach (var mapping in state.Settings.MergeGroups[candidate.Value].TextureMappings)
                 {
@@ -301,7 +312,8 @@ namespace Noname.AvatarTools.MaterialAtlas
                 // Resolve cycles and shared graphs only after every copy exists.
                 // Register before exposing copies to component validation callbacks.
                 foreach (var pair in replacements) ObjectRegistry.RegisterReplacedObject(pair.Key, pair.Value);
-                foreach (var target in affected.OfType<Component>().Cast<Object>().Concat(replacements.Values.Where(o => !(o is Material))))
+                foreach (var target in affected.OfType<Component>().Where(c => !(c is Renderer r) || !deferred.Contains(r))
+                    .Cast<Object>().Concat(replacements.Values.Where(o => !(o is Material))))
                 {
                     using var serialized = new SerializedObject(target);
                     bool changed = false;
@@ -342,6 +354,9 @@ namespace Noname.AvatarTools.MaterialAtlas
                             p.Value != null && replacements.TryGetValue(p.Value, out var value) ? (AnimationClip)value : p.Value)).ToList());
                     }
                 }
+                var sourceMaterials = candidates.Keys.ToHashSet();
+                foreach (var renderer in deferred)
+                    result.DeferredConsumers.Isolate(renderer, context.AvatarRootTransform, sourceMaterials, owned);
                 foreach (var asset in owned) context.AssetSaver.SaveAsset(asset);
                 foreach (var renderer in selected)
                 {
@@ -351,6 +366,9 @@ namespace Noname.AvatarTools.MaterialAtlas
                 context.GetState<OptimizationBuildReport>().Messages.Add("Converted " + candidates.Count +
                     " material references before generators; cloned " + (replacements.Count - candidates.Count) +
                     " dependent assets. Final texture packing remains after generators.");
+                if (deferred.Count != 0)
+                    context.GetState<OptimizationBuildReport>().Messages.Add("Deferred shared-material validation for " + deferred.Count +
+                        " renderers selected by Rendering Filter; their original shaders remain until removal is verified before atlas packing.");
                 return result;
             }
             catch

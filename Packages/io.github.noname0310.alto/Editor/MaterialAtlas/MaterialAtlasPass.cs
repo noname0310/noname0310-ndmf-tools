@@ -186,6 +186,7 @@ namespace Noname.AvatarTools.MaterialAtlas
             {
                 var controllers = services.ControllerContext.Controllers.Where(e => !(e.Key is UnityEngine.Object owner) || owner != null)
                     .ToDictionary(e => e.Key, e => e.Value);
+                state.Early?.DeferredConsumers.Validate(avatar, controllers.Values);
                 var policy = ParameterPolicyPass.Resolve(context, controllers);
                 if (policy.Uncertain) throw new InvalidOperationException("Material conversion requires verified parameter preservation mappings.");
                 var hazards = AtlasAnimationSafety.Find(avatar, controllers, policy.Preserved,

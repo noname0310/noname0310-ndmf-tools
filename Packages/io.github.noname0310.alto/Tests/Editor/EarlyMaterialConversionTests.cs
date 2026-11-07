@@ -346,6 +346,125 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(inside.sharedMaterial, Is.EqualTo(source)); Assert.That(renderer.sharedMaterial, Is.EqualTo(source));
         }
 
+        private Renderer SharedEffectRenderer(RendererFilterTypes kind, Material material)
+        {
+            var obj = PolicyChild("Shared effect");
+            Renderer effect;
+            if (kind == RendererFilterTypes.ParticleSystems)
+            {
+                obj.AddComponent<ParticleSystem>(); effect = obj.GetComponent<ParticleSystemRenderer>();
+            }
+            else if (kind == RendererFilterTypes.Lines) effect = obj.AddComponent<LineRenderer>();
+            else effect = obj.AddComponent<TrailRenderer>();
+            effect.sharedMaterial = material;
+            return effect;
+        }
+
+        [TestCase(RendererFilterTypes.ParticleSystems)] [TestCase(RendererFilterTypes.Lines)] [TestCase(RendererFilterTypes.Trails)]
+        public void EarlyConversionDefersConfiguredRendererExclusionsWithoutChangingTheirShader(RendererFilterTypes kind)
+        {
+            MaterialDescriptor(); Mesh(); var source = Track(new Material(Shader.Find("Standard")));
+            renderer.sharedMaterial = source; var effect = SharedEffectRenderer(kind, source);
+            string original = EditorJsonUtility.ToJson(source);
+            var filter = RenderingFilter(); filter.ExcludedRendererTypes = kind;
+            var context = new BuildContext(root, null); BuildFilterPass.RemoveEarly(context);
+            var state = EarlyAtlas(context, AtlasGroup());
+            using var registry = new ObjectRegistryScope(context.ObjectRegistry);
+            state.Early = EarlyMaterialConversion.Apply(context, state); TrackEarlyAtlasAssets();
+            Assert.That(renderer.sharedMaterial.shader, Is.SameAs(state.Settings.MergeGroups[0].ReferenceMaterial.shader));
+            Assert.That(effect.sharedMaterial.shader, Is.SameAs(source.shader), "Generators must still see the original effect shader.");
+            Assert.That(effect.sharedMaterial, Is.Not.SameAs(source), "Provenance must not modify a source asset.");
+            Assert.That(EditorJsonUtility.ToJson(source), Is.EqualTo(original));
+            var controllers = Array.Empty<VirtualAnimatorController>();
+            Assert.Throws<InvalidOperationException>(() => state.Early.DeferredConsumers.Validate(root, controllers), "Selection alone is not a removal proof.");
+            AutomaticRenderingRules.RemoveRenderers(root, context.GetState<RenderingFilterState>(), controllers, new List<string>());
+            Assert.That(effect == null, Is.True);
+            Assert.DoesNotThrow(() => state.Early.DeferredConsumers.Validate(root, controllers));
+        }
+
+        [TestCase("Preserved")] [TestCase("Disabled")] [TestCase("Platform")] [TestCase("OutsideScope")] [TestCase("NoRule")]
+        public void EarlyConversionDoesNotDeferRetainedOrUnconfiguredRenderers(string reason)
+        {
+            MaterialDescriptor(); var source = Track(new Material(Shader.Find("Standard"))); renderer.sharedMaterial = source;
+            var effect = SharedEffectRenderer(RendererFilterTypes.ParticleSystems, source);
+            var filter = RenderingFilter(); filter.ExcludedRendererTypes = RendererFilterTypes.ParticleSystems;
+            if (reason == "Preserved") filter.PreserveAutomaticRenderers.Add(effect);
+            if (reason == "Disabled") filter.enabled = false;
+            if (reason == "Platform") filter.ApplyOnPlatforms = OptimizationPlatforms.None;
+            if (reason == "OutsideScope") filter.ScopeRoot = PolicyChild("Other scope").transform;
+            if (reason == "NoRule") filter.ExcludedRendererTypes = RendererFilterTypes.None;
+            var context = new BuildContext(root, null); BuildFilterPass.RemoveEarly(context);
+            var state = EarlyAtlas(context, AtlasGroup());
+            Assert.Throws<InvalidOperationException>(() => EarlyMaterialConversion.Apply(context, state));
+            Assert.That(renderer.sharedMaterial, Is.SameAs(source)); Assert.That(effect.sharedMaterial, Is.SameAs(source));
+        }
+
+        [Test]
+        public void EarlyConversionRechecksRendererDependenciesIntroducedAfterGenerators()
+        {
+            MaterialDescriptor(); var source = Track(new Material(Shader.Find("Standard"))); renderer.sharedMaterial = source;
+            var effect = SharedEffectRenderer(RendererFilterTypes.ParticleSystems, source);
+            var filter = RenderingFilter(); filter.ExcludedRendererTypes = RendererFilterTypes.ParticleSystems;
+            var parent = PolicyChild("Retained simulation").AddComponent<ParticleSystem>();
+            filter.PreserveAutomaticRenderers.Add(parent.GetComponent<ParticleSystemRenderer>());
+            var context = new BuildContext(root, null); BuildFilterPass.RemoveEarly(context);
+            var state = EarlyAtlas(context, AtlasGroup());
+            state.Early = EarlyMaterialConversion.Apply(context, state); TrackEarlyAtlasAssets();
+            var emitters = parent.subEmitters; emitters.enabled = true;
+            emitters.AddSubEmitter(effect.GetComponent<ParticleSystem>(), ParticleSystemSubEmitterType.Birth, ParticleSystemSubEmitterProperties.InheritNothing);
+            var controllers = Array.Empty<VirtualAnimatorController>();
+            AutomaticRenderingRules.RemoveRenderers(root, context.GetState<RenderingFilterState>(), controllers, new List<string>());
+            Assert.That(effect != null, Is.True);
+            var error = Assert.Throws<InvalidOperationException>(() => state.Early.DeferredConsumers.Validate(root, controllers));
+            Assert.That(error.Message, Does.Contain("after rendering filters"));
+            Assert.That(error.Message, Does.Contain("Shared effect"));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void EarlyConversionTracksDeferredMaterialCopiesOnGeneratedConsumers(bool registerOnly)
+        {
+            MaterialDescriptor(); var source = Track(new Material(Shader.Find("Standard"))); renderer.sharedMaterial = source;
+            var effect = SharedEffectRenderer(RendererFilterTypes.Lines, source);
+            var filter = RenderingFilter(); filter.ExcludedRendererTypes = RendererFilterTypes.Lines;
+            var context = new BuildContext(root, null); BuildFilterPass.RemoveEarly(context);
+            var state = EarlyAtlas(context, AtlasGroup());
+            using var registry = new ObjectRegistryScope(context.ObjectRegistry);
+            state.Early = EarlyMaterialConversion.Apply(context, state); TrackEarlyAtlasAssets();
+            var generated = PolicyChild("Generated consumer").AddComponent<MeshRenderer>();
+            var copy = Track(new Material(registerOnly ? source : effect.sharedMaterial));
+            if (registerOnly) ObjectRegistry.RegisterReplacedObject(effect.sharedMaterial, copy);
+            generated.sharedMaterial = copy;
+            var controllers = Array.Empty<VirtualAnimatorController>();
+            AutomaticRenderingRules.RemoveRenderers(root, context.GetState<RenderingFilterState>(), controllers, new List<string>());
+            Assert.That(effect == null, Is.True);
+            Assert.Throws<InvalidOperationException>(() => state.Early.DeferredConsumers.Validate(root, controllers));
+            generated.sharedMaterial = renderer.sharedMaterial;
+            Assert.DoesNotThrow(() => state.Early.DeferredConsumers.Validate(root, controllers));
+        }
+
+        [Test]
+        public void DeferredMaterialValidationUsesCurrentAnimationCurvesInsteadOfStaleSourceClips()
+        {
+            MaterialDescriptor(); var source = Track(new Material(Shader.Find("Standard"))); renderer.sharedMaterial = source;
+            var effect = SharedEffectRenderer(RendererFilterTypes.Lines, source);
+            var filter = RenderingFilter(); filter.ExcludedRendererTypes = RendererFilterTypes.Lines;
+            var context = new BuildContext(root, null); BuildFilterPass.RemoveEarly(context);
+            var state = EarlyAtlas(context, AtlasGroup());
+            state.Early = EarlyMaterialConversion.Apply(context, state); TrackEarlyAtlasAssets();
+            var clip = SlotClip(0, effect.sharedMaterial); var physical = Controller(clip);
+            root.GetComponent<VRCAvatarDescriptor>().baseAnimationLayers = new[]
+                { new VRCAvatarDescriptor.CustomAnimLayer { type = VRCAvatarDescriptor.AnimLayerType.FX, animatorController = physical } };
+            var current = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(physical);
+            var controllers = new[] { current };
+            AutomaticRenderingRules.RemoveRenderers(root, context.GetState<RenderingFilterState>(), controllers, new List<string>());
+            Assert.That(effect == null, Is.True);
+            Assert.Throws<InvalidOperationException>(() => state.Early.DeferredConsumers.Validate(root, controllers));
+            var output = current.AllReachableNodes().OfType<VirtualClip>().Single();
+            foreach (var binding in output.GetObjectCurveBindings().ToArray()) output.SetObjectCurve(binding, null);
+            Assert.DoesNotThrow(() => state.Early.DeferredConsumers.Validate(root, controllers));
+            Assert.That(AnimationUtility.GetObjectReferenceCurveBindings(clip), Is.Not.Empty, "Source assets remain unchanged.");
+        }
+
         [Test]
         public void EmptyExplicitEarlyMaterialSelectionDoesNotConvertAnything()
         {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.10
+
+- Allow Before Generators material conversion to share inputs with Particle, Line and Trail Renderers selected for removal by Rendering Filter. Keep isolated copies on their original shaders until generators and filtering finish, then verify that no retained renderer, generated material copy or live animation still uses them. Preserve scope, platform, explicit preservation and component-dependency safeguards.
+
 ## 0.0.9
 
 - Support VRChat SDK 3.10.6 Native Face Tracking in BlendShape protection, Animator reachability, parameter specialization and output liveness. Follow blend-set controls through other sets and forwarded Animator values, and remove dead controls, parameters and menus when their outputs disappear.

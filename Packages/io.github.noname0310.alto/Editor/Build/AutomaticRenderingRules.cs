@@ -18,6 +18,15 @@ namespace Noname.AvatarTools.Build
         internal static bool Preserved(RenderingFilterState state, Renderer renderer) =>
             state.PreserveAutomaticRenderers.Contains(ObjectRegistry.GetReference(renderer));
 
+        // Selection is a policy, not a removal proof. References discovered after
+        // generators run can still require a selected renderer to survive.
+        internal static bool RemovalCandidate(RenderingFilterState state, Renderer renderer) =>
+            state.Scope != null && state.Scope.Contains(renderer.transform) &&
+            !ALTOPlugin.IsEditorOnly(renderer.transform) && !Preserved(state, renderer) &&
+            (renderer is ParticleSystemRenderer && (state.ExcludedRendererTypes & RendererFilterTypes.ParticleSystems) != 0 ||
+             renderer is LineRenderer && (state.ExcludedRendererTypes & RendererFilterTypes.Lines) != 0 ||
+             renderer is TrailRenderer && (state.ExcludedRendererTypes & RendererFilterTypes.Trails) != 0);
+
         internal static List<MaterialExclusion> MaterialRules(RenderingFilterState state, IEnumerable<Renderer> renderers)
         {
             var rules = new List<MaterialExclusion>(state.Materials);
@@ -43,11 +52,7 @@ namespace Noname.AvatarTools.Build
             var pairs = new List<(Renderer Renderer, ParticleSystem Simulation)>();
             foreach (var renderer in avatar.GetComponentsInChildren<Renderer>(true))
             {
-                if (!state.Scope.Contains(renderer.transform) || ALTOPlugin.IsEditorOnly(renderer.transform) || Preserved(state, renderer)) continue;
-                bool remove = renderer is ParticleSystemRenderer && (state.ExcludedRendererTypes & RendererFilterTypes.ParticleSystems) != 0 ||
-                    renderer is LineRenderer && (state.ExcludedRendererTypes & RendererFilterTypes.Lines) != 0 ||
-                    renderer is TrailRenderer && (state.ExcludedRendererTypes & RendererFilterTypes.Trails) != 0;
-                if (!remove) continue;
+                if (!RemovalCandidate(state, renderer)) continue;
                 selected.Add(renderer);
                 if (renderer is ParticleSystemRenderer && renderer.GetComponent<ParticleSystem>() is ParticleSystem simulation)
                 { selected.Add(simulation); pairs.Add((renderer, simulation)); }
