@@ -9,7 +9,7 @@ namespace Noname.AvatarTools
     [UnityEngine.Scripting.APIUpdating.MovedFrom(true, "Noname.AvatarTools", "Noname.AdvancedAvatarOptimizer", "AdvancedTraceAndOptimizeMeshes")]
     public sealed class ALTOTraceAndOptimizeMeshes : ALTOOptimizationComponent
     {
-        [Tooltip("Merge skinned renderers with compatible visibility, animations, skinning, culling and lighting settings after mesh reduction. Unsupported or externally observed renderers remain separate.")]
+        [Tooltip("Merge skinned renderers with compatible visibility, animations, skinning, culling and lighting settings after mesh reduction. Visibility analysis also recognizes equivalent parameter-driven toggle trees across separate clips. Unsupported or externally observed renderers remain separate.")]
         public bool MergeCompatibleSkinnedMeshes = true;
 
         [Tooltip("Expand the destination bounds to contain every input culling volume. Disable to merge only matching bounds. Lighting anchors and visibility still have to be compatible.")]

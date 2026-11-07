@@ -41,6 +41,20 @@ namespace Noname.AvatarTools.Meshes
         internal bool Initial;
         internal string MaskCoverage;
         internal AvatarAnimationIndex.BindingUse[] Writers;
+        internal Func<BooleanAnimationEquivalence.Profile> AnalyzeBoolean;
+        private BooleanAnimationEquivalence.Profile booleanProfile;
+        private bool booleanAnalyzed;
+        private BooleanAnimationEquivalence.Profile BooleanProfile
+        {
+            get
+            {
+                if (!booleanAnalyzed) { booleanAnalyzed = true; booleanProfile = AnalyzeBoolean?.Invoke(); }
+                return booleanProfile;
+            }
+        }
+        internal bool SameVisibility(MeshAnimationSignal other) => Equals(other) || other != null &&
+            Initial == other.Initial && MaskCoverage == other.MaskCoverage && BooleanProfile != null &&
+            ReferenceEquals(BooleanProfile, other.BooleanProfile);
         internal bool SameWriter(AvatarAnimationIndex.BindingUse a, AvatarAnimationIndex.BindingUse b) =>
             a.Clip == b.Clip && a.Binding.isDiscreteCurve == b.Binding.isDiscreteCurve &&
             SameCurve(a.Curve, b.Curve);
@@ -204,9 +218,10 @@ namespace Noname.AvatarTools.Meshes
             if (initial && writers.Length == 0) return null;
             var transform = obj is GameObject gameObject ? gameObject.transform : ((Component)obj).transform;
             var signal = new MeshAnimationSignal { Initial = initial, Writers = writers,
+                AnalyzeBoolean = writers.Length == 0 ? null : () => animations.BooleanSignals.For(obj, property),
                 MaskCoverage = writers.Length == 0 ? null : MaskCoverage(avatar, transform, animations,
                     obj is GameObject ? typeof(GameObject) : typeof(Renderer)) };
-            if (!candidate.Visibility.Contains(signal)) candidate.Visibility.Add(signal);
+            if (!candidate.Visibility.Any(s => s.SameVisibility(signal))) candidate.Visibility.Add(signal);
             return null;
         }
 
@@ -240,7 +255,7 @@ namespace Noname.AvatarTools.Meshes
             }
             if (a.Pinned && b.Pinned) return "independent external morph interfaces";
             if (a.MaskCoverage != b.MaskCoverage) return "different Animator mask coverage";
-            if (a.Visibility.Count != b.Visibility.Count || !a.Visibility.All(s => b.Visibility.Contains(s))) return "different activation or enabled signals";
+            if (!SameVisibility(a, b)) return "different activation or enabled signals";
             if (!a.UpdateWhenOffscreen.Equals(b.UpdateWhenOffscreen)) return "different offscreen-update animation signals";
             if (a.Properties.Count != b.Properties.Count || !a.Properties.All(p => b.Properties.TryGetValue(p.Key, out var signal) && p.Value.Equals(signal)))
                 return "different material-property animation signals";
@@ -272,6 +287,16 @@ namespace Noname.AvatarTools.Meshes
             int count = mesh.GetBlendShapeFrameCount(shape);
             return (count > 1 ? mesh.GetBlendShapeFrameWeight(shape, count - 2) : 0,
                 mesh.GetBlendShapeFrameWeight(shape, count - 1));
+        }
+
+        internal static bool SameVisibility(MeshMergeCandidate a, MeshMergeCandidate b, bool semantic = true)
+        {
+            bool Matches(MeshAnimationSignal s, MeshAnimationSignal t) => semantic ? s.SameVisibility(t) : s.Equals(t);
+            // Activation is a conjunction of ancestor and renderer signals. Check
+            // both directions: the union of two conservative proof methods need
+            // not discover every transitive equality between representatives.
+            return a.Visibility.All(s => b.Visibility.Any(t => Matches(s, t))) &&
+                b.Visibility.All(t => a.Visibility.Any(s => Matches(s, t)));
         }
 
         private static bool MaterialDefaultsMatch(Material[] first, Material[] second, bool reorder)

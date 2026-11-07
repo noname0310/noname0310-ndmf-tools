@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.11
+
+- Extend compatible skinned mesh merging with per-state visibility analysis. Recognize equivalent constant-leaf toggle trees across separate clips, including nested 1D/2D trees and unnormalized Direct composition with Write Defaults On. Preserve initial values, ancestor gates, masks, missing-track history and independent layer/controller contexts; keep unsupported evaluation on the existing exact-writer proof.
+- Cache visibility projections within each animation-index snapshot and report groups that use the stronger proof. Validate native Unity outputs through state transitions, partial layer/playable weights and changing toggle inputs.
+
 ## 0.0.10
 
 - Allow Before Generators material conversion to share inputs with Particle, Line and Trail Renderers selected for removal by Rendering Filter. Keep isolated copies on their original shaders until generators and filtering finish, then verify that no retained renderer, generated material copy or live animation still uses them. Preserve scope, platform, explicit preservation and component-dependency safeguards.

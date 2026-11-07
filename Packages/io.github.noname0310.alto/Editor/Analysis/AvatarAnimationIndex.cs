@@ -48,6 +48,8 @@ namespace Noname.AvatarTools.Analysis
         private readonly HashSet<(UnityEngine.Object, string)> writes = new();
         private readonly Dictionary<UnityEngine.Object, List<BindingUse>> writers = new();
         private readonly Dictionary<VirtualAnimatorController, HashSet<Type>> controllerBindingTypes = new();
+        private BooleanAnimationEquivalence booleanSignals;
+        internal BooleanAnimationEquivalence BooleanSignals => booleanSignals ??= new BooleanAnimationEquivalence(this);
 
         internal bool Writes(UnityEngine.Object target, string property) => writes.Contains((target, property));
         internal IReadOnlyList<BindingUse> ForObject(UnityEngine.Object target) =>

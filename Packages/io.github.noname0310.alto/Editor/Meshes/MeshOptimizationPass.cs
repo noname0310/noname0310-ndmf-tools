@@ -228,7 +228,7 @@ namespace Noname.AvatarTools.Meshes
                         bone != avatar.transform && bone.IsChildOf(avatar.transform) && settings.Scope.Contains(bone) &&
                         !(bone is RectTransform) && !mutations.Mutable.Contains(bone) && !objectSettings.Protected(bone)));
             }
-            int removed = 0, slots = 0, groups = 0, vertices = 0, palette = 0, rebound = 0;
+            int removed = 0, slots = 0, groups = 0, vertices = 0, palette = 0, rebound = 0, equivalentVisibility = 0;
             var partitions = MeshMergeAnalysis.Group(candidates, settings.MergeRenderers, mergePolicy);
             foreach (var partition in partitions.Skip(1))
             {
@@ -256,6 +256,7 @@ namespace Noname.AvatarTools.Meshes
                     continue;
                 }
                 var destination = group[0].Renderer;
+                if (group.Skip(1).Any(c => !MeshMergeAnalysis.SameVisibility(group[0], c, semantic: false))) equivalentVisibility++;
                 int oldVertices = group.Sum(c => c.Renderer.sharedMesh.vertexCount), oldPalette = group.Sum(c => c.Renderer.bones.Length);
                 Merge(group, pathFor(destination.transform), settings.MergeSlots,
                     save, settings.RemoveUnusedData, skinning, settings.ExpandBounds, reorderSlots);
@@ -270,7 +271,7 @@ namespace Noname.AvatarTools.Meshes
                 rebound + " static skin-bone entries rebound; " + converted + " rigid renderers converted and " + weighted +
                 " unweighted meshes assigned rigid skinning; material-slot reordering permitted for " +
                 permissionsByRenderer.Values.Count(p => (p & MeshOptimizationPermissions.MaterialSlotReordering) != 0) + " inspected renderers" +
-                "; " + watch.ElapsedMilliseconds + " ms.");
+                "; " + equivalentVisibility + " groups use equivalent Animator visibility outputs; " + watch.ElapsedMilliseconds + " ms.");
             context.GetState<OptimizationAnalysis>().Invalidate(AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Meshes);
             return groups + converted + weighted;
         }

@@ -696,8 +696,8 @@ native Animator paths and the same scope, preservation, visibility, shader and
 renderer compatibility checks. NDMF-only manual bakes cannot include later SDK
 processors.
 
-- **Merge Compatible Skinned Meshes** combines groups with matching activation
-  curves, Animator mask coverage and rendering settings. Coordinate systems follow Mesh Optimization Policy and
+- **Merge Compatible Skinned Meshes** combines groups with equivalent activation
+  outputs, Animator mask coverage and rendering settings. Coordinate systems follow Mesh Optimization Policy and
   culling volumes follow Expand Bounds; this is not a forced renderer count.
   Descriptor and MMD renderers remain the destination so their object paths,
   morph names and indices survive. Other animated morphs receive unique names
@@ -711,6 +711,17 @@ processors.
   remain identical, or when both probe systems are off. This never substitutes
   anchors at different sampling positions; use Mesh Renderer Settings Override
   when that lighting change is intended.
+  Activation analysis compares every state in each controller and layer. Separate
+  clips and duplicate parameter-driven toggle trees can share a group when their
+  constant leaf values and blend operations match. Initial activation, ancestor
+  gates, renderer enabled state and missing tracks remain part of the proof.
+  Overlapping toggle sets partition naturally: inputs controlled by X alone,
+  both X and Y, and Y alone remain three groups. This does not assume separate
+  layers or Animators transition together. Normalized Direct trees, Direct trees
+  with Write Defaults Off, discrete Direct mixing and additive/synchronized
+  writers retain the stricter same-clip/curve comparison. Animated curves also
+  retain that existing comparison. Proofs are cached for the current build pass;
+  original clips and state machines are not rewritten to force agreement.
 - **Expand Bounds** contains all input culling volumes in the destination root's
   coordinates at build time. Enabled by default. Disabling it requires matching
   bounds. A common fixed coordinate system can be proven through static helper
