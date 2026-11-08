@@ -223,13 +223,12 @@ namespace Noname.AvatarTools.ParameterLayout
                     if (locals.TryGetValue(actual.Name, out var original))
                     {
                         // A late layout tool may re-enable a known local input under
-                        // the original reference name. Restore both its private value
-                        // and our anonymous wire only when the exact slot provenance
-                        // and local declaration match. Never discard its consumers.
-                        var changed = input.Single(p => p.name == actual.Name);
+                        // the original reference name, copying the desktop default and
+                        // persistence settings with it. Exact slot provenance and encoding
+                        // identify our wire; the captured local declaration owns this
+                        // platform's defaults. Restore both without changing its consumers.
                         if (referenceNames == null || !referenceNames.TryGetValue(expected.Name, out var referenceName) ||
-                            referenceName != actual.Name || !actual.SameEncoding(original) ||
-                            original.defaultValue != changed.defaultValue || original.saved != changed.saved) continue;
+                            referenceName != actual.Name || !actual.SameEncoding(original)) continue;
                         restoredLocals.Add(actual.Name, Copy(original));
                     }
                     else if (!isUnobserved(actual.Name)) continue;

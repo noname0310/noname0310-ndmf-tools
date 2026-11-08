@@ -18,13 +18,17 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
 {
     public sealed partial class BlendShapeOptimizationTests
     {
-        [TestCase(ValueType.Bool)] [TestCase(ValueType.Int)] [TestCase(ValueType.Float)]
-        public void LatePaddingRestoresKnownLocalConsumersWithoutChangingTheirValues(ValueType type)
+        [Test, Combinatorial]
+        public void LatePaddingRestoresKnownLocalConsumersWithoutChangingTheirValues(
+            [Values(ValueType.Bool, ValueType.Int, ValueType.Float)] ValueType type,
+            [Values("Unchanged", "Default", "Saved", "Both", "Interpolation")] string desktopChange,
+            [Values(false, true)] bool oldPaddingLeftLocal)
         {
             var descriptor = LayoutDescriptor();
             var source = Track(ScriptableObject.CreateInstance<VRCExpressionParameters>());
             var local = LayoutParameter("LocalInput", type, false);
-            local.defaultValue = type == ValueType.Float ? .5f : 1; local.saved = true;
+            local.defaultValue = type == ValueType.Float ? .5f : 0; local.saved = true;
+            local.useCustomLerpDuration = true; local.customLerpDuration = .125f;
             source.parameters = new[] { LayoutParameter("Face"), local }; descriptor.expressionParameters = source;
             var controller = Controller(Clip());
             controller.AddParameter("LocalInput", type == ValueType.Float ? AnimatorControllerParameterType.Float :
@@ -34,6 +38,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             string controllerBefore = EditorJsonUtility.ToJson(controller);
             using var fixture = new LayoutTestStore();
             fixture.Store.Commit(LayoutRecord(LayoutParameter("Face"), LayoutParameter("LocalInput", type)));
+            string referenceBefore = System.IO.File.ReadAllText(fixture.Store.PathFor(LayoutId));
             var context = new BuildContext(root, null); ParameterLayoutSdkSession.Begin(root);
             ParameterLayoutSdkSession.Defer(context, new ParameterLayoutSettings(), ParameterLayoutPlatform.Android, new OptimizationBuildReport(), fixture.Store);
             ParameterLayoutSdkSession.Prepare(root, value => Track(value), fixture.Store);
@@ -41,21 +46,35 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             string padding = prepared.parameters.Single(p => p.networkSynced && p.name != "Face").name;
             var late = Track(UnityEngine.Object.Instantiate(prepared));
             late.parameters = prepared.parameters.Where(p => p.name != padding).Select(ParameterLayoutModel.Copy).ToArray();
-            late.parameters.Single(p => p.name == "LocalInput").networkSynced = true; descriptor.expressionParameters = late;
+            var desktop = late.parameters.Single(p => p.name == "LocalInput");
+            desktop.networkSynced = true;
+            if (desktopChange == "Default" || desktopChange == "Both") desktop.defaultValue = 1;
+            if (desktopChange == "Saved" || desktopChange == "Both") desktop.saved = false;
+            if (desktopChange == "Interpolation") { desktop.useCustomLerpDuration = false; desktop.customLerpDuration = .5f; }
+            if (oldPaddingLeftLocal)
+            {
+                var abandoned = ParameterLayoutModel.Copy(prepared.parameters.Single(p => p.name == padding));
+                abandoned.networkSynced = false;
+                late.parameters = late.parameters.Concat(new[] { abandoned }).ToArray();
+            }
+            descriptor.expressionParameters = late;
             string lateBefore = EditorJsonUtility.ToJson(late);
             Assert.That(new ParameterPaddingUsage(root).IsUnobserved("LocalInput"), Is.False);
             ParameterLayoutSdkSession.Complete(root, value => Track(value), fixture.Store);
             var output = descriptor.expressionParameters.parameters;
             Assert.That(output.Where(p => p.networkSynced).Select(p => p.name), Is.EqualTo(new[] { "Face", padding }));
             var restored = output.Single(p => p.name == "LocalInput");
-            Assert.That((restored.valueType, restored.defaultValue, restored.saved, restored.networkSynced),
-                Is.EqualTo((local.valueType, local.defaultValue, local.saved, false)));
+            Assert.That(JsonUtility.ToJson(restored), Is.EqualTo(JsonUtility.ToJson(local)));
+            Assert.That(output.Single(p => p.name == padding).saved, Is.False);
+            Assert.That(output.Single(p => p.name == padding).defaultValue, Is.Zero);
             Assert.That(EditorJsonUtility.ToJson(controller), Is.EqualTo(controllerBefore));
             Assert.That(EditorJsonUtility.ToJson(late), Is.EqualTo(lateBefore));
+            Assert.That(System.IO.File.ReadAllText(fixture.Store.PathFor(LayoutId)), Is.EqualTo(referenceBefore));
         }
 
-        [TestCase("UnknownSource")] [TestCase("WrongSource")] [TestCase("DefaultChanged")]
-        [TestCase("SavedChanged")] [TestCase("LocalTypeChanged")] [TestCase("PaddingObserved")]
+        [TestCase("UnknownSource")] [TestCase("WrongSource")] [TestCase("MissingLocalSnapshot")]
+        [TestCase("LocalTypeChanged")] [TestCase("LocalBitWidthChanged")] [TestCase("LocalRepresentationChanged")]
+        [TestCase("PaddingObserved")]
         public void LatePaddingRejectsUnprovenRestorationOfAnObservedLocalInput(string damage)
         {
             var local = LayoutParameter("LocalInput", ValueType.Float, false); local.defaultValue = .5f; local.saved = true;
@@ -64,11 +83,13 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var late = ParameterLayoutModel.Copy(local); late.networkSynced = true;
             if (damage == "UnknownSource") aligned.PaddingReferenceNames.Clear();
             if (damage == "WrongSource") aligned.PaddingReferenceNames[before.Single().Name] = "DifferentInput";
-            if (damage == "DefaultChanged") late.defaultValue = 0;
-            if (damage == "SavedChanged") late.saved = false;
+            late.defaultValue = 0; late.saved = false;
             if (damage == "LocalTypeChanged") local.valueType = ValueType.Int;
+            if (damage == "LocalBitWidthChanged") local.bitWidth = 6;
+            if (damage == "LocalRepresentationChanged") local.flippedRepresentation = true;
             Assert.Throws<InvalidOperationException>(() => ParameterLayoutModel.ReconcileLatePadding(before, new[] { late }, aligned.PaddingNames,
-                name => damage != "PaddingObserved" && name != "LocalInput", aligned.PaddingReferenceNames, new[] { local }));
+                name => damage != "PaddingObserved" && name != "LocalInput", aligned.PaddingReferenceNames,
+                damage == "MissingLocalSnapshot" ? null : new[] { local }));
         }
 
         [TestCase(ValueType.Bool)] [TestCase(ValueType.Int)] [TestCase(ValueType.Float)]

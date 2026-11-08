@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.13
+
+- Preserve current-platform defaults, persistence and interpolation settings when a later parameter aligner replaces ALTO-owned padding with a known local input from the reference platform. Require matching slot provenance and wire encoding, retain consumer checks, and leave confirmed upload records unchanged.
+
 ## 0.0.12
 
 - Ignore removed and EditorOnly occlusion targets and occluders both when capturing build settings and before evaluation. Keep explicit selection modes and reject invalid live references, so third-party pass ordering cannot turn an otherwise valid build into a missing-target error.
