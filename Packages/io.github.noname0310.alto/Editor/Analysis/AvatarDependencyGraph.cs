@@ -210,7 +210,7 @@ namespace Noname.AvatarTools.Analysis
                 else if (component is VRCPhysBoneCollider collider)
                 {
                     // Global colliders affect simulations without an explicit local reference.
-                    if ((collider.globalCollision != VRCPhysBoneBase.AdvancedBool.False || animatedGlobals.Contains(collider)) && CanEnable(collider)) Root(component);
+                    if ((PhysBonePermissions.MayAllowGlobalCollision(collider) || animatedGlobals.Contains(collider)) && CanEnable(collider)) Root(component);
                 }
                 else if (component is VRCContactReceiver receiver)
                 {

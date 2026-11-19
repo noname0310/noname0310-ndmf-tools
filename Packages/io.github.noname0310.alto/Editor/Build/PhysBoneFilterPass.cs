@@ -4,6 +4,7 @@ using System.Linq;
 using nadena.dev.ndmf;
 using nadena.dev.ndmf.animator;
 using nadena.dev.ndmf.util;
+using Noname.AvatarTools.Analysis;
 using Noname.AvatarTools.BlendShapeOptimization;
 using Noname.AvatarTools.ParameterPolicy;
 using UnityEditor;
@@ -156,7 +157,7 @@ namespace Noname.AvatarTools.Build
             var collidersToRemove = state.RemoveColliders
                 ? context.AvatarRootObject.GetComponentsInChildren<VRCPhysBoneCollider>(true).Where(c =>
                     state.Scope.Contains(c.transform) && BuildPlatformFilters.Includes(c.transform, context) &&
-                    c.globalCollision == VRCPhysBoneBase.AdvancedBool.False && !usedColliders.Contains(ObjectRegistry.GetReference(c))).ToArray()
+                    !PhysBonePermissions.MayAllowGlobalCollision(c) && !usedColliders.Contains(ObjectRegistry.GetReference(c))).ToArray()
                 : Array.Empty<VRCPhysBoneCollider>();
             PreserveNestedBoundaries(all, remove);
             foreach (var pb in remove)

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.14
+
+- Evaluate effective SDK PhysBone permissions consistently across object liveness, orphan collider cleanup, local collider sharing and simulation merging. Custom modes with no allowed interactions can now optimize like disabled permissions; unused custom fields no longer prevent otherwise compatible merging. Preserve animation, explicit consumers, collision multiplicity and unknown permission modes.
+- Add regression coverage for animated collider permissions, PhysBone component reset tracks and separate Raycast origins, plus MA 1.19 integration checks for native global colliders, Reactive Blend Tree toggle output and preserved advanced parameter encoding/defaults.
+
 ## 0.0.13
 
 - Preserve current-platform defaults, persistence and interpolation settings when a later parameter aligner replaces ALTO-owned padding with a known local input from the reference platform. Require matching slot provenance and wire encoding, retain consumer checks, and leave confirmed upload records unchanged.

@@ -29,7 +29,11 @@ namespace Noname.AvatarTools.Physics
     internal static class PhysBoneOptimizationPass
     {
         private static readonly HashSet<string> ColliderMetadata = new(StringComparer.Ordinal)
-        { "m_GameObject", "m_CorrespondingSourceObject", "m_PrefabInstance", "m_PrefabAsset", "rootTransform" };
+        {
+            "m_GameObject", "m_CorrespondingSourceObject", "m_PrefabInstance", "m_PrefabAsset", "rootTransform",
+            // Eligibility proves all global permissions are ineffective and unanimated.
+            "globalCollision", "globalCollisionAllowSelf", "globalCollisionAllowOthers", "globalCollisionFlags"
+        };
 
         internal static void Capture(BuildContext context)
         {
@@ -135,7 +139,7 @@ namespace Noname.AvatarTools.Physics
             bool Eligible(VRCPhysBoneCollider collider)
             {
                 if (Protected(settings, collider, objects) || !collider.enabled || !AlwaysActive(collider.transform) ||
-                    collider.globalCollision != VRCPhysBoneBase.AdvancedBool.False || animations.ForObject(collider).Count > 0 || animatedReferences.Contains(collider)) return false;
+                    PhysBonePermissions.MayAllowGlobalCollision(collider) || animations.ForObject(collider).Count > 0 || animatedReferences.Contains(collider)) return false;
                 var root = collider.rootTransform != null ? collider.rootTransform : collider.transform;
                 if (!root.IsChildOf(avatar.transform)) return false;
                 if (collider.GetComponents<Component>().Any(c => c != null && c != collider && BuildFilterPass.Requires(c, collider))) return false;

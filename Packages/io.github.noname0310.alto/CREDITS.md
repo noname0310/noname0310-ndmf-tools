@@ -38,6 +38,14 @@ copied, that behavior is identical, or that feature parity has been completed.
 | `Editor/Materials/` and material/texture optimization design | `RemoveUnusedMaterialProperties.cs`, `OptimizeTexture.cs` | Reference for saved-property cleanup and texture/UV constraints. Independently implemented source-absence proof, copied-asset cleanup, exact serialized equivalence and safe clip remapping. Texture/UV reduction is separate work; atlas conversion uses TexTransTool. |
 | Build pipeline architecture | `Editor/OptimizerPlugin.cs`, `Internal/TraceAndOptimizeBase/TraceAndOptimizeProcessor.cs` | Reference for staged execution, re-analysis and coexistence boundaries. |
 
+`Editor/Analysis/PhysBonePermissions.cs` was reviewed against AAO 1.9.23
+`Editor/Utils/VRCSDKUtils.cs` (`ParseAdvancedBool` / `ParsePermissionFilter`)
+and SDK 3.10.6's permission evaluation.
+The independently implemented effective-permission model is shared by collider
+liveness, orphan cleanup, local collider sharing and compatible simulation merging.
+Unknown modes remain observable; animation, explicit references and collision
+multiplicity still prevent unsafe removal or merging.
+
 `Editor/AnimatorOptimization/UnusedLayers.cs` was reviewed against AAO 1.9.20
 `Internal/AnimatorOptimizer/RemoveMeaninglessLayer.cs` and NDMF 1.14.8
 `Editor/API/Util/GlobalTransformations.cs`. The final-boundary empty-state proof,

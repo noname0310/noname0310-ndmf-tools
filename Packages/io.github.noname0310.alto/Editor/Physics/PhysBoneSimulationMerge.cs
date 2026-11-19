@@ -18,7 +18,11 @@ namespace Noname.AvatarTools.Physics
     internal static class PhysBoneSimulationMerge
     {
         private static readonly HashSet<string> Metadata = new(StringComparer.Ordinal)
-        { "m_GameObject", "m_CorrespondingSourceObject", "m_PrefabInstance", "m_PrefabAsset", "rootTransform" };
+        {
+            "m_GameObject", "m_CorrespondingSourceObject", "m_PrefabInstance", "m_PrefabAsset", "rootTransform",
+            // Compared as effective permissions after ruling out animation and external readers.
+            "allowCollision", "collisionFilter", "allowGrabbing", "grabFilter", "allowPosing", "poseFilter"
+        };
 
         internal static int Apply(GameObject avatar, VRCPhysBone[] bones, PhysBoneOptimizationState settings,
             ObjectOptimizationState objects, AvatarAnimationIndex animations, AvatarDependencyGraph references,
@@ -45,8 +49,8 @@ namespace Noname.AvatarTools.Physics
                 if (PhysBoneOptimizationPass.Protected(settings, bone, objects) || !bone.enabled || !AlwaysActive(bone.transform) ||
                     root != bone.transform || root.parent == null || !settings.Scope.Contains(root.parent) ||
                     !root.localPosition.Equals(Vector3.zero) || !root.localRotation.Equals(Quaternion.identity) || !root.localScale.Equals(Vector3.one) ||
-                    bone.multiChildType != VRCPhysBoneBase.MultiChildType.Ignore || bone.allowGrabbing != VRCPhysBoneBase.AdvancedBool.False ||
-                    bone.allowPosing != VRCPhysBoneBase.AdvancedBool.False || !string.IsNullOrEmpty(bone.parameter) ||
+                    bone.multiChildType != VRCPhysBoneBase.MultiChildType.Ignore || PhysBonePermissions.MayAllow(bone.allowGrabbing, bone.grabFilter) ||
+                    PhysBonePermissions.MayAllow(bone.allowPosing, bone.poseFilter) || !string.IsNullOrEmpty(bone.parameter) ||
                     bone.maxStretch != 0 || bone.maxSquish != 0 || bone.stretchMotion != 0 ||
                     (bone.ignoreTransforms != null && bone.ignoreTransforms.Any(t => t != null)) ||
                     chain.Length >= 127 || chain.Any(t => owners[t].Count > 1 || objects.Protected(t) || mutations.WrittenByOther(t, bone)) ||
@@ -63,7 +67,11 @@ namespace Noname.AvatarTools.Physics
                 return true;
             }
             bool Same(VRCPhysBone a, VRCPhysBone b) => a.transform.parent == b.transform.parent &&
-                a.gameObject.layer == b.gameObject.layer && a.tag == b.tag && SerializedValueEquality.Matches(a, b, Metadata);
+                a.gameObject.layer == b.gameObject.layer && a.tag == b.tag &&
+                PhysBonePermissions.Equivalent(a.allowCollision, a.collisionFilter, b.allowCollision, b.collisionFilter) &&
+                PhysBonePermissions.Equivalent(a.allowGrabbing, a.grabFilter, b.allowGrabbing, b.grabFilter) &&
+                PhysBonePermissions.Equivalent(a.allowPosing, a.poseFilter, b.allowPosing, b.poseFilter) &&
+                SerializedValueEquality.Matches(a, b, Metadata);
             var groups = new List<List<VRCPhysBone>>();
             foreach (var bone in bones.Where(Eligible))
             {
