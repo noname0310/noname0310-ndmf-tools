@@ -61,6 +61,31 @@ Only** when PC should keep its original optimization behavior. Synchronization
 settings are placed outside the Common platform filter and can be disabled
 separately; compression requires parameter layout.
 
+The feature-control step writes to **Animator Parameter Policy > Preserve
+Parameters**. **Use Preserve for Compression** starts enabled, so the same
+selection also receives a high compression priority on PC and mobile. The
+Installer retains **Treat all as external; allow compression**: it does not
+assume that unlisted parameters have no OSC writers. Advanced mode exposes the
+sharing toggle, priorities and additional Compression selections. A setup without
+mobile simplification stores a sharing-only Policy under Parameters, with its
+freezing platforms set to None.
+
+**Advanced > Meshes** separates optional mesh-combining changes into Common and
+Mobile frames. **Combine meshes across attachment points** can change outlines
+and effects that use a mesh's local axes. **Combine transparent meshes** can
+change the order of overlapping transparent surfaces. Common starts with both
+choices off; Mobile starts with both on. The choices remain independent.
+**Combine meshes even if index-based shader effects change** is a separate
+choice, off by default in both sections. It allows merging without proving that
+mesh IDs and skinning inputs are irrelevant to the shader, including when the
+analyzer cannot inspect every variant. Vertex masks and other indexed effects
+may change. Material-animation defaults and other merge conditions still apply.
+When mobile simplification is included, `Common/Policies` configures PC and
+`Mobile/Policies` configures Android and iOS. Without mobile simplification,
+Common follows the general optimization platforms selected in Setup. The bundled
+Common mesh policy is disabled until one of its optional changes is selected;
+the Mobile mesh policy is enabled. Both use **ALTO Mesh Optimization Policy**.
+
 Every scoped setting explicitly targets the selected avatar root. Body-mesh
 occlusion targets default to all BlendShapes as candidate regions; explicit
 geometry deletions remain a separate selection. The installer suggests meshes
@@ -265,9 +290,15 @@ Surviving parameters retain their own defaults, Saved settings and local behavio
 
 **Additional Parameters** defaults to **Error** when another platform introduces
 synchronized names absent from the reference upload. **Keep Local** explicitly
-disables synchronization for those additional inputs. Type conflicts, duplicate
-names, missing records and changed reference platforms are errors. An empty
+disables synchronization for those additional inputs. Type conflicts and duplicate
+names are errors. Publishing also rejects missing records and changed reference platforms. An empty
 confirmed layout is a valid empty contract, not an instruction to select all inputs.
+
+Play Mode, manual baking, build analysis and SDK local tests can run before the
+first reference upload. When no Blueprint ID or usable reference record is available,
+they compress the current platform's parameters without cross-platform alignment.
+An existing valid record is still applied. Local builds never confirm or replace
+upload records; publishing another platform still requires a confirmed reference.
 
 Records live in `ProjectSettings/ALTO/ParameterLayouts`, one
 JSON file per Blueprint ID. Keep them with the project when switching machines;
@@ -275,7 +306,7 @@ JSON file per Blueprint ID. Keep them with the project when switching machines;
 failures and cancelled/failed uploads do not replace confirmed records. The
 record is committed only after the SDK confirms the reference upload succeeded.
 If that platform is successfully uploaded without an enabled layout component,
-its old record is invalidated. Other platforms must wait for a new reference
+its old record is invalidated. Uploads on other platforms must wait for a new reference
 upload with the component enabled. Uploading another platform leaves it intact.
 
 This implementation uses NDMF and public VRChat SDK callbacks. It does not depend
@@ -300,28 +331,66 @@ Layout**. Both components control the whole avatar. The reference-platform uploa
 records the wire contract; other platforms reuse it, including the exact generated
 names and bit order. No VRCFury, MA or AAO implementation is required.
 
-**Integers** explicitly selects synchronized Int inputs and an inclusive transmitted
+**Precision Overrides** contains **Source Overrides** and **Parameter Overrides**.
+Source rows accept objects, controllers, Expression Parameters assets, names and
+prefixes, with independent settings for Int and Float inputs. Bool inputs are
+unchanged. Individual rows show the selected input's type; if a build-generated
+input cannot be identified in the Editor, choose its type explicitly. The build
+verifies that type. Individual settings take precedence over source settings;
+conflicting rules at the same priority stop the build. Empty selections change
+nothing, and Keep Existing can exempt an input from a broader source rule.
+
+The **Int** settings explicitly select an inclusive transmitted
 range within the input's SDK representation: unsigned 0..255 or signed -128..127,
 with smaller limits for inputs already using fewer bits. An optional source resolves
 names through NDMF remapping. Full power-of-two ranges, such as 0..7 or -4..3, use
 the SDK's three-bit integer representation directly and need no Animator codec.
-Other ranges use packed Bool slots and a decoder. Ranges may contain 2 to 128 values
+Other ranges use a remapped native Int and a decoder; two-value ranges use one Bool
+because SDK numeric parameters require at least two bits. Ranges may contain 2 to 128 values
 and must reduce the existing wire cost. Empty lists select no integers. Menu values
 are never taken as proof that OSC cannot supply other values.
 
 The local logical parameter keeps its name, Int type, default and Saved setting,
-so menus and OSC continue to use it. Generated Bool slots are not Saved. The owner
+so menus and OSC continue to use it. Generated transport slots are not Saved. The owner
 encodes the local value and the remote Animator reconstructs it. Values outside
 the selected range are clamped **only in the transmitted representation**. Each
-packed integer adds one FX layer. Independent bit delivery can temporarily decode an
-intermediate value, and state evaluation adds latency; this is not atomic Int
-synchronization. The integer codec does not reduce Float precision.
+remapped integer adds one FX layer. Direct native integers need no codec layer.
+Existing uploaded N-Bool contracts are still decoded on other platforms; independent
+delivery of those legacy bits can temporarily decode an intermediate value.
+Codec state evaluation adds latency. Encoding selection is automatic, without a
+separate legacy Bool mode.
+
+The **Float** settings are optional. Without an override, each input keeps
+the artist's SDK bit width and representation. Individual names may use a
+source's original namespace; NDMF resolves the final name during the build.
+
+- **Minimum** permits slots at the selected width or wider, with the same signed
+  or unsigned representation. At each candidate batch count, the planner minimizes
+  total slot cost by sharing available wider slots and opening narrower slots only
+  as needed. A wider slot can use fewer total bits than a separate narrower slot.
+- **Exact** retains the selected quantization. It can require separate slots and
+  increase total cost or update delay; the Inspector displays a warning.
+- **Keep Existing** retains the source bit width. An individual override can use it
+  to exempt an input from a broader source rule.
+
+Representation defaults to **Keep Existing**, with explicit **Signed** and
+**Unsigned** choices. It is independent of the width override. Defaults outside
+the chosen range are rejected instead of silently rewritten. Explicit precision
+overrides can also change inputs listed in Keep Parameters; their transport
+priority or protection remains in effect. Nonzero custom interpolation is retained.
+
+Precision overrides run before budget planning, so reducing direct synchronization
+cost can eliminate multiplexing entirely. The build report lists requested and
+actual slot widths. Reference uploads record the effective overrides and slot
+assignments; other platforms reuse them, including padding for removed inputs.
 
 Layout records preserve bit width and signed representation across platforms.
-Multiplex payloads share slots only when their wire encodings match. Nonzero custom
+Multiplex payloads preserve type and signed representation. Unmodified and exact
+inputs share only slots with the same width; explicit minimum precision inputs
+may also share wider slots. Nonzero custom
 SDK interpolation remains native because reusing one interpolated payload for
 unrelated parameters would change its temporal behavior. Native integer narrowing
-retains that interpolation; packed integer ranges require immediate interpolation.
+retains that interpolation; remapped integer ranges require immediate interpolation.
 
 **Time Multiplexing** defaults to **Automatic By Priority**. On the reference
 platform, including PC, it runs only when the remaining synchronized cost exceeds
@@ -329,7 +398,8 @@ platform, including PC, it runs only when the remaining synchronized cost exceed
 then internal computations, runtime-driven values, and inferred external inputs
 last. External influence propagates to derived parameters, including controller
 inputs that are not Expression Parameters. Known momentary controls and their
-dependent computations remain native, as do explicit preservation and built-ins.
+dependent computations and built-ins remain native. Explicit Keep priorities
+are considered before these inferred scheduling groups.
 An initialization-only Parameter Driver Set does not establish an internal input.
 
 Selection stops at the first priority tier that can fit the budget. Within that
@@ -342,8 +412,8 @@ and warns if inferred external inputs need multiplexing.
 
 The classification uses final menus, sensors and Animator dataflow, without facial
 asset names or parameter-prefix tables. It is an inference, not a guarantee about
-OSC: an external application can also drive an ordinary menu input. **Keep Native
-Parameters** remains available when an input must never incur multiplexing delay.
+OSC: an external application can also drive an ordinary menu input. The input
+assumption below determines whether Keep selections are priorities or protection.
 Native inputs use ordinary platform synchronization; they are not delay-free.
 
 **Automatic Menu Inputs** is a stricter alternative that selects only persistent
@@ -354,8 +424,8 @@ prefixes and source references; an empty selection selects nothing.
 **All Synchronized Inputs** explicitly selects all synchronized user inputs,
 including inputs without menus, sensor-driven values and momentary controls.
 This mode permits snapshot delay and missed brief changes; it is never enabled
-automatically to resolve a budget error. **Disabled** keeps only the integer and
-unused-synchronization features. Selection never
+automatically to resolve a budget error. **Disabled** keeps integer encoding,
+precision overrides and unused-synchronization removal. Selection never
 overrides preservation. If the eligible inputs cannot meet the budget, the build
 reports an error instead of compressing protected inputs.
 
@@ -410,20 +480,39 @@ packet delay, reordering, loss or client scheduling. Keep event-like or responsi
 Native Unity regression tests model Parameter Drivers and packet delivery; they
 do not replace VRChat client networking validation.
 
-**Keep Native Parameters** accepts names, prefixes and controller/object sources,
-and protects their upstream computations. Resolved Animator Parameter Policy
-preservation also takes priority; selecting the same input for compression is an
-error. This list is optional in Automatic By Priority; use it for inputs whose
-latency requirements cannot be inferred or which must stay native even if the
-budget would otherwise require external-input compression.
+**Input Assumption** defaults to **Treat all as external; allow compression**.
+Every input may be driven by OSC, but time multiplexing is allowed to meet the
+budget. **Keep Parameters** accepts multiple source/name/prefix selections with
+priorities. Higher priorities are compressed later, including upstream
+dependencies; overlapping priorities use the highest value. A priority is not
+a promise to retain native synchronization when the budget cannot otherwise fit.
 
-Automatic By Priority also captures Preserve selections from visible enabled
-Animator Parameter Policies, including policies whose Apply On Platforms excludes
-the reference build. The network representation is shared: an Android native-input
-requirement must be respected when PC chooses the contract. This does not enable
-that policy's freezing or object changes on PC. Policies removed by platform
-filters or other generators cannot be discovered there; replay still rejects
-conflicting preservation rather than changing the recorded wire protocol.
+**Assume avatar-driven except listed inputs** is an explicit behavior-changing
+assumption. Unlisted inputs are assumed to have no unregistered external writer.
+Listed inputs and their dependencies instead become protected external inputs;
+their priorities are ignored and budget errors do not override that protection.
+Registered external access and runtime writers still participate in analysis.
+
+**Use Preserve for Compression** on Animator Parameter Policy starts enabled.
+Only that component's own Preserve selection is shared, using its Compression
+Priority in External mode or hard protection in Avatar-Driven mode. Sharing
+applies across platforms independently of the Policy's freezing platform mask,
+including None. Disabled, EditorOnly or parent-platform-filtered settings do not
+contribute. Freeze values and selections imported from Compression are never
+exported back. The Compression Inspector displays these policies and their settings
+read-only, with **Select Policy** navigation. Inspector filter previews do not
+build or modify the avatar; providers without a preview are marked for build-time
+evaluation.
+
+**Allow Unsigned Bit Reduction** defaults on but is effective only with the
+Avatar-Driven assumption. Default 8-bit signed Floats proven to remain in 0..1
+may use 7-bit unsigned encoding; default unsigned Ints proven within 0..127 may
+also use 7 bits. Artist encodings, explicit overrides, protected inputs, unknown
+writers, and Saved values without a provable restored range are retained. Float
+quantization may change slightly. The planner compares original, Float-reduced,
+Int-reduced and combined profiles so adding a representation family does not
+increase the chosen priority tier or cycle length merely to save declaration bits.
+Reference uploads record the chosen encodings for every platform.
 
 **Remove Unused Synchronization** runs after final hierarchy/controller cleanup.
 It makes declarations local only when the dependency graph has no surviving
@@ -504,11 +593,13 @@ Add **Noname > ALTO Trace And Optimize Objects** inside an avatar. An empty
 **Scope Root** uses that object's subtree; analysis covers all avatar controllers.
 The component simplifies redundant animation outputs and traces dependencies
 backward from observable runtime outputs. Object/component collection works
-without AAO Trace And Optimize. Static bone merging is still separate from
-collection; the optional AAO integration respects existing AAO settings.
+without AAO Trace And Optimize. Static frame substitution, component relocation
+and object collection cooperate; the optional AAO integration respects existing
+AAO settings.
 
-After external optimizers and mesh changes, object and Animator cleanup repeat
-until a complete iteration removes nothing. For example, removing an unused
+After external optimizers and mesh changes, a dependency worklist revisits physics,
+static frames, objects, Animator outputs and eligible mesh assembly when their
+inputs change, until no dependent pass has work left. For example, removing an unused
 material output can make a state machine, its Contact input and a supporting
 constraint chain unobservable in successive iterations. The selected options,
 scope and preservation rules still apply on every iteration, including when an
@@ -518,6 +609,9 @@ at their normal stages.
 Final SDK cleanup also treats removed menus and local declarations as dependency
 changes. It revisits converged Expression analysis only when subsequent object or
 Animator edits invalidate it, while still collecting multi-step dependency chains.
+Static structural rewrites converge locally before returning to whole-avatar
+output analysis, so each level of a grouping hierarchy does not trigger that
+expensive analysis again. Every structural batch uses fresh paths and references.
 Avatar-owned readers introduced by late SDK generators also establish sensor
 usage history before cleanup. Same-named private child Animator inputs and
 unknown controller owners do not establish a former avatar sensor consumer;
@@ -590,6 +684,55 @@ external-only sensors still require explicit input freezing.
   When one remaining source has a fractional or animated weight, a zero-weight
   alias to that same source preserves the SDK's multi-source normalization.
   This avoids retaining an unused bone solely to keep the source count above one.
+- **Merge Static Objects** flattens static intermediate Transform-only objects,
+  including ordinary grouping objects. It retains child world transforms and
+  component traversal order, including competing Contact output writers, and
+  relocates descendant animation and SDK behaviour paths. An intermediate path
+  segment alone does not keep an object alive. Independent activation gates,
+  humanoid and simulation chains, runtime references, inherited Avatar Mask
+  boundaries, ambiguous paths and unrepresentable shear retain the object.
+  Descendant animations can survive identity container removal unchanged.
+  Translation-only containers can also be removed above animated TRS children
+  by shifting position curve values without changing tangents or timing. Native
+  simulation/rest-frame dependencies remain protected.
+  Destination name collisions receive a deterministic path-based suffix, with
+  animation bindings, masks and SDK behaviour paths relocated together. Ambiguous
+  original paths, externally observed humanoid names and unresolved destination
+  interfaces remain protected. PhysBone simulation roots can absorb fixed rotation
+  and positive uniform scale around the same origin. Translated simulation parents
+  remain because removing them changes the SDK's low-frame-rate interpolation.
+  Polar limits, unknown simulation versions and animated PhysBone settings also
+  retain the original simulation frame.
+  When only some children need the original frame, independent branches can
+  bypass it while the remaining children keep their original coordinate system.
+  Movable leading and trailing branches retain traversal order; branches between
+  retained siblings stay inside the frame.
+- **Hoist Components** moves supported components onto an equivalent parent,
+  then lets hierarchy cleanup remove empty hosts. **Component Types to Hoist**
+  selects renderers, PhysBones, PhysBone colliders, Contact senders/receivers,
+  VRC constraints, Raycasts, Head Chop, Audio Sources, Lights and Unity colliders.
+  The proof requires an equivalent spatial frame, activation, masks
+  and ownership settings. Runtime targets, serialized references and animation
+  bindings move together; MeshRenderer/MeshFilter and AudioSource/spatial-audio
+  pairs remain together. Native uniqueness, DisallowMultipleComponent and
+  type-addressed animation prevent unsafe co-location. Shared sensor outputs
+  and competing transform writers retain their original ordering. Unknown types
+  and subclasses, Cloth, external morph paths and unsupported ownership
+  dependencies remain in place. These options are enabled by default.
+- **Fold Static Transforms Into Components** (enabled by default) also represents
+  fixed helper transforms using supported component offsets and dimensions.
+  Uniform scale can be absorbed into Contact receiver and PhysBone collider
+  geometry when ancestor scaling permits it. Sender matrices, velocity outputs,
+  animated geometry and nonuniform scaling keep their original reference frames.
+  Compatible constraint sources can move to their parent with compensated
+  offsets; source ordering and weights remain unchanged. Translated parent
+  constraint sources retain their frame because SDK offsets do not scale with
+  avatar height. This switch is independent of identity-only component hoisting.
+- **Assume Fixed Humanoid Bone Scale** (disabled by default) excludes possible
+  external humanoid scale animation from shared transform analysis. Humanoid
+  positions and rotations remain dynamic, and explicit scale curves, constraints
+  and PhysBones are still tracked. Enable only for avatars that do not rely on
+  external clips scaling their humanoid skeleton.
 - **Remove Unused Objects** collects unused components and object subtrees after
   external generators finish. Permanently inactive renderers can be removed;
   animation that might enable them prevents removal. An inactive object used as
@@ -722,6 +865,12 @@ processors.
   writers retain the stricter same-clip/curve comparison. Animated curves also
   retain that existing comparison. Proofs are cached for the current build pass;
   original clips and state machines are not rewritten to force agreement.
+  Material animation compares shared clip/evaluation signals and Unity's native
+  initial property values, including compound Color/Vector channels. Different
+  material assets and unanimated textures can remain separate slots in one
+  renderer. Different initial values are accepted only when a supported FX
+  evaluation continuously replaces the entire property at full weight; missing
+  outputs, partial/dynamic weights and unsupported evaluation retain the inputs.
 - **Expand Bounds** contains all input culling volumes in the destination root's
   coordinates at build time. Enabled by default. Disabling it requires matching
   bounds. A common fixed coordinate system can be proven through static helper
@@ -733,6 +882,9 @@ processors.
   unused or duplicate bone-palette entries. Retained vertices keep their full
   skinning influences and every morph frame. It can also run without merging.
 - **Rebind Static Bones** absorbs fixed local bone transforms into bind poses.
+  It runs independently of renderer merging, including meshes whose shaders or
+  sorting prevent batching. Vertex streams, indices, weights and morphs remain
+  unchanged; leaf and intermediate palette entries can both be substituted.
   Runtime animation, humanoid retargeting, physics, constraints and explicit
   preservation prevent substitution. A constraint with an empty or missing
   optional target still protects the Transform it controls on its own object.
@@ -749,12 +901,27 @@ coordinate systems alive across AAO's automatic bone merging, using its public
 dependency API. Our later substitution and collection passes then process them.
 This temporary dependency does not change AAO settings or authored Merge Bone
 instructions, and is unnecessary when all scoped skinning inputs are invertible.
-Unknown shader inputs, vertex/primitive/bone indices, transparent sorting, Cloth,
+Unknown shader inputs or vertex/primitive/bone indices without an explicit policy,
+transparent sorting without an explicit policy, Cloth,
 material property blocks, animated object references, relative/shared animation
 roots and other renderer readers can prevent merging. The build report records
 preserved inputs, the reason groups remain separate, and merge
 counts. The component does not force different visibility or lighting settings to
 match just to reach a renderer target.
+
+Shader-input proofs first inspect source and Unity-preprocessed variants. A
+bounded Windows/D3D refinement checks actual compiled input read masks rather
+than treating every semantic declaration as a read. Proven immutable standalone
+scalar material uniforms can be substituted in analysis-only programs; animated
+properties, Contact outputs, property blocks and unsupported uniform layouts are
+not assumed constant. In Linear color space, Gamma properties remain unknown
+because their getters cannot recover exact GPU uploads. Other constants and
+compiled dead-code proofs remain available. Both source and compiled checks
+include numeric semantic suffixes and macro-generated input names.
+Pass/stage/API keyword metadata narrows the complete
+variant coverage; the current editor keyword state alone is never sufficient.
+Unsupported backends, incomplete coverage, compilation errors and exhausted
+analysis budgets keep the renderer separate. Shader assets remain unchanged.
 
 Preserved parameters retain their behavior while mutable animation bindings can
 move with a merged mesh. Immutable clips keep their original renderer paths.
@@ -808,6 +975,24 @@ new permissions to geometry from another scope.
   Mesh swaps, external readers and bindings that would become newly active remain
   protected. MeshRenderer morphs remain unevaluated; existing SMR morphs survive.
 
+- **Allow Shader Index Changes** skips the shader mesh-input independence proof
+  during eligible mesh assembly and rigid conversion. It is off by default on
+  every platform, including the Common and Mobile templates. Vertex/primitive
+  IDs, bone indices and skinning inputs can change, affecting indexed masks,
+  deformation and other shader effects. Unverified shaders, including those
+  exceeding the analysis budget, are also accepted by this check. This does not
+  waive missing materials, coordinate systems, sorting, animation/default-value
+  equivalence, external references or preservation rules. Each affected input
+  needs permission; later merged outputs inherit only shared permissions.
+
+- **Allow Transparent Sorting Changes** permits transparent renderers to merge.
+  It is off by default and uses the same scope and platform selection, including
+  PC when selected. Merged geometry loses independent camera-distance sorting,
+  including its order relative to other renderers. Transparency and overlapping
+  surfaces can change. Sorting layer/order/priority, activation, coordinate,
+  shader-input (unless separately allowed) and external-reference checks still apply. This does not grant
+  material-slot reordering or enable rigid conversion.
+
 **Allow Material Slot Reordering** optionally merges equal materials across
 intervening slots: `[A, B, A]` becomes `[A, B]`. It is disabled by default and uses the same **Apply On Platforms** selection
 as the other options on this policy.
@@ -818,10 +1003,43 @@ preserved renderers still prevent this transformation. Without this option,
 only adjacent equal slots coalesce. Repeated adjacent slots do not by themselves
 make numeric material-animation defaults incompatible.
 
+**Allow Animated Material Default Changes** permits merging renderers with the
+same material-animation writers despite different animated starting values.
+The retained renderer supplies these values, including at zero or partial
+animation weight and during default restoration. Unanimated properties remain
+on their original materials, and different unanimated channels of a vector/color
+still prevent merging. Independent animation, property types, masks and other
+compatibility checks remain required. The build report lists changed values.
+The component itself defaults to off; the template and Installer's Advanced
+Meshes choices enable it for Mobile and leave it off for Common/PC.
+
+Extra material slots that repeat the last submesh are supported. Assembly keeps
+references to source index ranges until the final output and preserves a repeated
+suffix using Unity's last-submesh rule. When a repeated range occurs before other
+draws, only its indices are expanded; vertices, bone weights and morphs are not
+duplicated. Material order is preserved unless slot reordering is separately allowed.
+
 The former per-option platform fields on Trace And Optimize Meshes have been
 removed. Move previously configured coordinate, rigid-conversion and slot-order
 permissions to this component when upgrading; there is no automatic compatibility
 fallback. Common optimization settings remain on Trace And Optimize Meshes.
+
+Shader input checks first use the existing source-wide absence proof. When that
+cannot decide and the build target is known, ALTO can use Unity's preprocessor
+to resolve inactive includes and compile-time branches. Passing this check
+requires coverage of every inspectable pass/stage, configured graphics backend,
+graphics tier and subset of the shader's keywords, including fallback/UsePass
+dependencies. A sample of the current material keywords never proves absence.
+Six keywords per pass/stage/API and 1,024 preprocessing calls per shader are the
+current limits, with shared budgets of 2,048 preprocessing calls and 128 compiler
+calls per source snapshot. Larger, failed, unavailable
+or incomplete programs retain their meshes with a diagnostic. Results are
+reused within the build boundary and invalidated with shader sources.
+Input declarations trigger the compiled refinement described above when supported;
+ALTO does not implement its own HLSL control-flow analyzer. Tessellation input
+interfaces, unsupported uniform layouts and unproved runtime values remain
+conservative. This proof does not narrow the separate all-source
+material-property analysis.
 
 ## ALTO Trace And Optimize Materials
 
@@ -870,6 +1088,12 @@ configured separately with ALTO PhysBone Filter.
   effective root and exactly matching serialized settings. Collision list order
   and repeated applications remain intact. Global or animated colliders and
   external/protected consumers prevent sharing.
+- **Rebase Static Collider Roots** moves the geometric reference frame through
+  fixed ancestors, compensating position, rotation and shape dimensions. The
+  collider component, its activation hierarchy and every collision-list entry
+  remain intact, so an independently toggled collider can still release a helper
+  bone. Positive uniform scale and equivalent runtime scale behavior are required;
+  animated geometry, unknown readers and preserved inputs stay unchanged.
 - **Optimize Is Animated** disables rest-pose updates only when the complete chain
   has no external transform writers. Component and root ancestor scales are also
   checked. Overlapping physics, constraints and unknown runtime writers retain it.
@@ -1114,6 +1338,11 @@ declarations removed by a generator do not trigger this fallback.
 Preservation keeps required animated-parameter and Driver inputs, including
 control-flow dependencies. It does not change third-party optimizers' own settings.
 
+**Use Preserve for Compression** also shares this component's own selection with
+Parameter Compression and starts enabled. Sharing uses the Compression input
+assumption and this Policy's priority; it does not export constant values or
+enable freezing on other platforms. Turn it off to keep the policies independent.
+
 **Freeze Parameters** accepts explicit constant values. Assign an
 optional source object/controller and choose one of its original names, or
 leave Source empty and enter a final avatar name. The **Choose...** button lists
@@ -1128,7 +1357,15 @@ Driver Copy require an explicit value or preservation.
 Trigger parameters, built-ins, ambiguous types, missing names and preserved
 dependencies stop the build rather than receiving guessed values.
 
-**All External Inputs Except Preserved** selects menu controls, Contact outputs,
+**Freeze Mode** has three explicit choices:
+
+- **Ignore Compression inputs; preserve this list only** (default): freeze other
+  inputs, using only this Policy's own Preserve selection.
+- **Respect Compression inputs and this Preserve list**: also preserve the
+  active Compression component's explicit Keep selections.
+- **Freeze selected parameters only**: freeze only the explicitly listed rows.
+
+The two automatic modes select menu controls, Contact outputs,
 PhysBone/Raycast outputs, and external Expression Parameters. Controller-only internal
 calculations are not bulk-frozen. Expression Parameters written by Animator curves
 or Drivers are still external inputs and are included in this mode. Preserve

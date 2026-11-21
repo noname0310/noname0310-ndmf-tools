@@ -61,7 +61,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             TrackControllerAssets(output);
             var outputClip = output.animationClips.Single();
             var binding = AnimationUtility.GetCurveBindings(outputClip).Single(b => b.propertyName.StartsWith("blendShape.", StringComparison.Ordinal));
-            Assert.That(binding.path, Is.EqualTo("Generated namespace/First"));
+            Assert.That(binding.path, Is.EqualTo(AnimationUtility.CalculateTransformPath(merged.transform, root.transform)));
+            Assert.That(generated == null, Is.EqualTo(collectObjects), "A static namespace can be flattened with binding relocation");
             for (int i = 0; i < samples.Length; i++)
             {
                 outputClip.SampleAnimation(root, samples[i]);

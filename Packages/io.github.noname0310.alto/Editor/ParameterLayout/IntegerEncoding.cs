@@ -13,7 +13,10 @@ namespace Noname.AvatarTools.ParameterLayout
         public int Minimum, Maximum;
         public int NativeBitWidth;
         public bool SignedRepresentation;
-        internal bool IsNative => NativeBitWidth != 0;
+        public string WireName;
+        internal bool IsRemapped => !string.IsNullOrEmpty(WireName);
+        internal bool IsNative => NativeBitWidth != 0 && !IsRemapped;
+        internal IEnumerable<string> WireNames => IsRemapped ? new[] { WireName } : Bits;
         // Least significant bit first. Stored names, not regenerated guesses, form the wire contract.
         public List<string> Bits = new();
 
@@ -31,6 +34,14 @@ namespace Noname.AvatarTools.ParameterLayout
 
         internal void Validate()
         {
+            if (IsRemapped)
+            {
+                if (string.IsNullOrWhiteSpace(Name) || string.IsNullOrWhiteSpace(WireName) || Name == WireName ||
+                    NativeBitWidth < 2 || NativeBitWidth > 7 || NativeBitWidth != Width(Minimum, Maximum) ||
+                    SignedRepresentation || Bits == null || Bits.Count != 0)
+                    throw new InvalidOperationException("Invalid remapped integer encoding: " + Name);
+                return;
+            }
             if (IsNative)
             {
                 int minimum = SignedRepresentation ? -(1 << (NativeBitWidth - 1)) : 0;
@@ -76,11 +87,15 @@ namespace Noname.AvatarTools.ParameterLayout
                     return new IntegerEncoding { Name = parameter.name, Minimum = minimum, Maximum = maximum,
                         NativeBitWidth = bits, SignedRepresentation = parameter.flippedRepresentation };
             }
-            var result = Create(parameter.name, minimum, maximum, occupied);
-            if (result.Bits.Count >= current)
+            int width = Width(minimum, maximum);
+            if (width >= current)
                 throw new InvalidOperationException("Integer encoding does not reduce the existing SDK bit width: " + parameter.name);
             if (parameter.useCustomLerpDuration && parameter.customLerpDuration != 0)
-                throw new InvalidOperationException("This integer range requires packed bits, which cannot preserve SDK interpolation: " + parameter.name);
+                throw new InvalidOperationException("This integer range requires a codec, which cannot preserve SDK interpolation: " + parameter.name);
+            if (width == 1) return Create(parameter.name, minimum, maximum, occupied);
+            var result = new IntegerEncoding { Name = parameter.name, Minimum = minimum, Maximum = maximum,
+                NativeBitWidth = width, WireName = MultiplexEncoding.Allocate(occupied, "__AdvancedInt/" + parameter.name + "/Value") };
+            result.Validate();
             return result;
         }
 
@@ -98,9 +113,13 @@ namespace Noname.AvatarTools.ParameterLayout
                 return new[] { native };
             }
             if (logical.useCustomLerpDuration && logical.customLerpDuration != 0)
-                throw new InvalidOperationException("Recorded packed integer encoding cannot preserve SDK interpolation: " + Name);
+                throw new InvalidOperationException("Recorded integer codec cannot preserve SDK interpolation: " + Name);
             int initial = Encode((int)logical.defaultValue);
             var local = ParameterLayoutModel.Copy(logical); local.networkSynced = false;
+            if (IsRemapped)
+                return new[] { new Parameter { name = WireName, valueType = VRCExpressionParameters.ValueType.Int,
+                    bitWidth = (byte)NativeBitWidth, networkSynced = true, saved = false, defaultValue = initial,
+                    useCustomLerpDuration = true, customLerpDuration = 0 }, local };
             return Bits.Select((name, bit) => new Parameter
             {
                 name = name, valueType = VRCExpressionParameters.ValueType.Bool, networkSynced = true,

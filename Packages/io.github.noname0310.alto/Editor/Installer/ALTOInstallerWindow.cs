@@ -31,6 +31,9 @@ namespace Noname.AvatarTools.Installer
 
         private string CommonPlatforms => !draft.IncludeCommon ? "Disabled in Setup" :
             draft.CommonMobileOnly ? "Android + iOS" : "PC + Android + iOS";
+        private bool CommonMeshOptionsEnabled => draft.IncludeCommon && (!draft.IncludeMobile || !draft.CommonMobileOnly);
+        private string CommonMeshPlatforms => !draft.IncludeCommon ? "Disabled in Setup" : !draft.IncludeMobile ? CommonPlatforms :
+            draft.CommonMobileOnly ? "Disabled; mobile uses the choices below" : "PC; mobile uses the choices below";
         private string MobilePlatforms => draft.IncludeMobile ? "Android + iOS" : "Disabled in Setup";
 
         [MenuItem("Tools/Noname/ALTO/Installer")]
@@ -73,6 +76,7 @@ namespace Noname.AvatarTools.Installer
             // Clear references tied to the previous avatar while retaining platform and quality choices.
             draft.Avatar = avatar;
             draft.PreserveParameters = new AnimatorParameterSelection();
+            draft.KeepParameters = new AnimatorParameterSelection();
             draft.FrozenValueOverrides.Clear();
             draft.ExcludedObjects.Clear(); draft.ExcludedComponents.Clear();
             draft.PhysBones.Clear(); draft.PhysBoneRoots.Clear(); draft.ContactRoots.Clear();
@@ -267,17 +271,32 @@ namespace Noname.AvatarTools.Installer
                 if (draft.ParameterCompression && !draft.ParameterLayout)
                     EditorGUILayout.HelpBox("Enable matching mobile parameters to PC to use automatic compression.", MessageType.Warning);
                 if (draft.ParameterCompression)
+                {
                     Text("Compress automatically when needed. Sharing network slots can make some values sync less frequently.");
+                    draft.InputAssumption = Choice("Input assumption", draft.InputAssumption,
+                        (ParameterInputAssumption.ExternalWithCompression, "Treat all as external; allow compression"),
+                        (ParameterInputAssumption.AvatarDrivenExceptListed, "Assume avatar-driven except listed inputs"));
+                    Property("KeepParameters", "Additional compression selections");
+                    if (draft.InputAssumption == ParameterInputAssumption.ExternalWithCompression)
+                        Property("KeepPriority", "Additional selection priority");
+                    using (new EditorGUI.DisabledScope(draft.InputAssumption != ParameterInputAssumption.AvatarDrivenExceptListed))
+                        Property("AllowUnsignedBitReduction", "Reduce bits for proven nonnegative values");
+                }
+            });
+            Frame("Common", "Controls to keep responsive", "PC synchronization + mobile controls", draft.IncludeMobile || draft.ParameterCompression, () =>
+            {
+                DrawParameterSources();
+                Property("PreserveParameters.Names", "Also include these parameter names");
+                Property("PreserveParameters.Prefixes", "Also include names starting with");
             });
             Frame("Mobile", "Choose which controls remain adjustable", MobilePlatforms, draft.IncludeMobile, () =>
             {
                 draft.FreezeMode = Choice("Mobile control behavior", draft.FreezeMode,
                     (AnimatorParameterFreezeMode.SelectedParameters, "Fix only the parameter values listed below"),
-                    (AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved, "Fix all inputs except those kept below"));
+                    (AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved, "Ignore Compression inputs; keep only the list below"),
+                    (AnimatorParameterFreezeMode.RespectCompressionExternalInputs, "Keep Compression inputs and the list below"));
                 Text("Fixed inputs stop responding to menus, OSC and other input sources. Keep facial tracking and other controls you still want to use.");
-                DrawParameterSources();
-                Property("PreserveParameters.Names", "Also keep these parameter names");
-                Property("PreserveParameters.Prefixes", "Also keep names starting with");
+                Text("The Preserve list above remains adjustable on mobile. The Compression list is included only when explicitly selected here.");
                 Property("FrozenValueOverrides", draft.FreezeMode == AnimatorParameterFreezeMode.SelectedParameters ? "Parameter values to fix" : "Use these values instead of defaults");
                 if (draft.FreezeMode == AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved &&
                     draft.PreserveParameters.Sources.All(s => s.Source == null) &&
@@ -289,8 +308,18 @@ namespace Noname.AvatarTools.Installer
         private void DrawParameterSources(bool details = true)
         {
             EditorGUILayout.Space(8);
-            EditorGUILayout.LabelField("Controls to keep working", EditorStyles.boldLabel);
-            Text("Add a feature object, Animator Controller or Expression Parameters asset to keep its parameters adjustable. An entire Expression Parameters asset may also keep clothing and feature toggles.");
+            EditorGUILayout.LabelField("Preserve feature controls", EditorStyles.boldLabel);
+            Text("Add facial tracking or other controls to keep adjustable on mobile. These selections are stored in Animator Parameter Policy's Preserve Parameters.");
+            if (details)
+            {
+                draft.UsePreserveForCompression = EditorGUILayout.ToggleLeft("Also prioritize these controls during compression", draft.UsePreserveForCompression);
+                if (draft.UsePreserveForCompression && draft.InputAssumption == ParameterInputAssumption.ExternalWithCompression)
+                    draft.PreserveCompressionPriority = Mathf.Max(1, EditorGUILayout.IntField("Compression priority", draft.PreserveCompressionPriority));
+            }
+            if (draft.UsePreserveForCompression)
+                Text(draft.InputAssumption == ParameterInputAssumption.ExternalWithCompression
+                    ? "On PC and mobile, compression considers these controls last. They may still be compressed if needed to fit the budget."
+                    : "In Avatar-Driven mode, these controls remain protected external inputs on PC and mobile.");
             for (int i = 0; i < draft.PreserveParameters.Sources.Count; i++)
             {
                 var source = draft.PreserveParameters.Sources[i];
@@ -311,7 +340,7 @@ namespace Noname.AvatarTools.Installer
                             source.SelectionMode = Choice("Parameters to keep", source.SelectionMode,
                                 (AnimatorParameterSelectionMode.Declared, "All parameters declared by this source"),
                                 (AnimatorParameterSelectionMode.Referenced, "Only parameters used by its logic"));
-                        Property("PreserveParameters.Sources.Array.data[" + i + "].ExcludedNames", "Do not keep these parameter names");
+                        Property("PreserveParameters.Sources.Array.data[" + i + "].ExcludedNames", "Do not include these parameter names");
                     }
                     else if (!source.IncludeChildren || source.SelectionMode != AnimatorParameterSelectionMode.Declared || source.ExcludedNames.Count > 0)
                         Text("Custom parameter selection is configured for this source in Advanced > Parameters.");
@@ -365,6 +394,12 @@ namespace Noname.AvatarTools.Installer
 
         private void DrawGeometry()
         {
+            Frame("Common", "Combine more meshes", CommonMeshPlatforms, CommonMeshOptionsEnabled, () =>
+            {
+                Text("Compatible meshes are combined automatically. These optional choices can reduce draw calls further by allowing changes to appearance. Independently controlled clothing and accessories still keep their toggles.");
+                EditorGUILayout.Space(6);
+                DrawMeshMergeChoices(false);
+            });
             Frame("Mobile", "Reduce mesh complexity", MobilePlatforms, draft.IncludeMobile, () =>
             {
                 draft.RemoveOccludedMesh = EditorGUILayout.ToggleLeft("Remove hidden body regions", draft.RemoveOccludedMesh, EditorStyles.boldLabel);
@@ -384,13 +419,47 @@ namespace Noname.AvatarTools.Installer
                     Text("The avatar's lip-sync and eyelid meshes are added when you select an avatar. Edit this list to change which meshes keep their detail. If the face and body share one mesh, the whole mesh is kept at full detail. The triangle target includes all meshes, including those kept at full detail.");
                 }
                 EditorGUILayout.Space(12);
-                Section("Combine more meshes", "Allow these changes to combine more meshes and reduce draw calls. Independently toggled meshes may still remain separate.");
+                Section("Simplify rendering settings", "Use consistent rendering settings to help combine mobile meshes and materials.");
                 draft.NormalizeRendererSettings = EditorGUILayout.Toggle("Use consistent lighting and shadows", draft.NormalizeRendererSettings);
-                draft.AllowCoordinateSpaceChanges = EditorGUILayout.Toggle(new GUIContent("Combine meshes with different origins",
-                    "Allow local coordinate changes and conversion of rigid meshes to skinned meshes. Object-space shader effects may change."), draft.AllowCoordinateSpaceChanges);
+                EditorGUILayout.Space(6);
+                DrawMeshMergeChoices(true);
+                EditorGUILayout.Space(6);
                 draft.AllowMaterialSlotReordering = EditorGUILayout.Toggle(new GUIContent("Reorder materials for fewer draw calls",
                     "Allow material slots to be reordered when merging compatible meshes. Effects that depend on draw order may change."), draft.AllowMaterialSlotReordering);
             });
+        }
+
+        private void DrawMeshMergeChoices(bool mobile)
+        {
+            bool coordinates = mobile ? draft.AllowCoordinateSpaceChanges : draft.CommonAllowCoordinateSpaceChanges;
+            bool transparency = mobile ? draft.AllowTransparentSortingChanges : draft.CommonAllowTransparentSortingChanges;
+            bool shaderIndices = mobile ? draft.AllowShaderIndexChanges : draft.CommonAllowShaderIndexChanges;
+            bool materialDefaults = mobile ? draft.AllowAnimatedMaterialDefaultChanges : draft.CommonAllowAnimatedMaterialDefaultChanges;
+            coordinates = EditorGUILayout.ToggleLeft(new GUIContent("Combine meshes across attachment points",
+                "Allow meshes with different local coordinate systems to share a renderer, including rigid meshes. Outlines and effects aligned to a mesh's local axes can change."), coordinates);
+            Text("Outlines and effects that follow a mesh's local position, rotation or scale may look different.");
+            EditorGUILayout.Space(6);
+            transparency = EditorGUILayout.ToggleLeft(new GUIContent("Combine transparent meshes",
+                "Allow transparent parts to share a renderer. They will no longer be sorted independently by distance from the camera."), transparency);
+            Text("Overlapping hair, glass and other transparent surfaces may appear in a different order as the camera moves.");
+            EditorGUILayout.Space(6);
+            shaderIndices = EditorGUILayout.ToggleLeft(new GUIContent("Combine meshes even if index-based shader effects change",
+                "Skip the proof that shaders are independent of mesh IDs and skinning inputs. This also allows shaders the analyzer cannot verify. Material animation and other compatibility checks still apply."), shaderIndices);
+            Text("Masks, deformation or patterns tied to individual vertices or primitives may change. Off by default on every platform.");
+            EditorGUILayout.Space(6);
+            materialDefaults = EditorGUILayout.ToggleLeft(new GUIContent("Combine meshes with different animated starting values",
+                "Allow Animated Material Default Changes: matching material animation can share one renderer even when its starting values differ. The retained renderer supplies those values. Independent animation and different unanimated channels still prevent merging."), materialDefaults);
+            Text("Lighting, color and other animated material effects may look different when animation is off, partially blended or restoring defaults. On by default for mobile only.");
+            if (mobile)
+            {
+                draft.AllowCoordinateSpaceChanges = coordinates; draft.AllowTransparentSortingChanges = transparency;
+                draft.AllowShaderIndexChanges = shaderIndices; draft.AllowAnimatedMaterialDefaultChanges = materialDefaults;
+            }
+            else
+            {
+                draft.CommonAllowCoordinateSpaceChanges = coordinates; draft.CommonAllowTransparentSortingChanges = transparency;
+                draft.CommonAllowShaderIndexChanges = shaderIndices; draft.CommonAllowAnimatedMaterialDefaultChanges = materialDefaults;
+            }
         }
 
         private void DrawBodyMeshes()
@@ -472,6 +541,14 @@ namespace Noname.AvatarTools.Installer
                 if (!draft.IncludeCommon) { Text("General optimization is not included."); return; }
                 Text("Remove unused animation logic, mesh data, materials and physics calculations.");
                 Text("Consistent lighting across meshes: " + YesNo(draft.NormalizeProbeAnchors));
+                if (CommonMeshOptionsEnabled)
+                {
+                    Text("Mesh combination (" + CommonMeshPlatforms + "):");
+                    Text("Combine meshes across attachment points: " + YesNo(draft.CommonAllowCoordinateSpaceChanges));
+                    Text("Combine transparent meshes: " + YesNo(draft.CommonAllowTransparentSortingChanges));
+                    Text("Allow index-based shader effects to change: " + YesNo(draft.CommonAllowShaderIndexChanges));
+                    Text("Allow animated material starting values to change: " + YesNo(draft.CommonAllowAnimatedMaterialDefaultChanges));
+                }
                 Text("Keep expressions used by MMD worlds: " + YesNo(draft.PreserveMmdBlendShapes));
                 Text("Allow AFK expressions to change: " + YesNo(draft.ExcludeAfkAnimations));
                 Text("Bake lilToon colors and layers: " + YesNo(draft.BakeLilToonMainTextures));
@@ -480,9 +557,11 @@ namespace Noname.AvatarTools.Installer
             {
                 if (!draft.IncludeMobile) { Text("Additional mobile simplification is not included."); return; }
                 Text("Remove " + draft.ExcludedObjects.Count + " feature objects and " + draft.ExcludedComponents.Count + " individual components.");
-                Text(draft.FreezeMode == AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved
-                    ? "Fix input values except those selected to keep working."
-                    : "Fix only the parameter values explicitly listed.");
+                Text(draft.FreezeMode == AnimatorParameterFreezeMode.SelectedParameters
+                    ? "Fix only the parameter values explicitly listed."
+                    : draft.FreezeMode == AnimatorParameterFreezeMode.RespectCompressionExternalInputs
+                        ? "Fix inputs except Compression Keep selections and additional mobile controls."
+                        : "Ignore Compression selections; keep only the mobile Preserve list adjustable.");
                 Text(draft.PhysBoneFilterMode == PhysBoneFilterMode.KeepListed ? "Keep only selected PhysBones." : "Keep all except selected PhysBones.");
                 Text(draft.PhysBones.Count + " individual PhysBones and " + draft.PhysBoneRoots.Count + " bone hierarchies selected.");
                 if (draft.PhysBoneFilterMode == PhysBoneFilterMode.KeepListed && draft.PhysBones.Count == 0 && draft.PhysBoneRoots.Count == 0)
@@ -491,6 +570,10 @@ namespace Noname.AvatarTools.Installer
                 Text(draft.CreateMaterialAtlas ? "Combine main textures into a " + draft.AtlasSize + " x " + draft.AtlasSize + " atlas." : "Texture atlas creation: disabled.");
                 Text(draft.RemoveOccludedMesh ? "Check " + draft.OcclusionTargets.Count + " body meshes for hidden regions." : "Keep hidden body regions.");
                 Text(draft.ReduceMeshes ? "Target " + draft.TriangleBudget.ToString("N0") + " total triangles, including meshes kept at full detail." : "Triangle reduction: disabled.");
+                Text("Combine meshes across attachment points: " + YesNo(draft.AllowCoordinateSpaceChanges));
+                Text("Combine transparent meshes: " + YesNo(draft.AllowTransparentSortingChanges));
+                Text("Allow index-based shader effects to change: " + YesNo(draft.AllowShaderIndexChanges));
+                Text("Allow animated material starting values to change: " + YesNo(draft.AllowAnimatedMaterialDefaultChanges));
             });
             Frame("Cross-platform", "Parameter synchronization summary",
                 draft.ParameterLayout || draft.ParameterCompression ? "PC + Android + iOS" : "Not included", true, () =>
@@ -520,6 +603,7 @@ namespace Noname.AvatarTools.Installer
                     EditorGUILayout.LabelField("Common  [" + CommonPlatforms + "]", EditorStyles.boldLabel);
                     using (new EditorGUI.IndentLevelScope())
                     {
+                        Text("Policies / optional mesh combination changes");
                         Text("Rendering / consistent lighting across meshes");
                         Text("Optimization / general avatar optimization");
                     }

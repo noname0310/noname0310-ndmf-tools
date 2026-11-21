@@ -19,6 +19,7 @@ namespace Noname.AvatarTools.ParameterLayout
     {
         internal readonly Dictionary<string, MultiplexPriority> Candidates = new(StringComparer.Ordinal);
         internal readonly Dictionary<string, string> Protected = new(StringComparer.Ordinal);
+        internal readonly Dictionary<string, int> KeepPriorities = new(StringComparer.Ordinal);
 
         // These priorities infer the likely input source, not the user's OSC configuration.
         // Menu inputs can also be driven externally. Explicit preservation always wins.
@@ -109,21 +110,22 @@ namespace Noname.AvatarTools.ParameterLayout
         }
 
         internal MultiplexEncoding Plan(Parameter[] parameters, int budget, float hold, ISet<string> occupied,
-            ICollection<string> messages, ICollection<string> warnings)
+            ICollection<string> messages, ICollection<string> warnings, ISet<string> minimumPrecision = null)
         {
             if (MultiplexEncoding.Cost(parameters) <= budget)
-                return MultiplexEncoding.Plan(parameters, new HashSet<string>(), budget, hold, occupied);
+                return MultiplexEncoding.Plan(parameters, new HashSet<string>(), budget, hold, occupied, minimumPrecision);
             var selected = new HashSet<string>(StringComparer.Ordinal);
             foreach (var parameter in parameters.Where(p => p.networkSynced && !MultiplexEncoding.CanMultiplex(p)))
                 messages.Add("Kept SDK interpolation native: " + parameter.name);
             var ranked = parameters.Where(p => p.networkSynced && Candidates.ContainsKey(p.name) && MultiplexEncoding.CanMultiplex(p))
-                .GroupBy(p => Candidates[p.name]).OrderBy(g => g.Key).ToArray();
+                .GroupBy(p => (Keep: KeepPriorities.TryGetValue(p.name, out int priority) ? priority : 0, Kind: Candidates[p.name]))
+                .OrderBy(g => g.Key.Keep).ThenBy(g => g.Key.Kind).ToArray();
             foreach (var group in ranked)
             {
                 selected.UnionWith(group.Select(p => p.name));
-                if (!MultiplexEncoding.CanFit(parameters, selected, budget)) continue;
+                if (!MultiplexEncoding.CanFit(parameters, selected, budget, minimumPrecision: minimumPrecision)) continue;
                 int shortest = 2;
-                while (!MultiplexEncoding.CanFit(parameters, selected, budget, shortest)) shortest++;
+                while (!MultiplexEncoding.CanFit(parameters, selected, budget, shortest, minimumPrecision)) shortest++;
                 // Trim the boundary tier without selecting any later priority tier.
                 // First preserve its shortest feasible cycle: minimizing only the
                 // number of selected inputs can leave one slot and a very long cycle.
@@ -132,15 +134,16 @@ namespace Noname.AvatarTools.ParameterLayout
                 foreach (var parameter in group.OrderBy(MultiplexEncoding.Cost).ThenBy(p => p.name, StringComparer.Ordinal))
                 {
                     selected.Remove(parameter.name);
-                    if (!MultiplexEncoding.CanFit(parameters, selected, budget, shortest)) selected.Add(parameter.name);
+                    if (!MultiplexEncoding.CanFit(parameters, selected, budget, shortest, minimumPrecision)) selected.Add(parameter.name);
                 }
-                var plan = MultiplexEncoding.Plan(parameters, selected, budget, hold, occupied);
-                messages.Add("Priority multiplexing reached " + group.Key + "; selected " + plan.Inputs.Count +
+                var plan = MultiplexEncoding.Plan(parameters, selected, budget, hold, occupied, minimumPrecision);
+                messages.Add("Priority multiplexing reached " + group.Key.Kind + " (Keep priority " + group.Key.Keep + "); selected " + plan.Inputs.Count +
                     " inputs. Later priorities stay native. Native means no additional time-multiplexing delay.");
                 foreach (var parameter in parameters.Where(p => p.networkSynced).OrderBy(p => p.name, StringComparer.Ordinal))
                     messages.Add("Priority multiplexing " + (selected.Contains(parameter.name) ? "selected: " : "kept native: ") + parameter.name +
                         " (" + (Protected.TryGetValue(parameter.name, out var reason) ? reason :
-                            Candidates.TryGetValue(parameter.name, out var priority) ? priority.ToString() : "Recorded or explicitly encoded wire") + ")");
+                            Candidates.TryGetValue(parameter.name, out var priority) ? priority.ToString() : "Recorded or explicitly encoded wire") +
+                        (KeepPriorities.TryGetValue(parameter.name, out int keep) ? "; Keep priority " + keep : "") + ")");
                 int externalCount = plan.Inputs.Count(p => Candidates[p.Name] == MultiplexPriority.ExternalInput);
                 if (externalCount != 0) warnings.Add("Priority multiplexing includes " + externalCount +
                     " inferred external inputs to meet the budget. Their remote updates now wait for complete snapshots; inspect the selected-input report.");

@@ -23,10 +23,15 @@ namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
     public sealed class GeneratedOutputTests
     {
         private Scene scene;
+        private string outputRoot;
         private readonly List<Object> assets = new();
 
         [SetUp]
-        public void SetUp() => scene = EditorSceneManager.NewPreviewScene();
+        public void SetUp()
+        {
+            scene = EditorSceneManager.NewPreviewScene();
+            outputRoot = "Assets/__ALTO_MA_Test_" + System.Guid.NewGuid().ToString("N");
+        }
 
         [TearDown]
         public void TearDown()
@@ -35,6 +40,7 @@ namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
             foreach (var asset in assets)
                 if (asset != null && !EditorUtility.IsPersistent(asset)) Object.DestroyImmediate(asset);
             assets.Clear();
+            if (AssetDatabase.IsValidFolder(outputRoot)) AssetDatabase.DeleteAsset(outputRoot);
         }
 
         private GameObject Avatar(bool optimize)
@@ -63,9 +69,11 @@ namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
             return child;
         }
 
-        private static void Build(GameObject avatar)
+        private void Build(GameObject avatar)
         {
-            using var outputScope = new OverrideTemporaryDirectoryScope(null);
+            // Installed generators can allocate assets even without their own
+            // authoring marker. Exercise a real build container and clean it up.
+            using var outputScope = new OverrideTemporaryDirectoryScope(outputRoot + "/Build_" + System.Guid.NewGuid().ToString("N"));
             var context = AvatarProcessor.ProcessAvatar(avatar,
                 PlatformRegistry.PlatformProviders["nadena.dev.ndmf.vrchat.avatar3"]);
             Assert.That(context.Successful, Is.True, string.Join("\n", context.ErrorReport.Errors.Select(e => e.TheError)));
@@ -76,17 +84,23 @@ namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
         {
             var avatar = Avatar(true);
             var origin = Child(avatar, "Global collider origin");
+            origin.transform.localPosition = new Vector3(.1f, .2f, .3f);
+            var expectedCenter = origin.transform.position;
             var collider = origin.AddComponent<ModularAvatarGlobalCollider>();
             collider.RootTransform = origin.transform; collider.Radius = .15f;
             Build(avatar);
             var output = avatar.GetComponentsInChildren<VRCPhysBoneCollider>(true).Single();
             Assert.That(output.globalCollision, Is.EqualTo(VRCPhysBoneBase.AdvancedBool.True));
-            Assert.That(output.rootTransform, Is.SameAs(origin.transform));
+            // A static origin can be merged or its collider hoisted. The
+            // observable collision geometry, not the authoring host, must survive.
+            var effectiveRoot = output.rootTransform != null ? output.rootTransform : output.transform;
+            Assert.That(Vector3.Distance(effectiveRoot.TransformPoint(output.position), expectedCenter), Is.LessThan(1e-6f));
+            Assert.That(output.enabled && output.gameObject.activeInHierarchy, Is.True);
             Assert.That(output.radius, Is.EqualTo(.15f));
         }
 
-        [Test]
-        public void MaParameterSourcePreservationRetainsAdvancedEncodingAndExplicitDefaults()
+        [TestCase(false)] [TestCase(true)]
+        public void MaParameterSourcePreservationRetainsAdvancedEncodingAndExplicitDefaults(bool precisionOverride)
         {
             var avatar = Avatar(true);
             var parameters = avatar.AddComponent<ModularAvatarParameters>();
@@ -105,17 +119,24 @@ namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
             });
             // Model externally observed inputs; declarations without any output can
             // otherwise legitimately lose synchronization during whole-avatar analysis.
-            avatar.GetComponent<ALTOParameterCompression>().KeepNativeParameters.Sources.Add(
-                new AnimatorParameterSource { Source = parameters });
+            var policy = avatar.AddComponent<ALTOAnimatorParameterPolicy>(); policy.ApplyOnPlatforms = OptimizationPlatforms.None;
+            policy.PreserveParameters.Sources.Add(new AnimatorParameterSource { Source = parameters });
+            if (precisionOverride)
+            {
+                var rule = new ParameterPrecisionSourceOverride { Floats = new() { Bits = 5 },
+                    Integers = new() { Range = IntegerRangeMode.LimitRange, Minimum = -8, Maximum = 7 } };
+                rule.Parameters.Sources.Add(new AnimatorParameterSource { Source = parameters });
+                avatar.GetComponent<ALTOParameterCompression>().PrecisionSourceOverrides.Add(rule);
+            }
             Build(avatar);
             var output = avatar.GetComponent<VRCAvatarDescriptor>().expressionParameters.parameters;
             var integer = output.Single(p => p.name == "Signed");
-            Assert.That(integer.bitWidth, Is.EqualTo(5)); Assert.That(integer.flippedRepresentation, Is.True);
+            Assert.That(integer.bitWidth, Is.EqualTo(precisionOverride ? 4 : 5)); Assert.That(integer.flippedRepresentation, Is.True);
             Assert.That(integer.defaultValue, Is.EqualTo(-7)); Assert.That(integer.saved, Is.True);
             Assert.That(integer.networkSynced, Is.True);
             Assert.That(integer.useCustomLerpDuration, Is.True); Assert.That(integer.customLerpDuration, Is.EqualTo(.25f));
             var fraction = output.Single(p => p.name == "Unsigned");
-            Assert.That(fraction.bitWidth, Is.EqualTo(6)); Assert.That(fraction.flippedRepresentation, Is.True);
+            Assert.That(fraction.bitWidth, Is.EqualTo(precisionOverride ? 5 : 6)); Assert.That(fraction.flippedRepresentation, Is.True);
             Assert.That(fraction.defaultValue, Is.EqualTo(.75f));
         }
 

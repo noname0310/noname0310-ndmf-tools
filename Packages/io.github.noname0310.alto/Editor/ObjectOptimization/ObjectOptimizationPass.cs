@@ -24,6 +24,11 @@ namespace Noname.AvatarTools.ObjectOptimization
         internal bool PruneUnusedSensorParameters;
         internal bool RemoveUnusedTransforms;
         internal bool RemoveRedundantConstraints;
+        internal bool MergeStaticObjects;
+        internal bool HoistComponents;
+        internal bool FoldStaticTransformsIntoComponents;
+        internal bool AssumeFixedHumanoidBoneScale;
+        internal ComponentHoistingOptions ComponentHoisting;
         internal bool RemoveUnusedObjects;
         // Set only while the SDK finalizer analyzes completed generator output.
         internal bool RuntimeDependenciesOnly;
@@ -37,7 +42,7 @@ namespace Noname.AvatarTools.ObjectOptimization
             return target == null;
         }
         internal bool Enabled => Scope != null && (PruneUnusedSensorParameters || RemoveUnusedTransforms ||
-            RemoveRedundantConstraints || RemoveUnusedObjects);
+            RemoveRedundantConstraints || MergeStaticObjects || HoistComponents || FoldStaticTransformsIntoComponents || RemoveUnusedObjects);
         internal bool Protected(Component value) => value != null &&
             (ProtectedSubtrees.Any(s => s.Contains(value.transform)) || ProtectedComponents.Contains(ObjectRegistry.GetReference(value)));
     }
@@ -56,6 +61,11 @@ namespace Noname.AvatarTools.ObjectOptimization
             state.PruneUnusedSensorParameters = state.Component.PruneUnusedSensorParameters;
             state.RemoveUnusedTransforms = state.Component.RemoveUnusedTransformOutputs;
             state.RemoveRedundantConstraints = state.Component.RemoveRedundantConstraints;
+            state.MergeStaticObjects = state.Component.MergeStaticObjects;
+            state.HoistComponents = state.Component.HoistComponents;
+            state.FoldStaticTransformsIntoComponents = state.Component.FoldStaticTransformsIntoComponents;
+            state.AssumeFixedHumanoidBoneScale = state.Component.AssumeFixedHumanoidBoneScale;
+            state.ComponentHoisting = state.Component.ComponentHoisting?.Copy() ?? new ComponentHoistingOptions();
             state.RemoveUnusedObjects = state.Component.RemoveUnusedObjects;
             foreach (var obj in (state.Component.PreserveObjects ?? new()).Where(o => o != null))
             {
@@ -143,28 +153,29 @@ namespace Noname.AvatarTools.ObjectOptimization
                     return 0;
                 }
                 int changes = 0;
+                var shaders = context.GetState<OptimizationAnalysis>().Shaders;
                 if (finalHierarchy ? state.PruneUnusedSensorParameters : settings.PruneUnusedSensorParameters)
                     changes += SensorParameterPruning.Apply(avatar, controllers, state, policy.Preserved, external, report.Messages);
                 if (finalHierarchy ? state.RemoveUnusedTransforms : settings.RemoveUnusedTransformOutputs)
                     changes += UnusedTransformOutputs.Apply(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
-                        state, policy.Preserved, report.Messages);
+                        state, policy.Preserved, report.Messages, shaders);
                 if (!finalHierarchy && (settings.BakeConstantTransforms || settings.BakeConstantVisibility))
                     InvariantObjectCurves.Apply(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
                         state, analysis, report.Messages);
                 if (finalHierarchy && state.RemoveRedundantConstraints)
                 {
                     changes += ConstraintSourcePruning.Apply(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
-                        state, policy.Preserved, report.Messages);
+                        state, policy.Preserved, report.Messages, shaders);
                     changes += RedundantConstraints.Apply(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
-                        state, policy.Preserved, report.Messages);
+                        state, policy.Preserved, report.Messages, shaders);
                     changes += ParentConstraintOptimization.Apply(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
-                        state, policy.Preserved, report.Messages);
+                        state, policy.Preserved, report.Messages, shaders);
                 }
                 // Defer collection until external generators and optimizers have consumed
                 // their authoring components. Their explicit renderer/bone references stay valid.
                 if (finalHierarchy && state.RemoveUnusedObjects)
                     changes += UnusedObjectCollection.Apply(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
-                        state, policy.Preserved, report.Messages);
+                        state, policy.Preserved, report.Messages, shaders);
                 report.Messages.Add("Object output simplification completed in " + watch.ElapsedMilliseconds +
                     " ms. Runtime dependencies, scope boundaries and explicit preservation were respected.");
                 return changes;

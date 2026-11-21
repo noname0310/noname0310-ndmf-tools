@@ -66,7 +66,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 Assert.That(ray != null, Is.True);
                 AvatarOutputSdkFinalizer.Complete(root);
                 Assert.That(ray == null, Is.True);
-                var measurement = context.GetState<OptimizationBuildReport>().Measurements.Single();
+                var measurement = context.GetState<OptimizationBuildReport>().Measurements.Single(m => m.Name == "runtime output cleanup");
                 Assert.That(measurement.Name, Is.EqualTo("runtime output cleanup"));
                 Assert.That(measurement.Completed && measurement.Succeeded, Is.True);
                 Assert.That(measurement.After, Is.Not.Null);
@@ -171,7 +171,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var built = (AnimatorController)descriptor.baseAnimationLayers.Single().animatorController;
             TrackControllerAssets(built);
             bool removed = observer == "None" || !sdk && (observer == "BecameLocal" || observer == "LateDeclaration");
-            Assert.That(ray == null, Is.EqualTo(removed));
+            // Component hoisting can replace a retained sensor. Assert its final
+            // output contract instead of the lifetime of its original wrapper.
+            var retained = root.GetComponentsInChildren<VRCRaycast>(true).SingleOrDefault(r => r.Parameter == "Probe");
+            Assert.That(retained == null, Is.EqualTo(removed));
+            if (!removed) Assert.That(retained.ResultTransform, Is.SameAs(result.transform));
             Assert.That(owner == null && result == null, Is.EqualTo(removed));
             Assert.That(descriptor.expressionParameters.parameters.Any(p => p.name == input), Is.EqualTo(!removed));
             if (removed) Assert.That(built.parameters.Select(p => p.name), Does.Not.Contain(input));

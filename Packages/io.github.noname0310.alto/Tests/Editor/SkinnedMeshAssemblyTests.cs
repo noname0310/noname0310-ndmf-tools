@@ -148,6 +148,104 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(source.GetBlendShapeWeight(0), Is.EqualTo(145));
         }
 
+        [TestCase(false, false)] [TestCase(false, true)] [TestCase(true, false)] [TestCase(true, true)]
+        public void AdditionalMaterialPassesCopyIndicesOnlyWhenTheRangeCannotRemainLast(bool overlayLast, bool reverse)
+        {
+            var bone = PolicyChild("Bone").transform;
+            var first = AssemblyPart("Plain", new[] { bone }, Vector3.left);
+            var overlay = AssemblyPart("Overlay", new[] { bone }, Vector3.right);
+            var materials = new[] { overlay.sharedMaterial, Track(new Material(overlay.sharedMaterial)), Track(new Material(overlay.sharedMaterial)) };
+            overlay.sharedMaterials = materials;
+            overlay.sharedMesh.SetIndices(new[] { 0, 1, 0 }, MeshTopology.Triangles, 0, false, 1);
+            var parts = overlayLast ? new[] { first, overlay } : new[] { overlay, first };
+            using var assembly = SkinnedMeshAssembler.Create(parts, false, reverseWinding: reverse ? new HashSet<SkinnedMeshRenderer> { overlay } : null);
+            Assert.That(assembly.Mesh.vertexCount, Is.EqualTo(6));
+            Assert.That(assembly.Materials, Is.EqualTo(parts.SelectMany(p => p.sharedMaterials).ToArray()));
+            Assert.That(assembly.Mesh.subMeshCount, Is.EqualTo(overlayLast ? 2 : 4));
+            Assert.That(assembly.Mesh.triangles.Length, Is.EqualTo(overlayLast ? 6 : 12));
+            int slot = 0, offset = 0;
+            foreach (var part in parts)
+            {
+                var expected = part.sharedMesh.GetIndices(0).Select(v => v + offset).ToArray();
+                if (part == overlay && reverse) (expected[0], expected[1]) = (expected[1], expected[0]);
+                foreach (var material in part.sharedMaterials)
+                    Assert.That(assembly.Mesh.GetIndices(Math.Min(slot++, assembly.Mesh.subMeshCount - 1)), Is.EqualTo(expected));
+                offset += part.sharedMesh.vertexCount;
+            }
+            for (int i = 1; i < assembly.Mesh.subMeshCount; i++)
+                Assert.That(assembly.Mesh.GetSubMesh(i).indexStart,
+                    Is.GreaterThanOrEqualTo(assembly.Mesh.GetSubMesh(i - 1).indexStart + assembly.Mesh.GetSubMesh(i - 1).indexCount));
+            Assert.That(overlay.sharedMesh.subMeshCount, Is.EqualTo(1));
+            Assert.That(overlay.sharedMesh.GetIndices(0), Is.EqualTo(new[] { 1, 2, 1 }));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void AdditionalMaterialPassesRemainStableThroughRepeatedAssembly(bool mergeSlots)
+        {
+            var pair = MergePair();
+            foreach (var part in new[] { pair.First, pair.Second })
+                part.sharedMaterials = new[] { part.sharedMaterial, Track(new Material(part.sharedMaterial)) };
+            using var first = SkinnedMeshAssembler.Create(new[] { pair.First, pair.Second }, mergeSlots);
+            var combined = AssemblyOutput(first);
+            using var second = SkinnedMeshAssembler.Create(new[] { combined }, mergeSlots, removeUnusedData: true);
+            Assert.That(second.Materials, Is.EqualTo(first.Materials));
+            Assert.That(second.Mesh.subMeshCount, Is.EqualTo(first.Mesh.subMeshCount));
+            Assert.That(second.Mesh.triangles, Is.EqualTo(first.Mesh.triangles));
+            Assert.That(second.Mesh.vertexCount, Is.EqualTo(6));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void AdditionalMaterialPassesPreserveRenderedOverlayOrder(bool overlayLast)
+        {
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) Assert.Ignore("This comparison requires a graphics device.");
+            var bone = PolicyChild("Bone").transform;
+            var first = AssemblyPart("Plain", new[] { bone }, new Vector3(-1.1f, 0, 0));
+            var overlay = AssemblyPart("Overlay", new[] { bone }, new Vector3(0.1f, 0, 0));
+            Material ColorMaterial(Color color)
+            { var m = Track(new Material(Shader.Find("Hidden/Noname/Assembly Overlay"))); m.color = color; return m; }
+            first.sharedMaterial = ColorMaterial(Color.red);
+            overlay.sharedMaterials = new[] { ColorMaterial(Color.green), ColorMaterial(new Color(0, 0, 1, 0.5f)), ColorMaterial(new Color(1, 1, 0, 0.5f)) };
+            var parts = overlayLast ? new[] { first, overlay } : new[] { overlay, first };
+            using var assembly = SkinnedMeshAssembler.Create(parts, false);
+            var combined = AssemblyOutput(assembly); combined.enabled = false;
+            var camera = PolicyChild("Camera").AddComponent<Camera>(); camera.scene = scene; camera.enabled = false;
+            camera.transform.localPosition = new Vector3(0, 0.5f, 4); camera.transform.localRotation = Quaternion.Euler(0, 180, 0);
+            camera.orthographic = true; camera.orthographicSize = 1.3f;
+            camera.clearFlags = CameraClearFlags.SolidColor; camera.backgroundColor = Color.black;
+            var target = RenderTexture.GetTemporary(96, 96, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            try
+            {
+                var before = DrawAssembly(camera, target);
+                first.enabled = overlay.enabled = false; combined.enabled = true;
+                var after = DrawAssembly(camera, target);
+                Assert.That(before.Any(p => p.r > 50 && p.g > p.r && p.b > 20), Is.True,
+                    "All three overlay colors must contribute; maximum RGB: " + before.Max(p => p.r) + ", " + before.Max(p => p.g) + ", " + before.Max(p => p.b));
+                Assert.That(before.Zip(after, (a, b) => Math.Max(Math.Max(Math.Abs(a.r - b.r), Math.Abs(a.g - b.g)), Math.Abs(a.b - b.b))).Max(), Is.LessThanOrEqualTo(1));
+            }
+            finally { RenderTexture.ReleaseTemporary(target); }
+        }
+
+        [TestCase(3)] [TestCase(65536)]
+        public void RangeAssemblyPreservesBothIndexBufferWidths(int count)
+        {
+            var bone = PolicyChild("Bone").transform;
+            var part = AssemblyPart("Input", new[] { bone }, Vector3.zero);
+            var mesh = part.sharedMesh;
+            mesh.indexFormat = count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
+            mesh.vertices = Enumerable.Range(0, count).Select(i => new Vector3(i, 0, 0)).ToArray();
+            mesh.normals = Enumerable.Repeat(Vector3.back, count).ToArray();
+            using (var counts = new NativeArray<byte>(Enumerable.Repeat((byte)1, count).ToArray(), Allocator.Temp))
+            using (var weights = new NativeArray<BoneWeight1>(Enumerable.Repeat(new BoneWeight1 { boneIndex = 0, weight = 1 }, count).ToArray(), Allocator.Temp))
+                mesh.SetBoneWeights(counts, weights);
+            mesh.triangles = new[] { 0, count - 2, count - 1 };
+            part.sharedMaterials = new[] { part.sharedMaterial, Track(new Material(part.sharedMaterial)) };
+            using var assembly = SkinnedMeshAssembler.Create(new[] { part }, false);
+            Assert.That(assembly.Mesh.indexFormat, Is.EqualTo(mesh.indexFormat));
+            Assert.That(assembly.Mesh.triangles, Is.EqualTo(mesh.triangles));
+            Assert.That(assembly.Mesh.subMeshCount, Is.EqualTo(1));
+            Assert.That(assembly.Materials.Length, Is.EqualTo(2));
+        }
+
         private sealed class AssemblyUvFixture
         {
             internal readonly int[] Dimensions;

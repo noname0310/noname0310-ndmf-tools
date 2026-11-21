@@ -33,11 +33,21 @@ namespace Noname.AvatarTools.Installer
         public List<string> AfkDiagnostics = new();
         public List<AnimationClip> AdditionalExcludedAnimations = new();
         public bool BakeLilToonMainTextures;
+        public bool CommonAllowCoordinateSpaceChanges;
+        public bool CommonAllowTransparentSortingChanges;
+        public bool CommonAllowShaderIndexChanges;
+        public bool CommonAllowAnimatedMaterialDefaultChanges;
 
         public bool ParameterLayout = true;
         public bool ParameterCompression = true;
+        public ParameterInputAssumption InputAssumption = ParameterInputAssumption.ExternalWithCompression;
+        public AnimatorParameterSelection KeepParameters = new();
+        public int KeepPriority = 100;
+        public bool AllowUnsignedBitReduction = true;
         public AnimatorParameterFreezeMode FreezeMode = AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved;
         public AnimatorParameterSelection PreserveParameters = new();
+        public bool UsePreserveForCompression = true;
+        public int PreserveCompressionPriority = 100;
         public List<AnimatorParameterConstant> FrozenValueOverrides = new();
 
         public List<GameObject> ExcludedObjects = new();
@@ -61,6 +71,9 @@ namespace Noname.AvatarTools.Installer
         public List<Renderer> PreserveRenderers = new();
         public bool NormalizeRendererSettings = true;
         public bool AllowCoordinateSpaceChanges = true;
+        public bool AllowTransparentSortingChanges = true;
+        public bool AllowShaderIndexChanges;
+        public bool AllowAnimatedMaterialDefaultChanges = true;
         public bool AllowMaterialSlotReordering = true;
 
         public bool CreateMaterialAtlas = true;

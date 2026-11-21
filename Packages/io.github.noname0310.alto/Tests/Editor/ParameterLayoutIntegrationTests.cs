@@ -16,8 +16,10 @@ using UnityEditor.Animations;
 using UnityEngine;
 using UnityEngine.Animations;
 using UnityEngine.TestTools;
+using VRC.Core;
 using VRC.SDK3.Avatars.Components;
 using VRC.SDK3.Avatars.ScriptableObjects;
+using VRC.SDKBase.Editor;
 using Parameter = VRC.SDK3.Avatars.ScriptableObjects.VRCExpressionParameters.Parameter;
 using ValueType = VRC.SDK3.Avatars.ScriptableObjects.VRCExpressionParameters.ValueType;
 
@@ -25,6 +27,112 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
 {
     public sealed partial class BlendShapeOptimizationTests
     {
+        [Test]
+        public void LocalMobileBuildCompressesWithoutAUsableReference(
+            [Values(ParameterLayoutPlatform.Android, ParameterLayoutPlatform.IOS)] ParameterLayoutPlatform platform,
+            [Values("NoPipeline", "NoId", "Missing", "Invalidated", "OtherPlatform")] string missing,
+            [Values(false, true)] bool sdk)
+        {
+            var descriptor = LayoutDescriptor();
+            var source = Track(ScriptableObject.CreateInstance<VRCExpressionParameters>());
+            source.parameters = MultiplexInputs(4, 4, 8); descriptor.expressionParameters = source;
+            string original = EditorJsonUtility.ToJson(source);
+            if (missing == "NoPipeline") UnityEngine.Object.DestroyImmediate(root.GetComponent<PipelineManager>());
+            else if (missing == "NoId") root.GetComponent<PipelineManager>().blueprintId = "";
+            using var fixture = new LayoutTestStore();
+            if (missing is "Invalidated" or "OtherPlatform")
+            {
+                var record = LayoutRecord(LayoutParameter("Old"));
+                if (missing == "OtherPlatform") record.ReferencePlatform = ParameterLayoutPlatform.Android;
+                fixture.Store.Commit(record);
+                if (missing == "Invalidated") fixture.Store.InvalidateReference(LayoutId, ParameterLayoutPlatform.PC);
+            }
+            string stored = File.Exists(fixture.Store.PathFor(LayoutId)) ? File.ReadAllText(fixture.Store.PathFor(LayoutId)) : null;
+            var settings = new ParameterLayoutSettings { Compression = new ParameterCompressionSettings
+                { Multiplexing = ParameterMultiplexingMode.AllSynchronizedInputs, Budget = 32 } };
+            var context = new BuildContext(root, null);
+            var report = new OptimizationBuildReport(); report.Initialize(root, platform.ToString());
+            if (sdk)
+            {
+                ParameterLayoutSdkSession.Begin(root, VRC_SdkBuilder.BuildType.None);
+                ParameterLayoutSdkSession.Defer(context, settings, platform, report, fixture.Store);
+                context.AssetSaver.Dispose();
+                ParameterLayoutSdkSession.Prepare(root, value => Track(value), fixture.Store);
+                var prepared = descriptor.expressionParameters;
+                var order = prepared.parameters.Where(p => p.networkSynced).Select(p => p.name).ToArray();
+                var late = Track(UnityEngine.Object.Instantiate(prepared));
+                late.parameters = late.parameters.Reverse().ToArray();
+                descriptor.expressionParameters = late;
+                ParameterLayoutSdkSession.Complete(root, value => Track(value), fixture.Store);
+                Assert.That(descriptor.expressionParameters.parameters.Where(p => p.networkSynced).Select(p => p.name), Is.EqualTo(order),
+                    "Late finalization must preserve the current build's generated transport order");
+            }
+            else
+            {
+                var candidate = ParameterLayoutPass.ApplyFinal(root, settings, platform, report,
+                    value => Track(value), fixture.Store, context, requireConfirmedLayout: false);
+                Assert.That(candidate, Is.Null, "An unaligned local build cannot be staged as a reference upload");
+                context.AssetSaver.Dispose();
+            }
+            var output = descriptor.expressionParameters;
+            Assert.That(output.CalcTotalCost(), Is.LessThanOrEqualTo(32));
+            Assert.That(output.parameters.Any(p => !p.networkSynced), Is.True, "Compression must still install logical inputs");
+            Assert.That(output.parameters.Any(p => p.name == "Old"), Is.False, "An unavailable reference cannot inject old slots");
+            Assert.That(report.Messages.Any(m => m.StartsWith("Local build: cross-platform parameter alignment skipped.")), Is.True);
+            var fx = (AnimatorController)descriptor.baseAnimationLayers.Single(l => l.type == VRCAvatarDescriptor.AnimLayerType.FX).animatorController;
+            TrackControllerAssets(fx);
+            Assert.That(fx.layers.SelectMany(l => l.stateMachine.states).SelectMany(s => s.state.behaviours)
+                .OfType<VRCAvatarParameterDriver>().Any(), Is.True);
+            Assert.That(EditorJsonUtility.ToJson(source), Is.EqualTo(original));
+            Assert.That(File.Exists(fixture.Store.PathFor(LayoutId)) ? File.ReadAllText(fixture.Store.PathFor(LayoutId)) : null, Is.EqualTo(stored));
+        }
+
+        [Test]
+        public void SdkLayoutRequiresReferenceOnlyForPublishing(
+            [Values(VRC_SdkBuilder.BuildType.None, VRC_SdkBuilder.BuildType.Test, VRC_SdkBuilder.BuildType.Publish)] VRC_SdkBuilder.BuildType buildType,
+            [Values(false, true)] bool prepare,
+            [Values(false, true)] bool missingId)
+        {
+            var descriptor = LayoutDescriptor();
+            if (missingId) root.GetComponent<PipelineManager>().blueprintId = "";
+            var source = Track(ScriptableObject.CreateInstance<VRCExpressionParameters>());
+            source.parameters = new[] { LayoutParameter("Face") }; descriptor.expressionParameters = source;
+            using var fixture = new LayoutTestStore();
+            var context = new BuildContext(root, null);
+            var report = new OptimizationBuildReport(); report.Initialize(root, "Android");
+            ParameterLayoutSdkSession.Begin(root, buildType);
+            ParameterLayoutSdkSession.Defer(context, new ParameterLayoutSettings(), ParameterLayoutPlatform.Android, report, fixture.Store);
+            context.AssetSaver.Dispose();
+            void Finalize()
+            {
+                if (prepare) ParameterLayoutSdkSession.Prepare(root, value => Track(value), fixture.Store);
+                ParameterLayoutSdkSession.Complete(root, value => Track(value), fixture.Store);
+            }
+            if (buildType == VRC_SdkBuilder.BuildType.Publish)
+            {
+                Assert.Throws<InvalidOperationException>(Finalize);
+                Assert.That(descriptor.expressionParameters, Is.SameAs(source));
+            }
+            else
+            {
+                Assert.DoesNotThrow(Finalize);
+                Assert.That(descriptor.expressionParameters.parameters.Single().name, Is.EqualTo("Face"));
+            }
+            Assert.That(fixture.Store.Read(LayoutId), Is.Null);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void LocalLayoutStillRejectsCorruptOrForeignRecords(bool foreign)
+        {
+            LayoutDescriptor(); using var fixture = new LayoutTestStore();
+            var record = LayoutRecord(); fixture.Store.Commit(record);
+            record.BlueprintId = OtherLayoutId;
+            File.WriteAllText(fixture.Store.PathFor(LayoutId), foreign ? JsonUtility.ToJson(record) : "{broken");
+            Assert.Throws<InvalidOperationException>(() => ParameterLayoutPass.ApplyFinal(root, new ParameterLayoutSettings(),
+                ParameterLayoutPlatform.Android, new OptimizationBuildReport(), _ => Assert.Fail("Invalid records cannot write assets"),
+                fixture.Store, requireConfirmedLayout: false));
+        }
+
         [TestCase(ParameterTransmissionMode.Guarded)] [TestCase(ParameterTransmissionMode.LowLatency)]
         public void SdkTransportPreparationMatchesDirectBakeAndPreservesGeneratorDeclarations(ParameterTransmissionMode transmission)
         {

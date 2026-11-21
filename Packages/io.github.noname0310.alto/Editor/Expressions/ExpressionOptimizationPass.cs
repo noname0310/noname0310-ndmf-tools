@@ -58,7 +58,8 @@ namespace Noname.AvatarTools.Expressions
                 if (AvatarOutputSdkFinalizer.Defer(context, settings, frozen, buildReport)) return;
                 ApplyToAvatar(context.AvatarRootObject, settings, policy, frozen, entries,
                     services.ObjectPathRemapper.GetVirtualToRealPathMap(), buildReport, context.AssetSaver.SaveAsset, null,
-                    context.GetState<ObjectOptimizationState>(), context.GetState<AnimatorOptimizationState>().Settings);
+                    context.GetState<ObjectOptimizationState>(), context.GetState<AnimatorOptimizationState>().Settings,
+                    context.GetState<OptimizationAnalysis>().Shaders);
             }
             finally
             {
@@ -69,15 +70,16 @@ namespace Noname.AvatarTools.Expressions
         internal static int ApplyToAvatar(GameObject avatar, ExpressionSettings settings, ResolvedParameterPolicy policy,
             ISet<string> frozen, IDictionary<object, VirtualAnimatorController> entries, IReadOnlyDictionary<string, string> paths,
             OptimizationBuildReport buildReport, Action<Object> save, ISet<string> localCandidates = null,
-            ObjectOptimizationState objects = null, AnimatorOptimizationSettings animator = null)
+            ObjectOptimizationState objects = null, AnimatorOptimizationSettings animator = null, ShaderPropertyUsage shaders = null)
         {
+            shaders ??= new ShaderPropertyUsage();
             var reports = new List<ExpressionOptimizationReport>();
             int changes, iterations = 0, total = 0;
             do
             {
                 iterations++;
                 changes = ApplyIteration(avatar, settings, policy, frozen, entries, paths, buildReport, save,
-                    localCandidates, objects, animator);
+                    localCandidates, objects, animator, shaders);
                 reports.Add(buildReport.Expressions);
                 total += changes;
             } while (changes != 0);
@@ -104,7 +106,7 @@ namespace Noname.AvatarTools.Expressions
         private static int ApplyIteration(GameObject avatar, ExpressionSettings settings, ResolvedParameterPolicy policy,
             ISet<string> frozen, IDictionary<object, VirtualAnimatorController> entries, IReadOnlyDictionary<string, string> paths,
             OptimizationBuildReport buildReport, Action<Object> save, ISet<string> localCandidates,
-            ObjectOptimizationState objects, AnimatorOptimizationSettings animator)
+            ObjectOptimizationState objects, AnimatorOptimizationSettings animator, ShaderPropertyUsage shaders)
         {
             var watch = Stopwatch.StartNew();
             var report = new ExpressionOptimizationReport(); buildReport.Expressions = report;
@@ -163,9 +165,9 @@ namespace Noname.AvatarTools.Expressions
                         changes += SensorParameterPruning.Apply(avatar, controllers, objects, policy.Preserved, external,
                             buildReport.Messages, locals, frozen);
                         if (objects.RemoveUnusedTransforms)
-                            changes += UnusedTransformOutputs.Apply(avatar, entries, paths, objects, policy.Preserved, buildReport.Messages);
+                            changes += UnusedTransformOutputs.Apply(avatar, entries, paths, objects, policy.Preserved, buildReport.Messages, shaders);
                         if (objects.RemoveUnusedObjects)
-                            changes += UnusedObjectCollection.Apply(avatar, entries, paths, objects, policy.Preserved, buildReport.Messages);
+                            changes += UnusedObjectCollection.Apply(avatar, entries, paths, objects, policy.Preserved, buildReport.Messages, shaders);
                         if (animator?.Enabled == true)
                         {
                             var additive = new HashSet<VirtualAnimatorController>(entries.Where(e =>

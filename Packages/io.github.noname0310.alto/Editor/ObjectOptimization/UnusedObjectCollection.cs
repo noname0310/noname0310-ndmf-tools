@@ -15,13 +15,13 @@ namespace Noname.AvatarTools.ObjectOptimization
     {
         internal static int Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
-            IEnumerable<string> preservedParameters, ICollection<string> messages)
+            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null)
         {
             var index = AvatarAnimationIndex.Create(avatar, controllers, paths, preservedParameters);
             string unsupported = ObjectOptimizationSafety.UnsupportedRuntime(avatar) ?? index.UnsafeReason;
             if (unsupported != null)
             { messages.Add("Unused object collection skipped: " + unsupported); return 0; }
-            var graph = AvatarDependencyGraph.Create(avatar, index, settings, collectObjects: true);
+            var graph = AvatarDependencyGraph.Create(avatar, index, settings, collectObjects: true, shaders: shaders);
             var components = new HashSet<Component>(graph.Components.Where(c => !(c is Transform) &&
                 (settings.RuntimeDependenciesOnly || !(c is INDMFEditorOnly) && !(c is VRC.SDKBase.IEditorOnly)) && !graph.IsLive(c) &&
                 settings.Scope.Contains(c.transform) && !settings.Protected(c)));

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using nadena.dev.ndmf;
+using nadena.dev.ndmf.animator;
 using Noname.AvatarTools.Analysis;
 using Noname.AvatarTools.Build;
 using Noname.AvatarTools.ObjectOptimization;
@@ -18,9 +19,10 @@ namespace Noname.AvatarTools.Physics
     {
         internal ALTOTraceAndOptimizePhysBones Component;
         internal OptimizationBuildScope Scope;
-        internal bool ShareColliders, OptimizeIsAnimated, ReplaceEndBones, MergeSimulations;
+        internal bool ShareColliders, OptimizeIsAnimated, ReplaceEndBones, MergeSimulations, RebaseColliderRoots;
         internal readonly HashSet<ObjectReference> Preserved = new();
         internal readonly List<(Component Original, bool Protected)> Inputs = new();
+        internal bool Enabled => Scope != null && (ShareColliders || OptimizeIsAnimated || ReplaceEndBones || MergeSimulations || RebaseColliderRoots);
     }
 
     // AAO 1.9.20 OptimizePhysBone.MergePhysBoneCollider is a design reference.
@@ -47,6 +49,7 @@ namespace Noname.AvatarTools.Physics
                 state.OptimizeIsAnimated = component.OptimizeIsAnimated;
                 state.ReplaceEndBones = component.ReplaceUnusedEndBones;
                 state.MergeSimulations = component.MergeCompatibleSimulations;
+                state.RebaseColliderRoots = component.RebaseStaticColliderRoots;
                 foreach (var value in (component.PreservePhysBones ?? new()).Cast<Component>().Concat(component.PreserveColliders ?? new()).Where(c => c != null))
                 {
                     if (!value.transform.IsChildOf(context.AvatarRootTransform)) throw new InvalidOperationException("Preserved physics components must belong to this avatar.");
@@ -77,34 +80,51 @@ namespace Noname.AvatarTools.Physics
         }
 
         internal static void Apply(BuildContext context)
+            => ApplyAndCountChanges(context);
+
+        internal static int ApplyAndCountChanges(BuildContext context)
         {
-            try { ApplyCore(context); }
+            try { return ApplyCore(context); }
             finally
             {
+                var state = context.GetState<PhysBoneOptimizationState>();
+                if (state.Component != null && state.Component.BuildInputs.Length == state.Inputs.Count)
+                    for (int i = 0; i < state.Inputs.Count; i++) state.Inputs[i] = (state.Component.BuildInputs[i], state.Inputs[i].Protected);
                 foreach (var component in context.AvatarRootObject.GetComponentsInChildren<ALTOTraceAndOptimizePhysBones>(true)) Object.DestroyImmediate(component);
             }
         }
 
-        private static void ApplyCore(BuildContext context)
+        private static int ApplyCore(BuildContext context)
         {
-            var settings = context.GetState<PhysBoneOptimizationState>(); if (settings.Scope == null ||
-                (!settings.ShareColliders && !settings.OptimizeIsAnimated && !settings.ReplaceEndBones && !settings.MergeSimulations)) return;
-            var avatar = context.AvatarRootObject; var colliders = avatar.GetComponentsInChildren<VRCPhysBoneCollider>(true);
-            var bones = avatar.GetComponentsInChildren<VRCPhysBone>(true);
-            if (colliders.Length < 2 && bones.Length == 0) return;
-            var watch = Stopwatch.StartNew(); var report = context.GetState<OptimizationBuildReport>();
-            report.Initialize(avatar, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
+            if (!context.GetState<PhysBoneOptimizationState>().Enabled) return 0;
             using var lease = OptimizationSession.Acquire(context); var services = lease.Services;
             var entries = services.ControllerContext.Controllers.Where(e => !(e.Key is Object owner) || owner != null).ToDictionary(e => e.Key, e => e.Value);
-            var policy = ParameterPolicyPass.Resolve(context, entries);
-            var animations = AvatarAnimationIndex.Create(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(), policy.Preserved);
+            return ApplyCore(context, entries, ParameterPolicyPass.Resolve(context, entries), services.ObjectPathRemapper.GetVirtualToRealPathMap(), services.ObjectPathRemapper);
+        }
+
+        internal static int ApplyFinal(BuildContext context, IDictionary<object, VirtualAnimatorController> entries, ResolvedParameterPolicy policy)
+            => ApplyCore(context, entries, policy, null, null);
+
+        private static int ApplyCore(BuildContext context, IDictionary<object, VirtualAnimatorController> entries,
+            ResolvedParameterPolicy policy, IReadOnlyDictionary<string, string> paths, ObjectPathRemapper remapper)
+        {
+            var settings = context.GetState<PhysBoneOptimizationState>(); if (settings.Scope == null ||
+                (!settings.ShareColliders && !settings.OptimizeIsAnimated && !settings.ReplaceEndBones && !settings.MergeSimulations)) return 0;
+            var avatar = context.AvatarRootObject; var colliders = avatar.GetComponentsInChildren<VRCPhysBoneCollider>(true);
+            var bones = avatar.GetComponentsInChildren<VRCPhysBone>(true);
+            if (colliders.Length < 2 && bones.Length == 0) return 0;
+            var watch = Stopwatch.StartNew(); var report = context.GetState<OptimizationBuildReport>();
+            report.Initialize(avatar, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
+            var animations = AvatarAnimationIndex.Create(avatar, entries, paths, policy.Preserved);
             string issue = ObjectOptimizationSafety.UnsupportedRuntime(avatar) ?? animations.UnsafeReason;
             if (policy.Uncertain || issue != null)
-            { report.Messages.Add("PhysBone optimization retained inputs: " + (issue ?? "unverified Preserve mapping")); return; }
-            var references = AvatarDependencyGraph.Create(avatar, animations, new ObjectOptimizationState
-            { Scope = new OptimizationBuildScope { Root = avatar.transform } }, false);
+            { report.Messages.Add("PhysBone optimization retained inputs: " + (issue ?? "unverified Preserve mapping")); return 0; }
             var objects = context.GetState<ObjectOptimizationState>();
-            var mutations = settings.OptimizeIsAnimated || settings.ReplaceEndBones || settings.MergeSimulations ? TransformMutationAnalysis.Create(avatar, animations) : null;
+            var references = AvatarDependencyGraph.Create(avatar, animations, new ObjectOptimizationState
+            { Scope = new OptimizationBuildScope { Root = avatar.transform }, RuntimeDependenciesOnly = objects.RuntimeDependenciesOnly }, false,
+                context.GetState<OptimizationAnalysis>().Shaders);
+            var mutations = settings.OptimizeIsAnimated || settings.ReplaceEndBones || settings.MergeSimulations ?
+                TransformMutationAnalysis.Create(avatar, animations, objects.AssumeFixedHumanoidBoneScale) : null;
             int animatedFlags = 0;
             if (settings.OptimizeIsAnimated)
             {
@@ -166,12 +186,15 @@ namespace Noname.AvatarTools.Physics
                         if (bone.colliders[i] is VRCPhysBoneCollider original && replacements.TryGetValue(original, out var target)) bone.colliders[i] = target;
             foreach (var original in replacements.Keys) Object.DestroyImmediate(original);
             int endBones = settings.ReplaceEndBones ? PhysBoneEndpoints.ReplaceUnused(avatar, bones, settings, objects, animations, references, mutations) : 0;
-            int simulations = settings.MergeSimulations ? PhysBoneSimulationMerge.Apply(avatar, bones, settings, objects, animations, references, mutations,
-                services.ObjectPathRemapper) : 0;
+            // Simulation assembly reparents chain roots. Its NDMF path remapper is
+            // required; late SDK analysis still repeats all non-reparenting physics rewrites.
+            int simulations = settings.MergeSimulations && remapper != null ? PhysBoneSimulationMerge.Apply(avatar, bones, settings, objects, animations, references, mutations,
+                remapper) : 0;
             report.Messages.Add("PhysBone optimization: " + replacements.Count + " equivalent local colliders shared; " + watch.ElapsedMilliseconds +
                 " ms; " + animatedFlags + " unused Is Animated flags disabled; " + endBones + " unused leaf transforms replaced with endpoints. " +
                 simulations + " compatible simulation components merged. " +
                 "Global collisions, animation, external readers and collision multiplicity retained.");
+            return replacements.Count + animatedFlags + endBones + simulations;
         }
     }
 }

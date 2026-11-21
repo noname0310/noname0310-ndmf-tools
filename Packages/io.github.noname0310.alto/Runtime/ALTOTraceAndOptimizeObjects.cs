@@ -24,6 +24,20 @@ namespace Noname.AvatarTools
         [Tooltip("Simplify constraints whose behavior is proved redundant: constant zero-weight sources, unchanged local scale, unchanged parent-constraint rest poses, and full parent following representable by hierarchy parenting. Dynamic settings, scale differences, references, scope boundaries and explicit preservation are respected.")]
         public bool RemoveRedundantConstraints = true;
 
+        [Tooltip("Flatten static Transform-only grouping objects when child transforms, activation, animation paths, masks and runtime references remain equivalent. Humanoid and simulation chains, unknown readers and unrepresentable transforms are preserved.")]
+        public bool MergeStaticObjects = true;
+
+        [Tooltip("Relocate supported components to an equivalent parent without changing their runtime targets, activation, animation, references or component multiplicity. Unknown and owner-dependent components remain in place. Empty hosts can then be removed by the hierarchy passes.")]
+        public bool HoistComponents = true;
+
+        [Tooltip("Replace static helper transforms with equivalent component positions, rotations, dimensions or source offsets. Only proven equivalent spatial settings are changed; native coordinate outputs, dynamic scale and animation interfaces remain protected.")]
+        public bool FoldStaticTransformsIntoComponents = true;
+
+        [Tooltip("Assume external animations do not change humanoid bone scale. Enables additional scale-dependent hierarchy, collider and mesh proofs. Humanoid positions and rotations remain dynamic; explicit scale animations, constraints and simulations are still analyzed. Disabled by default because external clips are not available during the build.")]
+        public bool AssumeFixedHumanoidBoneScale;
+
+        public ComponentHoistingOptions ComponentHoisting = new();
+
         [Tooltip("Remove objects and components with no observable runtime consumer after other build generators have finished. Animation writers alone do not preserve an unused object. Bones, constraints, references, external inputs and explicit preservation remain protected.")]
         public bool RemoveUnusedObjects = true;
 

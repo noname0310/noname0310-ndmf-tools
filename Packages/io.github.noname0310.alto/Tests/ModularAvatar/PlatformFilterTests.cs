@@ -52,7 +52,7 @@ namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
             var renderer = feature.AddComponent<SkinnedMeshRenderer>();
             MeshOptimizationPass.Capture(context);
             Assert.That(context.GetState<MeshOptimizationState>().PermissionsFor(renderer),
-                Is.EqualTo(excluded ? MeshOptimizationPermissions.None : MeshOptimizationPermissions.All));
+                Is.EqualTo(excluded ? MeshOptimizationPermissions.None : MeshOptimizationPolicies.Permissions(true, true, true)));
         }
 
         [TestCase(true, true, false)]

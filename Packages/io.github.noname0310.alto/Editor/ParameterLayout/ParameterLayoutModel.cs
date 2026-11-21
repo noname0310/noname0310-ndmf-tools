@@ -32,13 +32,15 @@ namespace Noname.AvatarTools.ParameterLayout
     [Serializable]
     internal sealed class ParameterLayoutRecord
     {
-        public int Version = 4;
+        public int Version = 5;
         public string BlueprintId;
         public ParameterLayoutPlatform ReferencePlatform;
         public string UploadedUtc;
         public string InvalidatedUtc;
         public List<ParameterLayoutEntry> Parameters = new();
         public List<IntegerEncoding> IntegerEncodings = new();
+        public List<FloatPrecisionEncoding> FloatPrecisionOverrides = new();
+        public List<ParameterLayoutEntry> AvatarDrivenEncodings = new();
         // Unity's inline serialization materializes null nested classes on read.
         // Store presence explicitly so ordinary and integer-only records stay valid.
         public bool UsesMultiplexing;
@@ -83,7 +85,7 @@ namespace Noname.AvatarTools.ParameterLayout
 
         internal static void Validate(ParameterLayoutRecord record, bool allowInvalidated = false)
         {
-            if (record == null || record.Version < 1 || record.Version > 4 || record.Parameters == null ||
+            if (record == null || record.Version < 1 || record.Version > 5 || record.Parameters == null ||
                 !Enum.IsDefined(typeof(ParameterLayoutPlatform), record.ReferencePlatform))
                 throw new InvalidOperationException("Unsupported or incomplete parameter layout record. Upload the reference platform again.");
             var names = new HashSet<string>(StringComparer.Ordinal);
@@ -108,9 +110,13 @@ namespace Noname.AvatarTools.ParameterLayout
                 }
                 if (!logicalNames.Add(encoding.Name) || names.Contains(encoding.Name))
                     throw new InvalidOperationException("Duplicate or synchronized logical integer in the parameter layout: " + encoding.Name);
-                foreach (var bit in encoding.Bits)
-                    if (!wireNames.Add(bit) || !record.Parameters.Any(p => p.Name == bit && p.Type == VRCExpressionParameters.ValueType.Bool))
-                        throw new InvalidOperationException("Missing or shared integer wire declaration: " + bit);
+                if (encoding.IsRemapped && record.Version < 5)
+                    throw new InvalidOperationException("Unsupported remapped integer contract version.");
+                foreach (var wire in encoding.WireNames)
+                    if (!wireNames.Add(wire) || !record.Parameters.Any(p => p.Name == wire && (encoding.IsRemapped
+                        ? p.Type == VRCExpressionParameters.ValueType.Int && p.Cost == encoding.NativeBitWidth && !p.FlippedRepresentation
+                        : p.Type == VRCExpressionParameters.ValueType.Bool)))
+                        throw new InvalidOperationException("Missing or shared integer wire declaration: " + wire);
             }
             if (logicalNames.Overlaps(wireNames)) throw new InvalidOperationException("Integer logical names overlap wire names.");
             if (record.UsesMultiplexing && record.Multiplexing == null)
@@ -119,6 +125,8 @@ namespace Noname.AvatarTools.ParameterLayout
             {
                 if (record.Version < 3) throw new InvalidOperationException("This layout version cannot contain time multiplexing metadata.");
                 record.Multiplexing.Validate();
+                if (record.Version < 5 && record.Multiplexing.Inputs.Any(p => p.AllowWiderPrecision))
+                    throw new InvalidOperationException("Unsupported minimum-precision multiplexing contract version.");
                 foreach (var input in record.Multiplexing.Inputs)
                     if (!logicalNames.Add(input.Name) || names.Contains(input.Name) || wireNames.Contains(input.Name))
                         throw new InvalidOperationException("Conflicting multiplexed logical input: " + input.Name);
@@ -126,6 +134,33 @@ namespace Noname.AvatarTools.ParameterLayout
                     if (!wireNames.Add(parameter.name) || logicalNames.Contains(parameter.name) ||
                         !record.Parameters.Any(p => p.Name == parameter.name && p.SameEncoding(parameter)))
                         throw new InvalidOperationException("Missing or conflicting multiplexing wire declaration: " + parameter.name);
+            }
+            var precisionNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var precision in record.FloatPrecisionOverrides ?? new())
+            {
+                if (record.Version < 5 || precision == null || !precisionNames.Add(precision.Name))
+                    throw new InvalidOperationException("Invalid Float precision override metadata.");
+                precision.Validate();
+                var input = record.Multiplexing?.Inputs.FirstOrDefault(p => p.Name == precision.Name);
+                if (input != null)
+                {
+                    if (!precision.SameEncoding(input) || precision.MinimumPrecision != input.AllowWiderPrecision)
+                        throw new InvalidOperationException("Float precision differs from its multiplexing contract: " + precision.Name);
+                }
+                else if (!record.Parameters.Any(p => p.Name == precision.Name && p.SameEncoding(precision)))
+                    throw new InvalidOperationException("Missing Float precision wire declaration: " + precision.Name);
+            }
+            foreach (var automatic in record.AvatarDrivenEncodings ?? new())
+            {
+                if (record.Version < 5 || automatic == null || string.IsNullOrEmpty(automatic.Name) || !automatic.Valid ||
+                    !precisionNames.Add(automatic.Name) || automatic.Cost != 7 ||
+                    automatic.Type is not (VRCExpressionParameters.ValueType.Float or VRCExpressionParameters.ValueType.Int) ||
+                    automatic.FlippedRepresentation != (automatic.Type == VRCExpressionParameters.ValueType.Float))
+                    throw new InvalidOperationException("Invalid avatar-driven encoding metadata.");
+                var input = record.Multiplexing?.Inputs.FirstOrDefault(p => p.Name == automatic.Name);
+                if (input != null ? !input.SameEncoding(automatic) || input.AllowWiderPrecision != (automatic.Type == VRCExpressionParameters.ValueType.Float)
+                    : !record.Parameters.Any(p => p.Name == automatic.Name && p.SameEncoding(automatic)))
+                    throw new InvalidOperationException("Avatar-driven encoding differs from its wire contract: " + automatic.Name);
             }
             if (!allowInvalidated && !string.IsNullOrEmpty(record.InvalidatedUtc))
                 throw new InvalidOperationException("The reference platform was uploaded without a new parameter layout at " +

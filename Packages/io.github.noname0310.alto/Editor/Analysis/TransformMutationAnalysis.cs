@@ -18,7 +18,7 @@ namespace Noname.AvatarTools.Analysis
 {
     // Native/humanoid writer handling was reviewed against AAO 1.9.20
     // AnimatorParserV2/AnimatorParser and ConfigureMergeBone. Independently
-    // implemented shared analysis; the original transforms are never reparented.
+    // implemented shared analysis; collecting these facts does not mutate the hierarchy.
     internal sealed class TransformMutationAnalysis
     {
         internal readonly HashSet<Transform> Mutable = new();
@@ -28,6 +28,7 @@ namespace Noname.AvatarTools.Analysis
         private readonly HashSet<Object> nonReversingScaleWriters = new();
 
         internal bool MayChangeScale(Transform target) => target != null && scaleWriters.ContainsKey(target);
+        internal IEnumerable<Object> WritersOf(Transform target) => writers.TryGetValue(target, out var sources) ? sources : Enumerable.Empty<Object>();
         internal bool MayReverseScale(Transform target) => target != null &&
             scaleWriters.TryGetValue(target, out var sources) && sources.Any(s => !nonReversingScaleWriters.Contains(s));
 
@@ -53,9 +54,9 @@ namespace Noname.AvatarTools.Analysis
               property.StartsWith("m_LocalRotation", StringComparison.Ordinal) || property.StartsWith("localRotation", StringComparison.Ordinal) ||
               property.StartsWith("localEulerAngles", StringComparison.Ordinal));
 
-        internal static TransformMutationAnalysis Create(GameObject avatar, AvatarAnimationIndex animations)
+        internal static TransformMutationAnalysis Create(GameObject avatar, AvatarAnimationIndex animations, bool assumeFixedHumanoidBoneScale = false)
         {
-            var result = NativeWriterIndex(avatar); result.Uncertain = animations.UnsafeReason;
+            var result = NativeWriterIndex(avatar, animations, assumeFixedHumanoidBoneScale); result.Uncertain = animations.UnsafeReason;
             foreach (var use in animations.Bindings)
             {
                 var source = MotionAnalysis.Source(use.Clip);
@@ -81,7 +82,7 @@ namespace Noname.AvatarTools.Analysis
 
         internal static HashSet<Transform> NativeWriters(GameObject avatar) => NativeWriterIndex(avatar).Mutable;
 
-        private static TransformMutationAnalysis NativeWriterIndex(GameObject avatar)
+        private static TransformMutationAnalysis NativeWriterIndex(GameObject avatar, AvatarAnimationIndex animations = null, bool assumeFixedHumanoidBoneScale = false)
         {
             var result = new TransformMutationAnalysis();
             result.Add(avatar.transform, avatar, false);
@@ -92,12 +93,15 @@ namespace Noname.AvatarTools.Analysis
                     for (var bone = HumanBodyBones.Hips; bone < HumanBodyBones.LastBone; bone++)
                         // Humanoid retargeting can depend on intermediate skeleton transforms.
                         for (var target = animator.GetBoneTransform(bone); target != null && target != animator.transform; target = target.parent)
-                            result.Add(target, animator, false);
+                            // External humanoid clips are absent from the build graph.
+                            // An explicit opt-in may exclude their scale channel only;
+                            // local clips, constraints and simulations add their own writers.
+                            result.Add(target, animator, !assumeFixedHumanoidBoneScale);
                 if (animator.applyRootMotion && !animator.isHuman)
                     foreach (var target in animator.GetComponentsInChildren<Transform>(true)) result.Add(target, animator);
             }
             foreach (var bone in avatar.GetComponentsInChildren<VRCPhysBone>(true))
-                foreach (var target in (bone.rootTransform != null ? bone.rootTransform : bone.transform).GetComponentsInChildren<Transform>(true)) result.Add(target, bone);
+                foreach (var target in PhysBoneHierarchy.Included(bone, animations)) result.Add(target, bone);
             foreach (var component in avatar.GetComponentsInChildren<Component>(true))
             {
                 if (component == null || component is Transform || component is Renderer || component is MeshFilter ||
@@ -121,7 +125,11 @@ namespace Noname.AvatarTools.Analysis
                     // not Transform writers. Their geometry/dependencies are indexed separately.
                     continue;
                 }
-                if (type == typeof(VRCContactSender) || type == typeof(VRCContactReceiver) || type == typeof(VRCPhysBoneCollider)) continue;
+                // PhysBone transform writes were indexed from its simulation root
+                // above. Its collider references are readers, not writes to the
+                // collider owners' transforms. Unknown subclasses stay conservative.
+                if (type == typeof(VRCPhysBone) || type == typeof(VRCContactSender) || type == typeof(VRCContactReceiver) ||
+                    type == typeof(VRCPhysBoneCollider)) continue;
                 if (type == typeof(VRCRaycast))
                 { result.Add(((VRCRaycast)component).ResultTransform, component, false); continue; }
                 if (KnownConstraintWriter(component, out var constraintTarget, out bool writesScale))
@@ -163,10 +171,9 @@ namespace Noname.AvatarTools.Analysis
         {
             if (owner == null || !inspected.Add(owner)) return;
             using var serialized = new SerializedObject(owner);
-            var property = serialized.GetIterator();
-            while (property.Next(true))
+            foreach (var property in SerializedReferences.Properties(serialized))
             {
-                if (property.propertyType != SerializedPropertyType.ObjectReference || property.propertyPath == "m_GameObject" || property.propertyPath == "m_Script") continue;
+                if (property.propertyPath == "m_GameObject" || property.propertyPath == "m_Script") continue;
                 var reference = property.objectReferenceValue;
                 if (AsTransform(reference) is Transform target) add(target);
                 else if (reference is ScriptableObject) ReadReferences(reference, add, inspected);

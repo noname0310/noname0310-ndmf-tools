@@ -31,7 +31,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var context = new BuildContext(root, null);
             var policy = context.GetState<ParameterPolicyState>(); policy.Enabled = true; policy.Names.Add("Float1");
             var settings = new ParameterCompressionSettings { Multiplexing = mode, Budget = 40 };
-            settings.KeepNative.Add("Float0");
+            settings.InputAssumption = ParameterInputAssumption.AvatarDrivenExceptListed;
+            var keep = new ResolvedParameterKeepRule(); keep.Names.UnionWith(new[] { "Float0", "Float1" }); settings.Keep.Add(keep);
             var report = new OptimizationBuildReport();
             if (mode == ParameterMultiplexingMode.AllSynchronizedInputs)
             {
@@ -71,11 +72,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(component.TimeMultiplexing, Is.EqualTo(ParameterMultiplexingMode.AutomaticByPriority));
             component.TimeMultiplexing = mode;
             component.MultiplexedParameters.Names.Add("Selected");
-            component.KeepNativeParameters.Names.Add("Protected");
+            var keep = new ParameterKeepRule(); keep.Parameters.Names.Add("Protected"); component.KeepParameters.Add(keep);
             var settings = ParameterCompressionPass.Capture(new BuildContext(root, null), true);
             Assert.That(settings.Multiplexing, Is.EqualTo(mode));
             Assert.That(settings.MultiplexNames, Is.EquivalentTo(mode == ParameterMultiplexingMode.SelectedInputs ? new[] { "Selected" } : Array.Empty<string>()));
-            Assert.That(settings.KeepNative, Does.Contain("Protected"));
+            Assert.That(settings.Keep.Single().Names, Does.Contain("Protected"));
         }
     }
 }

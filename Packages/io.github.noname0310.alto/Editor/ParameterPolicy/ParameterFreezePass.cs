@@ -37,7 +37,7 @@ namespace Noname.AvatarTools.ParameterPolicy
                 var report = context.GetState<OptimizationBuildReport>();
                 if (!state.FreezeResolved)
                 {
-                    if (state.FreezeMode == AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved)
+                    if (state.FreezeMode != AnimatorParameterFreezeMode.SelectedParameters)
                     {
                         var automatic = ParameterFreezeSelection.AutomaticInputs(context.AvatarRootObject, controllers, policy.Preserved);
                         state.DefaultFrozen.UnionWith(automatic.Except(state.Frozen.Keys));

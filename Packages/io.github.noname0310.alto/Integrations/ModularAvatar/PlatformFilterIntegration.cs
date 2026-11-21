@@ -11,9 +11,13 @@ namespace Noname.AvatarTools.ModularAvatarIntegration
     [InitializeOnLoad]
     internal static class PlatformFilterIntegration
     {
-        static PlatformFilterIntegration() => BuildPlatformFilters.Register("nadena.dev.modular-avatar", Includes);
+        static PlatformFilterIntegration() => BuildPlatformFilters.Register("nadena.dev.modular-avatar", Includes,
+            (transform, avatar) => Includes(transform, avatar, nadena.dev.ndmf.platform.AmbientPlatform.DefaultPlatform.QualifiedName));
 
         private static bool Includes(Transform transform, BuildContext context)
+            => Includes(transform, context.AvatarRootTransform, context.PlatformProvider.QualifiedName);
+
+        private static bool Includes(Transform transform, Transform avatar, string platform)
         {
             for (var current = transform; current != null; current = current.parent)
             {
@@ -21,10 +25,9 @@ namespace Noname.AvatarTools.ModularAvatarIntegration
                 bool includes = filters.Any(f => !f.ExcludePlatform);
                 if (includes && filters.Any(f => f.ExcludePlatform))
                     throw new InvalidOperationException("MA Platform Filter cannot mix Include and Exclude on '" + current.name + "'.");
-                string platform = context.PlatformProvider.QualifiedName;
                 if (includes && !filters.Any(f => !f.ExcludePlatform && f.Platform == platform)) return false;
                 if (filters.Any(f => f.ExcludePlatform && f.Platform == platform)) return false;
-                if (current == context.AvatarRootTransform) break;
+                if (current == avatar) break;
             }
             return true;
         }

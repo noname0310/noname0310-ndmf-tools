@@ -5,7 +5,7 @@ using UnityEngine;
 namespace Noname.AvatarTools
 {
     public enum AnimatorParameterSelectionMode { Declared, Referenced }
-    public enum AnimatorParameterFreezeMode { SelectedParameters, AllExternalInputsExceptPreserved }
+    public enum AnimatorParameterFreezeMode { SelectedParameters, AllExternalInputsExceptPreserved, RespectCompressionExternalInputs }
 
     [Serializable]
     public sealed class AnimatorParameterSource
@@ -55,7 +55,14 @@ namespace Noname.AvatarTools
         [Tooltip("Preserve these dynamic parameters and the computations that supply them.")]
         public AnimatorParameterSelection PreserveParameters = new();
 
-        public AnimatorParameterFreezeMode FreezeMode = AnimatorParameterFreezeMode.SelectedParameters;
+        [Tooltip("Share this component's own Preserve selection with Parameter Compression on every platform, even when freezing is mobile-only. External mode uses the priority below; Avatar-Driven mode treats the selection as protected external inputs. Does not share the Freeze Mode or fixed values.")]
+        public bool UsePreserveForCompression = true;
+
+        [Tooltip("Higher values are compressed later in Compression's External mode. Ignored in Avatar-Driven mode, where listed external inputs remain protected.")]
+        [Min(1)] public int CompressionPriority = 100;
+
+        [Tooltip("By default, freeze unpreserved inputs using this component's Preserve selection only. Respect Compression External Inputs also preserves the Compression Keep list. Selected Parameters freezes only explicitly listed inputs.")]
+        public AnimatorParameterFreezeMode FreezeMode = AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved;
 
         [Tooltip("Disconnect selected Animator inputs from menus, networking, Contacts, PhysBones, Drivers and parameter curves. Preservation takes priority: conflicting settings stop the build.")]
         public List<AnimatorParameterConstant> FreezeParameters = new();

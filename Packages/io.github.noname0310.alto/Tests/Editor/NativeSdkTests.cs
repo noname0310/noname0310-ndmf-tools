@@ -297,7 +297,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             parameters.parameters = new[] { input }; descriptor.expressionParameters = parameters;
             string before = EditorJsonUtility.ToJson(parameters);
             var settings = new ParameterCompressionSettings { RemoveUnused = false };
-            settings.Integers.Add(new() { Name = "Mode", Minimum = signed ? -4 : 0, Maximum = signed ? 3 : 7 });
+            settings.PrecisionRules.Add(IntegerPrecisionRule("Mode", signed ? -4 : 0, signed ? 3 : 7));
             var result = ParameterCompressionPass.Apply(new BuildContext(root, null), settings, null, new OptimizationBuildReport(), o => Track(o));
             var output = descriptor.expressionParameters.parameters.Single();
             Assert.That(output.name, Is.EqualTo("Mode")); Assert.That(output.GetBitWidthByType(), Is.EqualTo(3));

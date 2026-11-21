@@ -20,15 +20,15 @@ namespace Noname.AvatarTools.ObjectOptimization
 
         internal static int Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
-            IEnumerable<string> preservedParameters, ICollection<string> messages)
+            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null)
         {
             var index = AvatarAnimationIndex.Create(avatar, controllers, paths, preservedParameters);
-            var mutation = TransformMutationAnalysis.Create(avatar, index);
+            var mutation = TransformMutationAnalysis.Create(avatar, index, settings.AssumeFixedHumanoidBoneScale);
             var analysis = AnimatorReachability.Analyze(avatar, index.Controllers, preservedParameters);
             string reason = ObjectOptimizationSafety.UnsupportedRuntime(avatar) ?? index.UnsafeReason ??
                 mutation.Uncertain ?? analysis.FallbackReason;
             if (reason != null) { messages.Add("Parent constraint simplification skipped: " + reason); return 0; }
-            var graph = AvatarDependencyGraph.Create(avatar, index, settings, collectObjects: false);
+            var graph = AvatarDependencyGraph.Create(avatar, index, settings, collectObjects: false, shaders: shaders);
             var nativeVisibility = VisibilityMutationAnalysis.NativeWriters(avatar);
             var objectKeys = new HashSet<UnityEngine.Object>(index.Bindings.SelectMany(u =>
                 u.ObjectKeys ?? Array.Empty<ObjectReferenceKeyframe>()).Select(k => k.value));

@@ -73,6 +73,12 @@ namespace Noname.AvatarTools.Analysis
             IEnumerable<string> preservedParameters = null)
             => AnalyzeCore(avatar, source, preservedParameters, null);
 
+        // An explicit caller-owned input model. Ordinary reachability continues
+        // to treat every expression input as unknown; no global assumption changes.
+        internal static AnimatorReachability AnalyzeWithInputBounds(GameObject avatar, IEnumerable<VirtualAnimatorController> source,
+            IReadOnlyDictionary<string, ParameterValues> expressionInputs, IEnumerable<string> preservedParameters)
+            => AnalyzeCore(avatar, source, preservedParameters, null, expressionInputs);
+
         // Dependency contexts specialize only the runtime-owned instance identity. All
         // other values stay unknown, including private parameters explicitly preserved
         // by a caller whose input selection has not been resolved yet.
@@ -81,10 +87,10 @@ namespace Noname.AvatarTools.Analysis
             => AnalyzeCore(avatar, source, source.SelectMany(c => c.Parameters.Keys), local);
 
         private static AnimatorReachability AnalyzeCore(GameObject avatar, IEnumerable<VirtualAnimatorController> source,
-            IEnumerable<string> preservedParameters, bool? local)
+            IEnumerable<string> preservedParameters, bool? local, IReadOnlyDictionary<string, ParameterValues> expressionInputs = null)
         {
             var result = new AnimatorReachability(source.Distinct().ToArray()) { LocalInstance = local };
-            result.InitializeInputs(avatar);
+            result.InitializeInputs(avatar, expressionInputs);
             if (preservedParameters != null)
                 foreach (string name in preservedParameters) result.AddValue(name, ParameterValues.Unknown);
             foreach (var controller in result.controllers) result.BuildController(controller);
@@ -121,10 +127,13 @@ namespace Noname.AvatarTools.Analysis
             }
         }
 
-        private void InitializeInputs(GameObject avatar)
+        private void InitializeInputs(GameObject avatar, IReadOnlyDictionary<string, ParameterValues> expressionInputs)
         {
             foreach (string name in BuiltIns) AddValue(name, ParameterValues.Unknown);
-            foreach (string name in AvatarParameterInputs.ExternalNames(avatar)) AddValue(name, ParameterValues.Unknown);
+            foreach (string name in AvatarParameterInputs.ExpressionNames(avatar))
+                AddValue(name, expressionInputs != null && expressionInputs.TryGetValue(name, out var values) ? values : ParameterValues.Unknown);
+            foreach (string name in AvatarParameterInputs.Sensors(avatar).Select(p => p.Name)
+                .Concat(new NativeFaceTracking(avatar).ForwardedParameters())) AddValue(name, ParameterValues.Unknown);
             var external = ExternalParameterAccess.Collect();
             foreach (string name in parameters.Keys)
                 if (external.IsWritten(name)) AddValue(name, ParameterValues.Unknown);

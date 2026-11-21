@@ -14,6 +14,7 @@ namespace Noname.AvatarTools.ParameterLayout
             EditorGUILayout.HelpBox("This component controls the entire avatar's network layout, wherever it is attached. " +
                 "Successful uploads on the Reference Platform record synchronized parameter names, types, order and any ALTO Parameter Compression encoding. " +
                 "Other platforms fill missing slots with unused padding. Build analysis, manual baking and failed uploads never replace the confirmed record. " +
+                "Local builds without a usable reference record still run compression, but skip cross-platform alignment. " +
                 "Uploading the reference platform without this component invalidates its previous record.", MessageType.Info);
             EditorGUILayout.HelpBox("Records are project files in ProjectSettings/ALTO/ParameterLayouts, keyed by Blueprint ID. " +
                 "Keep them with the project when switching machines. This feature has no MA, AAO or VRCFury dependency. " +

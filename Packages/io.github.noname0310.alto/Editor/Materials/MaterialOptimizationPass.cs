@@ -106,7 +106,7 @@ namespace Noname.AvatarTools.Materials
             var pool = renderers.SelectMany(r => r.sharedMaterials).Concat(safeSwaps.SelectMany(u => u.ObjectKeys.Select(k => k.value).OfType<Material>()))
                 .Where(m => m != null).Distinct().ToArray();
             var references = AvatarDependencyGraph.Create(avatar, animations, new ObjectOptimizationState
-            { Scope = new OptimizationBuildScope { Root = avatar.transform } }, false);
+            { Scope = new OptimizationBuildScope { Root = avatar.transform } }, false, context.GetState<OptimizationAnalysis>().Shaders);
             bool Protected(Material material) => state.Preserved.Contains(ObjectRegistry.GetReference(material)) || material.parent != null ||
                 references.ReferenceOwners.TryGetValue(material, out var readers) && readers.Any(r => !(r is Renderer));
             var shaders = context.GetState<OptimizationAnalysis>().Shaders; var fallbacks = new VrcFallbackPropertyContract();

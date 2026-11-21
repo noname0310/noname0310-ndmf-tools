@@ -69,16 +69,15 @@ namespace Noname.AvatarTools.Build
             OptimizationSession.Step(context, "late Contact filtering", AnalysisDomain.ExternalInputs | AnalysisDomain.Hierarchy | AnalysisDomain.Animation, ContactFilterPass.Apply);
             OptimizationSession.Step(context, "material data simplification", AnalysisDomain.Materials | AnalysisDomain.Animation, MaterialOptimizationPass.Apply);
             OptimizationSession.Step(context, "combined parameter validation", AnalysisDomain.Animation, ParameterFreezePass.Apply);
-            OptimizationSession.Step(context, "physics data simplification", AnalysisDomain.Physics | AnalysisDomain.Hierarchy | AnalysisDomain.Animation, PhysBoneOptimizationPass.Apply);
             OptimizationSession.Step(context, "final initial visibility policy", AnalysisDomain.Animation | AnalysisDomain.Hierarchy, InitialVisibilityPolicy.Apply);
             OptimizationFixedPoint.Apply(context);
         });
 
         internal static void AfterMeshes(BuildContext context) => OptimizationSession.RunBoundary(context, "after meshes", () =>
         {
-            if (context.GetState<MeshOptimizationState>().Changed)
+            if (context.GetState<MeshOptimizationState>().Enabled || StaticTransformOptimizationPass.Enabled(context))
             {
-                OptimizationFixedPoint.Apply(context);
+                OptimizationFixedPoint.Apply(context, includeMeshes: true);
             }
             // Run expression cleanup once, against the final surviving consumers. The SDK
             // finalizer still rechecks late generated/compressed parameter declarations.

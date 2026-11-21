@@ -17,14 +17,14 @@ namespace Noname.AvatarTools.ObjectOptimization
     {
         internal static int Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
-            IEnumerable<string> preservedParameters, ICollection<string> messages)
+            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null)
         {
             var index = AvatarAnimationIndex.Create(avatar, controllers, paths, preservedParameters);
-            var mutation = TransformMutationAnalysis.Create(avatar, index);
+            var mutation = TransformMutationAnalysis.Create(avatar, index, settings.AssumeFixedHumanoidBoneScale);
             string unsafeReason = ObjectOptimizationSafety.UnsupportedRuntime(avatar) ?? index.UnsafeReason ?? mutation.Uncertain;
             if (unsafeReason != null)
             { messages.Add("Redundant constraint analysis skipped: " + unsafeReason); return 0; }
-            var graph = AvatarDependencyGraph.Create(avatar, index, settings, collectObjects: false);
+            var graph = AvatarDependencyGraph.Create(avatar, index, settings, collectObjects: false, shaders: shaders);
             var objectKeys = new HashSet<UnityEngine.Object>(index.Bindings.SelectMany(use =>
                 use.ObjectKeys ?? Array.Empty<ObjectReferenceKeyframe>()).Select(key => key.value));
             int removed = 0;

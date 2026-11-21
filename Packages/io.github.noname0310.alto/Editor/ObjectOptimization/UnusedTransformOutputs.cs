@@ -14,12 +14,12 @@ namespace Noname.AvatarTools.ObjectOptimization
     {
         internal static int Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
-            IEnumerable<string> preservedParameters, ICollection<string> messages)
+            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null)
         {
             var index = AvatarAnimationIndex.Create(avatar, controllers, paths, preservedParameters);
             if (index.UnsafeReason != null)
             { messages.Add("Unused transform analysis skipped: " + index.UnsafeReason); return 0; }
-            var graph = AvatarDependencyGraph.Create(avatar, index, settings, collectObjects: false);
+            var graph = AvatarDependencyGraph.Create(avatar, index, settings, collectObjects: false, shaders: shaders);
             var constraints = new HashSet<Component>(graph.Constraints.Keys.Where(c => !graph.IsLive(c) &&
                 settings.Scope.Contains(c.transform) && !settings.Protected(c) &&
                 !c.GetComponents<Component>().Any(owner => owner != null && owner != c && Build.BuildFilterPass.Requires(owner, c))));

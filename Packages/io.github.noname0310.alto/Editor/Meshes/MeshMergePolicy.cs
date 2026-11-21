@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Noname.AvatarTools.Analysis;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -9,7 +10,8 @@ namespace Noname.AvatarTools.Meshes
 {
     internal sealed class MeshMergePolicy
     {
-        internal bool ExpandBounds, AllowCoordinateSpaceChanges, ConvertRigidMeshes, AllowMaterialSlotReordering;
+        internal bool ExpandBounds, AllowCoordinateSpaceChanges, ConvertRigidMeshes, AllowMaterialSlotReordering, AllowTransparentSortingChanges, AllowShaderIndexChanges, AllowAnimatedMaterialDefaultChanges;
+        internal BuildTarget? Target;
         internal TransformMutationAnalysis Mutations;
         internal Func<Renderer, MeshOptimizationPermissions> PermissionsFor;
 
@@ -19,6 +21,13 @@ namespace Noname.AvatarTools.Meshes
             ? (PermissionsFor(renderer) & MeshOptimizationPermissions.RigidConversion) != 0 : ConvertRigidMeshes;
         internal bool ReordersSlots(Renderer renderer) => PermissionsFor != null
             ? (PermissionsFor(renderer) & MeshOptimizationPermissions.MaterialSlotReordering) != 0 : AllowMaterialSlotReordering;
+        internal bool AllowsTransparentSorting(Renderer renderer) => PermissionsFor != null
+            ? (PermissionsFor(renderer) & MeshOptimizationPermissions.TransparentSortingChanges) != 0 : AllowTransparentSortingChanges;
+        internal bool AllowsShaderIndexChanges(Renderer renderer) => PermissionsFor != null
+            ? (PermissionsFor(renderer) & MeshOptimizationPermissions.ShaderIndexChanges) != 0 : AllowShaderIndexChanges;
+
+        internal bool AllowsAnimatedMaterialDefaultChanges(Renderer renderer) => PermissionsFor != null
+            ? (PermissionsFor(renderer) & MeshOptimizationPermissions.AnimatedMaterialDefaultChanges) != 0 : AllowAnimatedMaterialDefaultChanges;
 
         internal static Transform CoordinateRoot(SkinnedMeshRenderer renderer) => renderer.rootBone != null ? renderer.rootBone : renderer.transform;
 

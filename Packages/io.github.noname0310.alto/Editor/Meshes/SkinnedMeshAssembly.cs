@@ -31,13 +31,20 @@ namespace Noname.AvatarTools.Meshes
             internal SkinnedMeshRenderer Renderer;
             internal int[] Vertices, Remap;
             internal Mesh Mesh => Renderer.sharedMesh;
+            private readonly Dictionary<int, int[]> indices = new();
+            internal int[] Indices(int submesh)
+            {
+                if (!indices.TryGetValue(submesh, out var result))
+                    indices.Add(submesh, result = Mesh.GetIndices(submesh, applyBaseVertex: true));
+                return result;
+            }
             internal Input(SkinnedMeshRenderer renderer, bool trim)
             {
                 Renderer = renderer;
                 var used = new bool[Mesh.vertexCount];
                 if (trim)
                     for (int slot = 0; slot < Mesh.subMeshCount; slot++)
-                        foreach (int vertex in Mesh.GetIndices(slot, applyBaseVertex: true))
+                        foreach (int vertex in Indices(slot))
                         {
                             if (vertex < 0 || vertex >= used.Length) throw new ArgumentException("Submesh index is outside its vertex buffer.");
                             used[vertex] = true;
@@ -158,7 +165,7 @@ namespace Noname.AvatarTools.Meshes
         {
             if (mesh == null || mesh.vertexCount == 0) return "no mesh vertices";
             if (!mesh.isReadable) return "mesh vertex data is not readable";
-            if (renderer.sharedMaterials.Length != mesh.subMeshCount) return "material slots do not match submeshes";
+            if (mesh.subMeshCount == 0 || renderer.sharedMaterials.Length < mesh.subMeshCount) return "material slots do not match submeshes";
             if (Enumerable.Range(0, mesh.subMeshCount).Any(s => mesh.GetTopology(s) != MeshTopology.Triangles)) return "non-triangle topology";
             if (mesh.GetVertexAttributes().Any(a => a.attribute != VertexAttribute.BlendIndices && a.attribute != VertexAttribute.BlendWeight &&
                 !(a.format == VertexAttributeFormat.Float32 || a.format == VertexAttributeFormat.Float16 ||
@@ -281,10 +288,37 @@ namespace Noname.AvatarTools.Meshes
             output.Mesh.SetBoneWeights(nativeCounts, nativeWeights);
         }
 
+        // A draw refers to an input range until final buffer emission. Extra material
+        // slots reuse the last range without reading or remapping its indices again.
+        private sealed class IndexRange
+        {
+            internal Input Input;
+            internal int Submesh, VertexOffset, Count;
+            internal bool Reverse;
+            private int[] mapped;
+            internal int[] Mapped()
+            {
+                if (mapped != null) return mapped;
+                var source = Input.Indices(Submesh);
+                mapped = new int[source.Length];
+                for (int i = 0; i < source.Length; i++)
+                {
+                    int index = source[i];
+                    if (index < 0 || index >= Input.Remap.Length || Input.Remap[index] < 0)
+                        throw new ArgumentException("Submesh index is outside its vertex buffer.");
+                    mapped[i] = checked(Input.Remap[index] + VertexOffset);
+                }
+                if (Reverse)
+                    for (int i = 0; i < mapped.Length; i += 3)
+                        (mapped[i], mapped[i + 1]) = (mapped[i + 1], mapped[i]);
+                return mapped;
+            }
+        }
+
         private static void CopyTopology(IReadOnlyList<Input> sources, SkinnedMeshAssembly output, bool merge,
             ISet<SkinnedMeshRenderer> reverseWinding, bool reorder)
         {
-            var materials = new List<Material>(); var indices = new List<List<int>>();
+            var materials = new List<Material>(); var draws = new List<List<IndexRange>>();
             var firstSlot = new Dictionary<Material, int>();
             int offset = 0;
             foreach (var input in sources)
@@ -292,9 +326,10 @@ namespace Noname.AvatarTools.Meshes
                 var renderer = input.Renderer;
                 var mesh = renderer.sharedMesh; var sourceMaterials = renderer.sharedMaterials;
                 var slots = new int[sourceMaterials.Length]; output.MaterialSlots.Add(renderer, slots);
-                for (int submesh = 0; submesh < slots.Length; submesh++)
+                var ranges = new IndexRange[mesh.subMeshCount];
+                for (int materialSlot = 0; materialSlot < slots.Length; materialSlot++)
                 {
-                    var material = sourceMaterials[submesh];
+                    var material = sourceMaterials[materialSlot];
                     // Default merging keeps material order. The explicit reorder policy
                     // groups by first occurrence, retaining the first material interface.
                     // Behavior reference: AAO 1.9.20 MergeMaterialSlots; see CREDITS.md.
@@ -306,24 +341,60 @@ namespace Noname.AvatarTools.Meshes
                     }
                     if (slot < 0)
                     {
-                        slot = materials.Count; materials.Add(material); indices.Add(new());
+                        slot = materials.Count; materials.Add(material); draws.Add(new());
                         if (material != null && !firstSlot.ContainsKey(material)) firstSlot.Add(material, slot);
                     }
-                    slots[submesh] = slot;
-                    var sourceIndices = mesh.GetIndices(submesh, applyBaseVertex: true);
-                    if (reverseWinding?.Contains(renderer) == true)
-                        for (int triangle = 0; triangle < sourceIndices.Length; triangle += 3)
-                            (sourceIndices[triangle], sourceIndices[triangle + 1]) = (sourceIndices[triangle + 1], sourceIndices[triangle]);
-                    foreach (int index in sourceIndices)
-                    {
-                        if (index < 0 || index >= mesh.vertexCount) throw new ArgumentException("Submesh index is outside its vertex buffer.");
-                        indices[slot].Add(checked(input.Remap[index] + offset));
-                    }
+                    slots[materialSlot] = slot;
+                    int submesh = Math.Min(materialSlot, mesh.subMeshCount - 1);
+                    var range = ranges[submesh] ??= new IndexRange { Input = input, Submesh = submesh,
+                        Count = checked((int)mesh.GetIndexCount(submesh)), VertexOffset = offset, Reverse = reverseWinding?.Contains(renderer) == true };
+                    draws[slot].Add(range);
                 }
                 offset += input.Vertices.Length;
             }
-            output.Materials = materials.ToArray(); output.Mesh.subMeshCount = materials.Count;
-            for (int slot = 0; slot < indices.Count; slot++) output.Mesh.SetTriangles(indices[slot], slot, calculateBounds: false);
+            output.Materials = materials.ToArray();
+            // Unity repeats the final submesh for surplus material slots. Preserve
+            // that suffix when possible without changing material/draw order. Other
+            // repeated ranges must be emitted separately: SetSubMesh's documented
+            // contract forbids overlapping index ranges (Unity 2022.3).
+            int submeshes = draws.Count;
+            while (submeshes > 1 && draws[submeshes - 1].SequenceEqual(draws[submeshes - 2])) submeshes--;
+            int indexCount = checked(draws.Take(submeshes).Sum(d => d.Sum(r => r.Count)));
+            var meshOutput = output.Mesh;
+            meshOutput.SetIndexBufferParams(indexCount, meshOutput.indexFormat);
+            if (indexCount > 0)
+            {
+                // Keep the buffer width selected for the output vertex count.
+                // Source ranges are remapped once; only unavoidable final draws copy them.
+                if (meshOutput.indexFormat == IndexFormat.UInt16)
+                {
+                    using var data = new NativeArray<ushort>(indexCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                    var writable = data;
+                    int cursor = 0;
+                    foreach (var draw in draws.Take(submeshes))
+                        foreach (var range in draw)
+                            foreach (int index in range.Mapped()) writable[cursor++] = checked((ushort)index);
+                    meshOutput.SetIndexBufferData(data, 0, 0, indexCount);
+                }
+                else
+                {
+                    using var data = new NativeArray<int>(indexCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                    var writable = data;
+                    int cursor = 0;
+                    foreach (var draw in draws.Take(submeshes))
+                        foreach (var range in draw)
+                            foreach (int index in range.Mapped()) writable[cursor++] = index;
+                    meshOutput.SetIndexBufferData(data, 0, 0, indexCount);
+                }
+            }
+            meshOutput.subMeshCount = submeshes;
+            int start = 0;
+            for (int slot = 0; slot < submeshes; slot++)
+            {
+                int count = draws[slot].Sum(r => r.Count);
+                meshOutput.SetSubMesh(slot, new SubMeshDescriptor(start, count, MeshTopology.Triangles));
+                start += count;
+            }
         }
 
         private static void CopyShapes(IReadOnlyList<Input> sources, SkinnedMeshAssembly output, int count, IEnumerable<string> reserved,

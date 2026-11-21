@@ -55,10 +55,20 @@ namespace Noname.AvatarTools.ParameterPolicy
                 if (scopeError != null) EditorGUILayout.HelpBox(scopeError, MessageType.Error);
             }
             if ((component.ApplyOnPlatforms & OptimizationBuildScope.Platform(EditorUserBuildSettings.activeBuildTarget)) == 0)
-                EditorGUILayout.HelpBox("This policy is inactive for the current build target: " + EditorUserBuildSettings.activeBuildTarget + ".", MessageType.Info);
+                EditorGUILayout.HelpBox("Parameter freezing is inactive for the current build target: " + EditorUserBuildSettings.activeBuildTarget +
+                    ". Sharing Preserve with Compression can still apply.", MessageType.Info);
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Preserve Parameters", EditorStyles.boldLabel);
+            var share = serializedObject.FindProperty("UsePreserveForCompression");
+            EditorGUILayout.PropertyField(share, new GUIContent("Use Preserve for Compression"));
+            if (share.boolValue)
+            {
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("CompressionPriority"));
+                EditorGUILayout.HelpBox("This list also participates in Parameter Compression on PC and mobile, even when this policy freezes only mobile inputs. " +
+                    "In Compression's default External mode it is compressed last according to this priority. In Avatar-Driven mode it is protected from automatic compression. " +
+                    "Disabled, EditorOnly and platform-filtered settings do not contribute.", MessageType.Info);
+            }
             EditorGUILayout.HelpBox("Choose source objects or controllers to preserve their parameters and required computations. " +
                 "Source lists update during builds. Preserve also protects upstream dependencies from freezing.", MessageType.Info);
             var selection = serializedObject.FindProperty("PreserveParameters");
@@ -130,8 +140,14 @@ namespace Noname.AvatarTools.ParameterPolicy
         private void DrawConstants(ALTOAnimatorParameterPolicy component)
         {
             EditorGUILayout.Space();
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("FreezeMode"));
-            bool automatic = serializedObject.FindProperty("FreezeMode").enumValueIndex == (int)AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved;
+            var freeze = serializedObject.FindProperty("FreezeMode");
+            freeze.enumValueIndex = EditorGUILayout.Popup("Freeze Mode", freeze.enumValueIndex, new[] {
+                "Freeze selected parameters only", "Ignore Compression inputs; preserve this list only",
+                "Respect Compression inputs and this Preserve list" });
+            bool automatic = freeze.enumValueIndex != (int)AnimatorParameterFreezeMode.SelectedParameters;
+            EditorGUILayout.HelpBox(freeze.enumValueIndex == (int)AnimatorParameterFreezeMode.RespectCompressionExternalInputs
+                ? "Inputs listed in Compression Keep Parameters and this Preserve list remain adjustable. Compression priorities do not affect this preservation."
+                : "Compression input declarations do not protect against freezing in this mode. This component's Preserve list applies only to specialization on its selected platforms; it does not change compression decisions.", MessageType.Info);
             EditorGUILayout.LabelField(automatic ? "Frozen Value Overrides (Optional)" : "Frozen Parameters", EditorStyles.boldLabel);
             if (automatic)
                 EditorGUILayout.HelpBox("Freeze menu controls, Contacts, PhysBone outputs and external Expression Parameters at their build defaults, except preserved inputs. " +

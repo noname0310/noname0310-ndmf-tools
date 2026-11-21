@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Noname.AvatarTools.Analysis;
 using Noname.AvatarTools.Build;
+using Noname.AvatarTools.BlendShapeOptimization;
 using nadena.dev.ndmf;
 using nadena.dev.ndmf.animator;
 using UnityEngine;
@@ -46,6 +47,7 @@ namespace Noname.AvatarTools.ParameterPolicy
     {
         internal static void Capture(BuildContext context)
         {
+            ParameterLayout.ParameterCompressionPass.CapturePolicySelections(context);
             var state = context.GetState<ParameterPolicyState>();
             var components = context.AvatarRootObject.GetComponentsInChildren<ALTOAnimatorParameterPolicy>(true)
                 .Where(c => OptimizationBuildScope.Applies(c, context)).ToArray();
@@ -59,34 +61,14 @@ namespace Noname.AvatarTools.ParameterPolicy
                 state.FreezeMode = component.FreezeMode;
                 state.BakeInitialVisibility = component.BakeInitialVisibility;
                 state.Enabled = true;
+                if (component.FreezeMode == AnimatorParameterFreezeMode.RespectCompressionExternalInputs)
+                    foreach (var compression in context.AvatarRootObject.GetComponentsInChildren<ALTOParameterCompression>(true)
+                        .Where(c => c.enabled && !ALTOPlugin.IsEditorOnly(c.transform) && BuildPlatformFilters.IncludesSettings(c.transform, context)))
+                        foreach (var rule in compression.KeepParameters ?? new())
+                            if (rule != null) CapturePreservation(context, state, rule.Parameters);
                 context.GetState<OptimizationBuildReport>().Initialize(context.AvatarRootObject,
                     context.GetState<OptimizationBuildEnvironment>().Target.ToString());
-                var selection = component.PreserveParameters ?? new AnimatorParameterSelection();
-                state.Names.UnionWith((selection.Names ?? new()).Where(n => !string.IsNullOrEmpty(n)));
-                state.Prefixes.UnionWith((selection.Prefixes ?? new()).Where(n => !string.IsNullOrEmpty(n)));
-                foreach (var source in selection.Sources ?? new())
-                {
-                    if (source == null || source.Source == null) continue;
-                    var result = ParameterSourceResolver.Resolve(source, context.AvatarRootObject, context);
-                    var excluded = new HashSet<string>(source.ExcludedNames ?? new(), StringComparer.Ordinal);
-                    foreach (var diagnostic in result.Diagnostics)
-                        state.Diagnostics.Add(source.Source.name + ": " + diagnostic);
-                    foreach (var parameter in result.Parameters.Where(p => !excluded.Contains(p.Name)))
-                    {
-                        var name = ResolveName(context, parameter);
-                        state.Preserved.Add(new CapturedParameter
-                        {
-                            OriginalName = parameter.Name, FinalName = name, HasOwner = parameter.Owner != null,
-                            Referenced = parameter.Referenced,
-                            SourcePath = parameter.Owner != null
-                                ? UnityEditor.AnimationUtility.CalculateTransformPath(parameter.Owner.transform, context.AvatarRootTransform)
-                                : source.Source.name
-                        });
-                        if (parameter.Owner == null) state.UnresolvedSource = true;
-                    }
-                    if (result.Diagnostics.Count > 0 && result.Parameters.Count == 0)
-                        state.UnresolvedSource = true;
-                }
+                CapturePreservation(context, state, component.PreserveParameters);
                 foreach (var rule in component.FreezeParameters ?? new())
                 {
                     if (rule == null || string.IsNullOrWhiteSpace(rule.Name))
@@ -117,6 +99,29 @@ namespace Noname.AvatarTools.ParameterPolicy
                         throw new InvalidOperationException("Conflicting constant values for parameter: " + name);
                     state.Frozen[name] = rule.Value;
                 }
+            }
+        }
+
+        private static void CapturePreservation(BuildContext context, ParameterPolicyState state, AnimatorParameterSelection selection)
+        {
+            selection ??= new();
+            state.Names.UnionWith((selection.Names ?? new()).Where(n => !string.IsNullOrEmpty(n)));
+            state.Prefixes.UnionWith((selection.Prefixes ?? new()).Where(n => !string.IsNullOrEmpty(n)));
+            foreach (var source in selection.Sources ?? new())
+            {
+                if (source?.Source == null) continue;
+                var result = ParameterSourceResolver.Resolve(source, context.AvatarRootObject, context);
+                var excluded = new HashSet<string>(source.ExcludedNames ?? new(), StringComparer.Ordinal);
+                foreach (var diagnostic in result.Diagnostics) state.Diagnostics.Add(source.Source.name + ": " + diagnostic);
+                foreach (var parameter in result.Parameters.Where(p => !excluded.Contains(p.Name)))
+                {
+                    state.Preserved.Add(new CapturedParameter { OriginalName = parameter.Name,
+                        FinalName = ResolveName(context, parameter), HasOwner = parameter.Owner != null, Referenced = parameter.Referenced,
+                        SourcePath = parameter.Owner != null ? UnityEditor.AnimationUtility.CalculateTransformPath(parameter.Owner.transform,
+                            context.AvatarRootTransform) : source.Source.name });
+                    if (parameter.Owner == null) state.UnresolvedSource = true;
+                }
+                if (result.Diagnostics.Count > 0 && result.Parameters.Count == 0) state.UnresolvedSource = true;
             }
         }
 

@@ -36,6 +36,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             MeshMergePolicy policy = null)
         {
             controller ??= new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(Controller(Clip()));
+            policy ??= new MeshMergePolicy();
+            policy.Target ??= BuildTarget.StandaloneWindows64;
             var index = AvatarAnimationIndex.Create(root, entries ?? new Dictionary<object, VirtualAnimatorController>
             { [VRCAvatarDescriptor.AnimLayerType.FX] = controller }, null, preservedParameters);
             var references = AvatarDependencyGraph.Create(root, index, new ObjectOptimizationState
@@ -302,7 +304,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         }
 
         [Test]
-        public void MeshMergeRejectsDifferentMaterialDefaultsEvenWhenCurvesMatch()
+        public void MeshMergeAcceptsDifferentMaterialObjectsWithEqualAnimationDefaults()
         {
             var pair = MergePair(); pair.Second.sharedMaterial = Track(new Material(pair.First.sharedMaterial));
             var clip = Clip();
@@ -310,7 +312,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 EditorCurveBinding.FloatCurve(part.name, typeof(SkinnedMeshRenderer), "material._Color.r"), AnimationCurve.Constant(0, 1, 0.5f));
             var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(Controller(clip));
             var candidates = MergeCandidates(new[] { pair.First, pair.Second }, controller);
-            Assert.That(MeshMergeAnalysis.Group(candidates, true).Count, Is.EqualTo(2));
+            Assert.That(MeshMergeAnalysis.Group(candidates, true).Count, Is.EqualTo(1));
         }
 
         [Test]
@@ -438,14 +440,17 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var pair = MergePair(); var material = Track(new Material(shader)); material.SetFloat("_Culling", 0);
             pair.First.sharedMaterial = pair.Second.sharedMaterial = material;
             if (overlap) pair.Second.sharedMesh.bindposes = pair.First.sharedMesh.bindposes;
-            var candidates = MergeCandidates(new[] { pair.First, pair.Second });
+            // Compare native lighting independently of the bounded shader proof.
+            // This SDK shader's complete keyword universe can exceed that budget.
+            var policy = new MeshMergePolicy { AllowShaderIndexChanges = true };
+            var candidates = MergeCandidates(new[] { pair.First, pair.Second }, policy: policy);
             Assert.That(MeshMergeAnalysis.Group(candidates, true).Count, Is.EqualTo(1));
             // Compare original inputs with a fresh build result. Hot-swapping an
             // already rendered SMR can leave Unity's native skinning layout stale.
             var builtFirst = Track(UnityEngine.Object.Instantiate(pair.First.gameObject, root.transform, false)).GetComponent<SkinnedMeshRenderer>();
             var builtSecond = Track(UnityEngine.Object.Instantiate(pair.Second.gameObject, root.transform, false)).GetComponent<SkinnedMeshRenderer>();
             builtFirst.name = "Built first"; builtSecond.name = "Built second";
-            MeshOptimizationPass.Merge(MergeCandidates(new[] { builtFirst, builtSecond }), "Built first", true, mesh => Track(mesh));
+            MeshOptimizationPass.Merge(MergeCandidates(new[] { builtFirst, builtSecond }, policy: policy), "Built first", true, mesh => Track(mesh));
             builtFirst.enabled = false;
             var camera = PolicyChild("Camera").AddComponent<Camera>(); camera.scene = scene; camera.enabled = false;
             camera.transform.localPosition = new Vector3(0.5f, 0.5f, -4); camera.orthographic = true; camera.orthographicSize = 2;

@@ -25,10 +25,12 @@ namespace Noname.AvatarTools.Meshes
         }
 
         internal static string ValidateExplicitConversion(MeshRenderer renderer, AvatarAnimationIndex animations,
-            AvatarDependencyGraph references, ShaderPropertyUsage shaders, bool allowCoordinateSpaceChanges = false)
+            AvatarDependencyGraph references, ShaderPropertyUsage shaders, bool allowCoordinateSpaceChanges = false,
+            bool allowTransparentSortingChanges = false, BuildTarget? target = null, bool allowShaderIndexChanges = false)
         {
             var filter = renderer.GetComponent<MeshFilter>(); var mesh = filter != null ? filter.sharedMesh : null;
-            string reason = SkinnedMeshAssembler.ValidateGeometry(renderer, mesh) ?? MeshMergeAnalysis.ShaderIssue(renderer.sharedMaterials, shaders, true, allowCoordinateSpaceChanges);
+            string reason = SkinnedMeshAssembler.ValidateGeometry(renderer, mesh) ?? MeshMergeAnalysis.ShaderIssue(renderer.sharedMaterials,
+                shaders, true, allowCoordinateSpaceChanges, allowTransparentSortingChanges, target, renderer, animations, allowShaderIndexChanges);
             if (reason != null) return reason;
             if (renderer.isPartOfStaticBatch || renderer.additionalVertexStreams != null) return "static batching or additional vertex streams";
             if (renderer.HasPropertyBlock()) return "a material property block requires the original renderer";

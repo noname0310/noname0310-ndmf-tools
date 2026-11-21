@@ -19,10 +19,7 @@ namespace Noname.AvatarTools.ParameterLayout
             return Path.Combine(directory, id + ".json");
         }
 
-        internal ParameterLayoutRecord Read(string id)
-            => Read(id, false);
-
-        private ParameterLayoutRecord Read(string id, bool allowInvalidated)
+        internal ParameterLayoutRecord Read(string id, bool allowInvalidated = false)
         {
             string path = PathFor(id);
             if (!File.Exists(path)) return null;

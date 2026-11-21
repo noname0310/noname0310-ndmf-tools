@@ -15,7 +15,10 @@ namespace Noname.AvatarTools.Meshes
         CoordinateSpaceChanges = 1,
         RigidConversion = 2,
         MaterialSlotReordering = 4,
-        All = CoordinateSpaceChanges | RigidConversion | MaterialSlotReordering
+        TransparentSortingChanges = 8,
+        ShaderIndexChanges = 16,
+        AnimatedMaterialDefaultChanges = 32,
+        All = CoordinateSpaceChanges | RigidConversion | MaterialSlotReordering | TransparentSortingChanges | ShaderIndexChanges | AnimatedMaterialDefaultChanges
     }
 
     internal sealed class MeshOptimizationPolicies
@@ -30,10 +33,13 @@ namespace Noname.AvatarTools.Meshes
         private readonly List<Rule> rules = new();
         internal bool MayConvertRigid => rules.Any(r => (r.Permissions & MeshOptimizationPermissions.RigidConversion) != 0);
 
-        internal static MeshOptimizationPermissions Permissions(bool coordinates, bool rigid, bool reorder) =>
+        internal static MeshOptimizationPermissions Permissions(bool coordinates, bool rigid, bool reorder, bool transparentSorting = false, bool shaderIndices = false, bool animatedMaterialDefaults = false) =>
             (coordinates ? MeshOptimizationPermissions.CoordinateSpaceChanges : 0) |
             (coordinates && rigid ? MeshOptimizationPermissions.RigidConversion : 0) |
-            (reorder ? MeshOptimizationPermissions.MaterialSlotReordering : 0);
+            (reorder ? MeshOptimizationPermissions.MaterialSlotReordering : 0) |
+            (transparentSorting ? MeshOptimizationPermissions.TransparentSortingChanges : 0) |
+            (shaderIndices ? MeshOptimizationPermissions.ShaderIndexChanges : 0) |
+            (animatedMaterialDefaults ? MeshOptimizationPermissions.AnimatedMaterialDefaultChanges : 0);
 
         internal void Capture(BuildContext context)
         {
@@ -43,7 +49,9 @@ namespace Noname.AvatarTools.Meshes
                 var scope = OptimizationBuildScope.Capture(component, context.AvatarRootObject);
                 int depth = 0;
                 for (var current = scope.Root; current != context.AvatarRootTransform; current = current.parent) depth++;
-                var permissions = Permissions(component.AllowCoordinateSpaceChanges, component.ConvertRigidMeshes, component.AllowMaterialSlotReordering);
+                var permissions = Permissions(component.AllowCoordinateSpaceChanges, component.ConvertRigidMeshes,
+                    component.AllowMaterialSlotReordering, component.AllowTransparentSortingChanges, component.AllowShaderIndexChanges,
+                    component.AllowAnimatedMaterialDefaultChanges);
                 if (rules.Any(r => r.Scope.Root == scope.Root && r.Permissions != permissions))
                     throw new InvalidOperationException("Mesh Optimization Policies with the same scope and platform must use matching options.");
                 rules.Add(new Rule { Scope = scope, Depth = depth, Permissions = permissions });

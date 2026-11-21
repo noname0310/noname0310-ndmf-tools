@@ -21,7 +21,7 @@ namespace Noname.AvatarTools
         [Tooltip("Remove vertices unused by every submesh, and unused or duplicate bone-palette entries. Drawn geometry, morph frames and all skinning influences are retained. Index-dependent shaders remain protected.")]
         public bool RemoveUnusedMeshData = true;
 
-        [Tooltip("Rebind static skin bones to their nearest retained parent by absorbing the fixed local transform into bind poses. Animated, humanoid, physics-driven, constrained and explicitly preserved bones remain. Original transforms are left for object dependency cleanup.")]
+        [Tooltip("Rebind static skin bones to their nearest retained parent by absorbing the fixed local transform into bind poses, independently of renderer merging or shader batching eligibility. Animated, humanoid, physics-driven, constrained and explicitly preserved bones remain. Original transforms are left for object dependency cleanup.")]
         public bool RebindStaticBones = true;
 
         [Tooltip("Keep these renderers and their material slots unchanged by this component.")]

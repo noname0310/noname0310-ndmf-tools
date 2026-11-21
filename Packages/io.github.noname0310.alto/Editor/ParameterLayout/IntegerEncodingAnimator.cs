@@ -21,6 +21,7 @@ namespace Noname.AvatarTools.ParameterLayout
             bool writeDefaults = ParameterTransportDefaults.Read(controller);
             AddParameter(encoding.Name, AnimatorControllerParameterType.Int, initial);
             int defaultBits = encoding.Encode(initial);
+            if (encoding.IsRemapped) AddParameter(encoding.WireName, AnimatorControllerParameterType.Int, defaultBits);
             for (int bit = 0; bit < encoding.Bits.Count; bit++)
                 AddParameter(encoding.Bits[bit], AnimatorControllerParameterType.Bool, (defaultBits >> bit) & 1);
 
@@ -34,13 +35,14 @@ namespace Noname.AvatarTools.ParameterLayout
             machine.DefaultState = idle;
             var empty = VirtualClip.Create("Integer transport (no pose bindings)");
             idle.Motion = empty;
-            for (int code = 0; code < 1 << encoding.Bits.Count; code++)
+            for (int code = 0; code < 1 << (encoding.IsRemapped ? encoding.NativeBitWidth : encoding.Bits.Count); code++)
             {
                 int value = encoding.Decode(code);
                 if (code <= encoding.Maximum - encoding.Minimum)
                 {
                     var encode = machine.AddState("Encode " + value, empty); encode.WriteDefaultValues = writeDefaults;
-                    var operations = encoding.Bits.Select((name, bit) => Set(name, (code >> bit) & 1));
+                    var operations = encoding.IsRemapped ? new[] { Set(encoding.WireName, code) } :
+                        encoding.Bits.Select((name, bit) => Set(name, (code >> bit) & 1));
                     Drive(encode, operations, true, save);
                     var condition = value == encoding.Minimum
                         ? Condition(encoding.Name, AnimatorConditionMode.Less, value + 1)
@@ -51,8 +53,9 @@ namespace Noname.AvatarTools.ParameterLayout
                 }
                 var decode = machine.AddState("Decode " + code, empty); decode.WriteDefaultValues = writeDefaults;
                 Drive(decode, new[] { Set(encoding.Name, value) }, false, save);
-                Enter(decode, new[] { ParameterTransportIdentity.Condition(identityType, false) }.Concat(encoding.Bits.Select((name, bit) =>
-                    Condition(name, (code & (1 << bit)) != 0 ? AnimatorConditionMode.If : AnimatorConditionMode.IfNot))));
+                var conditions = encoding.IsRemapped ? new[] { Condition(encoding.WireName, AnimatorConditionMode.Equals, code) } :
+                    encoding.Bits.Select((name, bit) => Condition(name, (code & (1 << bit)) != 0 ? AnimatorConditionMode.If : AnimatorConditionMode.IfNot));
+                Enter(decode, new[] { ParameterTransportIdentity.Condition(identityType, false) }.Concat(conditions));
             }
 
             void AddParameter(string name, AnimatorControllerParameterType type, int value)

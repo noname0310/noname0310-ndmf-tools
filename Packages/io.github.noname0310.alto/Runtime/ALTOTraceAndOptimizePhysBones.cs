@@ -13,6 +13,9 @@ namespace Noname.AvatarTools
         [Tooltip("Share always-active local colliders with the same effective root and exactly matching serialized settings. Animated/global/external colliders and collision multiplicity remain protected.")]
         public bool ShareEquivalentColliders = true;
 
+        [Tooltip("Move a collider's geometric reference to a retained ancestor when its relative frame and shape can be preserved. The collider component, its enable/activation toggles and collision lists remain unchanged.")]
+        public bool RebaseStaticColliderRoots = true;
+
         [Tooltip("Disable Is Animated only when the complete chain has no external transform writer and its ancestor scales are not animated.")]
         public bool OptimizeIsAnimated = true;
 

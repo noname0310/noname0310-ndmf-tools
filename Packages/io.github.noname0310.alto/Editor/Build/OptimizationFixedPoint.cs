@@ -1,6 +1,9 @@
 using nadena.dev.ndmf;
 using Noname.AvatarTools.AnimatorOptimization;
 using Noname.AvatarTools.ObjectOptimization;
+using Noname.AvatarTools.Meshes;
+using Noname.AvatarTools.Physics;
+using System.Collections.Generic;
 
 namespace Noname.AvatarTools.Build
 {
@@ -10,24 +13,28 @@ namespace Noname.AvatarTools.Build
         // removes graph data, a runtime component or an object. Default-state
         // normalization also removes control fields and cannot repeat indefinitely.
         // Do not repeat generators, atlas packing, sampling or mesh reduction.
-        internal static int Apply(BuildContext context)
+        internal static int Apply(BuildContext context, bool includeMeshes = false)
         {
-            int iterations = 0, total = 0, changes;
-            do
+            int total = 0;
+            const AnalysisDomain geometryInputs = AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Meshes |
+                AnalysisDomain.Physics | AnalysisDomain.ExternalInputs;
+            var stages = new List<OptimizationWorklist.Stage>
             {
-                changes = 0;
-                iterations++;
-                OptimizationSession.Step(context, "object dependencies, iteration " + iterations,
-                    AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Physics,
-                    current => changes += ObjectOptimizationPass.ApplyFinalAndCountChanges(current));
-                OptimizationSession.Step(context, "Animator outputs, iteration " + iterations,
-                    AnalysisDomain.Animation | AnalysisDomain.Materials,
-                    current => changes += AnimatorOptimizationPass.ApplyFinalAndCountChanges(current));
-                total += changes;
-            } while (changes != 0);
-
-            context.GetState<OptimizationBuildReport>().Messages.Add("Object and Animator dependency analysis converged after " +
-                iterations + " iterations (including the final unchanged check), with " + total + " graph/hierarchy removals.");
+                new("physics data", geometryInputs, AnalysisDomain.Physics | AnalysisDomain.Hierarchy,
+                    () => PhysBoneOptimizationPass.ApplyAndCountChanges(context)),
+                new("static frames and consumers", geometryInputs, AnalysisDomain.Physics | AnalysisDomain.Meshes | AnalysisDomain.Hierarchy | AnalysisDomain.Animation,
+                    () => StaticTransformOptimizationPass.Apply(context)),
+                new("object dependencies", AnalysisDomain.All, AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Physics | AnalysisDomain.ExternalInputs,
+                    () => ObjectOptimizationPass.ApplyFinalAndCountChanges(context)),
+                new("Animator outputs", AnalysisDomain.All, AnalysisDomain.Animation | AnalysisDomain.Materials,
+                    () => AnimatorOptimizationPass.ApplyFinalAndCountChanges(context))
+            };
+            if (includeMeshes) stages.Add(new("mesh assembly", AnalysisDomain.All,
+                AnalysisDomain.Meshes | AnalysisDomain.Hierarchy | AnalysisDomain.Animation, () => MeshOptimizationPass.ApplyAndCountChanges(context)));
+            int iterations = OptimizationWorklist.Run(stages, context.GetState<OptimizationAnalysis>().Invalidate, (_, changes) => total += changes,
+                report: context.GetState<OptimizationBuildReport>());
+            context.GetState<OptimizationBuildReport>().Messages.Add("Optimization dependency worklist converged after " +
+                iterations + " iterations (including the final unchanged check), with " + total + " simplifications.");
             return iterations;
         }
     }

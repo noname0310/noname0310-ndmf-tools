@@ -14,6 +14,13 @@ namespace Noname.AvatarTools.Analysis
     // A declaration counts as usage. Missing/generated-only source keeps the binding alive.
     internal sealed class ShaderPropertyUsage
     {
+        internal sealed class Programs
+        {
+            internal readonly List<(Shader Shader, ShaderData.Pass Pass, UnityEngine.Rendering.PassIdentifier Identifier)> Passes = new();
+            internal readonly HashSet<Shader> ShaderWideKeywordOwners = new();
+            internal string Uncertain;
+        }
+
         internal sealed class Proof
         {
             // Predefined numeric macros such as __LINE__ and __COUNTER__ may expand to
@@ -53,14 +60,25 @@ namespace Noname.AvatarTools.Analysis
         private static readonly Regex Define = new(@"^\s*#\s*define\s+[_A-Za-z][_A-Za-z0-9]*(?:\(([^)]*)\))?\s+(.*)$", RegexOptions.CultureInvariant);
         private static readonly Regex Paste = new(@"[_A-Za-z0-9]+(?:\s*##\s*[_A-Za-z0-9]+)+", RegexOptions.CultureInvariant);
         private readonly Dictionary<Shader, Proof> cache = new();
+        private readonly Dictionary<Shader, Programs> programs = new();
         private readonly Dictionary<string, string> files = new(StringComparer.Ordinal);
         internal int FilesRead => files.Count;
+        private ShaderMeshInputs meshInputs;
+        internal ShaderMeshInputs MeshInputs => meshInputs ??= new ShaderMeshInputs(this);
+
+        internal Programs GetPrograms(Shader shader)
+        {
+            if (shader == null) return new Programs { Uncertain = "missing shader" };
+            Get(shader);
+            return programs[shader];
+        }
 
         internal Proof Get(Shader shader)
         {
             if (shader == null) return new Proof { Uncertain = "missing shader" };
             if (cache.TryGetValue(shader, out var cached)) return cached;
             var proof = new Proof(); cache.Add(shader, proof);
+            var sourcePrograms = new Programs(); programs.Add(shader, sourcePrograms);
             var seenShaders = new HashSet<Shader>();
             var seenFiles = new HashSet<string>(StringComparer.Ordinal);
             var directories = new HashSet<string>(StringComparer.Ordinal);
@@ -103,6 +121,7 @@ namespace Noname.AvatarTools.Analysis
                 string assetPath = AssetDatabase.GetAssetPath(current), physical = PhysicalPath(assetPath);
                 string directory = physical != null ? Path.GetDirectoryName(physical) : includeDirectory;
                 bool builtin = assetPath == "Resources/unity_builtin_extra" || assetPath == "Library/unity default resources";
+                if (builtin) sourcePrograms.ShaderWideKeywordOwners.Add(current);
                 if (!builtin && (physical == null || !File.Exists(physical) || Path.GetExtension(physical) != ".shader"))
                 { Uncertain("shader source is unavailable: " + current.name); return; }
                 if (!builtin)
@@ -115,6 +134,7 @@ namespace Noname.AvatarTools.Analysis
                         string name = dependency.Groups[3].Success ? dependency.Groups[3].Value : dependency.Groups[2].Value;
                         if (dependency.Groups[1].Value.Equals("UsePass", StringComparison.OrdinalIgnoreCase))
                         {
+                            sourcePrograms.ShaderWideKeywordOwners.Add(current);
                             int split = name.LastIndexOf('/');
                             if (split < 0) { Uncertain("invalid UsePass reference"); continue; }
                             name = name.Substring(0, split);
@@ -143,15 +163,23 @@ namespace Noname.AvatarTools.Analysis
                         if (string.IsNullOrWhiteSpace(source))
                         { if (!pass.IsGrabPass) Uncertain("a shader pass has no inspectable source"); continue; }
                         passSources.Add((StripComments(source), directory));
+                        if (!pass.IsGrabPass) sourcePrograms.Passes.Add((current, pass, new UnityEngine.Rendering.PassIdentifier((uint)i, (uint)j)));
                     }
                 }
             }
             try
             {
                 Visit(shader);
+                // Discovery errors are distinct from a missing include in an inactive
+                // branch. The latter may be resolved by Unity's variant preprocessor.
+                sourcePrograms.Uncertain = proof.Uncertain;
                 foreach (var source in passSources) Scan(source.Source, source.Directory);
             }
-            catch (Exception exception) { Uncertain("cannot inspect shader source: " + exception.Message); }
+            catch (Exception exception)
+            {
+                sourcePrograms.Uncertain ??= "cannot inspect shader source: " + exception.Message;
+                Uncertain(sourcePrograms.Uncertain);
+            }
             return proof;
         }
 

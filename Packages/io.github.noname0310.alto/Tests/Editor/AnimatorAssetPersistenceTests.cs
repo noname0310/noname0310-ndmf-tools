@@ -116,7 +116,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 if (boundary is "Integer" or "OutputThenInteger")
                 {
                     var settings = new ParameterCompressionSettings();
-                    settings.Integers.Add(new CompressedIntegerParameter { Name = "Mode", Maximum = 6 });
+                    settings.PrecisionRules.Add(IntegerPrecisionRule("Mode", 0, 6));
                     using var saver = new SingleAssetSaver(context.AssetSaver.CurrentContainer);
                     ParameterCompressionPass.Apply(context, settings, null, context.GetState<OptimizationBuildReport>(), saver.SaveAsset);
                 }

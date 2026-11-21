@@ -50,6 +50,9 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(constraint.Sources.Count, Is.EqualTo(3), "The later output pass has not pruned sources yet");
             AvatarOutputSdkFinalizer.Complete(root, o => Track(o));
             var descriptor = root.GetComponent<VRCAvatarDescriptor>();
+            // The constraint may move to an equivalent owner; its output target
+            // and surviving source contract, rather than component identity, matter.
+            constraint = root.GetComponentsInChildren<VRCParentConstraint>(true).Single(c => c.TargetTransform == target);
             Assert.That(constraint != null, Is.True); Assert.That(constraint.Sources.Count, Is.EqualTo(1));
             Assert.That(unused == null, Is.True, "Preserving an input does not keep its unobserved former output");
             Assert.That(descriptor.expressionsMenu.controls.Select(c => c.name),
@@ -311,7 +314,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             }
             AvatarOutputSdkFinalizer.Begin(root); AvatarOutputSdkFinalizer.Capture(context);
             AvatarOutputSdkFinalizer.Complete(root, o => Track(o));
-            Assert.That(ray == null && owner == null, Is.EqualTo(frozen));
+            Assert.That(root.GetComponentsInChildren<VRCRaycast>(true).Any(r => r.Parameter == "Probe"), Is.EqualTo(!frozen));
+            if (frozen) Assert.That(owner == null, Is.True);
             TrackControllerAssets((AnimatorController)root.GetComponent<VRCAvatarDescriptor>().baseAnimationLayers.Single().animatorController);
         }
     }

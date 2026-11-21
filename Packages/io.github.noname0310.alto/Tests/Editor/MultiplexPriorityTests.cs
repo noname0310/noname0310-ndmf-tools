@@ -193,9 +193,9 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(plan.WireCost + input.Length - plan.Inputs.Count, Is.LessThanOrEqualTo(32));
         }
 
-        [TestCase("Active", true)] [TestCase("Disabled", false)] [TestCase("NoPlatforms", false)]
-        [TestCase("EditorOnly", false)] [TestCase("Filtered", false)] [TestCase("StrictMenu", false)]
-        public void MultiplexPrioritySharesVisiblePlatformPreservationWithoutApplyingItsFreezePolicy(string setting, bool preserved)
+        [TestCase("Active", true)] [TestCase("Disabled", false)] [TestCase("NoPlatforms", true)]
+        [TestCase("EditorOnly", false)] [TestCase("Filtered", false)] [TestCase("StrictMenu", true)] [TestCase("NotShared", false)]
+        public void MultiplexPriorityImportsOnlyExplicitlySharedPolicySelections(string setting, bool shared)
         {
             LayoutDescriptor();
             var compression = root.AddComponent<ALTOParameterCompression>();
@@ -211,6 +211,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             policy.PreserveParameters.Sources.Add(new AnimatorParameterSource { Source = controller });
             policy.FreezeParameters.Add(new AnimatorParameterConstant { Name = "FrozenOnOtherPlatform", Value = 0 });
             if (setting == "Disabled") policy.enabled = false;
+            if (setting == "NotShared") policy.UsePreserveForCompression = false;
             if (setting == "NoPlatforms") policy.ApplyOnPlatforms = OptimizationPlatforms.None;
             if (setting == "EditorOnly") policy.gameObject.tag = "EditorOnly";
             const string filter = "Priority policy fixture";
@@ -218,13 +219,13 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             BuildPlatformFilters.Register(filter, (t, _) => setting != "Filtered" || t != policyTransform);
             try
             {
-                ParameterCompressionPass.CapturePolicyPreservation(context);
                 ParameterPolicyPass.Capture(context);
                 ParameterPolicyPass.RemoveMarkers(context);
                 var settings = ParameterCompressionPass.Capture(context, true);
-                Assert.That(settings.KeepNative.Contains("ExternalAlias"), Is.EqualTo(preserved));
-                Assert.That(settings.KeepNative.Contains("SourceInput"), Is.EqualTo(preserved));
-                Assert.That(settings.KeepPrefixes.Contains("Sensor/"), Is.EqualTo(preserved));
+                Assert.That(settings.Keep.SelectMany(r => r.Names).Contains("ExternalAlias"), Is.EqualTo(shared));
+                Assert.That(settings.Keep.SelectMany(r => r.Names).Contains("SourceInput"), Is.EqualTo(shared));
+                Assert.That(settings.Keep.SelectMany(r => r.Prefixes).Contains("Sensor/"), Is.EqualTo(shared));
+                Assert.That(settings.InputAssumption, Is.EqualTo(ParameterInputAssumption.ExternalWithCompression));
                 Assert.That(context.GetState<ParameterPolicyState>().Enabled, Is.False);
                 Assert.That(context.GetState<ParameterPolicyState>().Frozen, Is.Empty);
             }

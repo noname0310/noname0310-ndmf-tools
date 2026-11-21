@@ -124,6 +124,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         [TestCase(AnimatorParameterFreezeMode.SelectedParameters, true)]
         [TestCase(AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved, false)]
         [TestCase(AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved, true)]
+        [TestCase(AnimatorParameterFreezeMode.RespectCompressionExternalInputs, false)]
+        [TestCase(AnimatorParameterFreezeMode.RespectCompressionExternalInputs, true)]
         public void FreezeModeControlsSelectionIndependentlyOfTheExplicitRowCount(AnimatorParameterFreezeMode mode, bool hasRow)
         {
             var descriptor = FreezeExpressions(new[] { "Input", "Other" }.Select(n => new VRCExpressionParameters.Parameter
@@ -140,8 +142,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var context = new BuildContext(root, null); ParameterPolicyPass.Capture(context);
             ParameterFreezePass.Apply(context);
             var constants = context.GetState<ParameterPolicyState>().Constants;
-            Assert.That(constants.ContainsKey("Input"), Is.EqualTo(mode == AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved));
-            Assert.That(constants.ContainsKey("Other"), Is.EqualTo(hasRow || mode == AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved));
+            Assert.That(constants.ContainsKey("Input"), Is.EqualTo(mode != AnimatorParameterFreezeMode.SelectedParameters));
+            Assert.That(constants.ContainsKey("Other"), Is.EqualTo(hasRow || mode != AnimatorParameterFreezeMode.SelectedParameters));
             Assert.That(EditorJsonUtility.ToJson(source), Is.EqualTo(before));
         }
 

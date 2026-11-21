@@ -122,7 +122,10 @@ namespace Noname.AvatarTools.Meshes
                 var externalNames = Enumerable.Range(0, mesh.blendShapeCount).Select(mesh.GetBlendShapeName).Where(MmdMorphNames.All.Contains).ToArray();
                 if (externalNames.Length > 0) result.Pin("MMD names: " + string.Join(", ", externalNames.Take(5)));
                 string shaderIssue = ShaderIssue(renderer.sharedMaterials, shaders, addSkinning: makeRigid,
-                    allowCoordinateSpaceChanges: policy?.AllowsCoordinates(renderer) == true);
+                    allowCoordinateSpaceChanges: policy?.AllowsCoordinates(renderer) == true,
+                    allowTransparentSortingChanges: policy?.AllowsTransparentSorting(renderer) == true, target: policy?.Target,
+                    renderer: renderer, animations: animations,
+                    allowShaderIndexChanges: policy?.AllowsShaderIndexChanges(renderer) == true);
                 if (shaderIssue != null) return shaderIssue;
                 result.Bindings = animations.ForObject(renderer).ToArray();
                 foreach (var use in result.Bindings)
@@ -191,19 +194,17 @@ namespace Noname.AvatarTools.Meshes
         }
 
         internal static string ShaderIssue(IEnumerable<Material> materials, ShaderPropertyUsage shaders, bool addSkinning = false,
-            bool allowCoordinateSpaceChanges = false)
+            bool allowCoordinateSpaceChanges = false, bool allowTransparentSortingChanges = false, BuildTarget? target = null,
+            Renderer renderer = null, AvatarAnimationIndex animations = null, bool allowShaderIndexChanges = false)
         {
             foreach (var material in materials.Distinct())
             {
                 if (material == null || material.shader == null) return "missing material or shader";
-                if (material.renderQueue > 2500) return "transparent sorting requires separate renderers";
+                if (material.renderQueue > 2500 && !allowTransparentSortingChanges) return "transparent sorting requires separate renderers (Allow Transparent Sorting Changes is off)";
                 if (!allowCoordinateSpaceChanges && !string.Equals(material.GetTag("DisableBatching", false, "False"), "False", StringComparison.OrdinalIgnoreCase))
                     return "shader disables batching";
-                var proof = shaders.Get(material.shader);
-                if (proof.Uncertain != null) return "unverified shader inputs: " + proof.Uncertain;
-                var semantics = new[] { "SV_VertexID", "SV_PrimitiveID", "BLENDINDICES" }.Concat(addSkinning ? new[] { "BLENDWEIGHT" } : Array.Empty<string>());
-                if (semantics.Any(semantic => proof.Tokens.Any(t => string.Equals(t, semantic, StringComparison.OrdinalIgnoreCase)) || proof.MayUse(semantic)))
-                    return "shader may depend on vertex, primitive or skinning indices/weights";
+                string issue = allowShaderIndexChanges ? null : shaders.MeshInputs.Issue(material, renderer, animations, addSkinning, target);
+                if (issue != null) return issue;
             }
             return null;
         }
@@ -259,9 +260,12 @@ namespace Noname.AvatarTools.Meshes
             if (!a.UpdateWhenOffscreen.Equals(b.UpdateWhenOffscreen)) return "different offscreen-update animation signals";
             if (a.Properties.Count != b.Properties.Count || !a.Properties.All(p => b.Properties.TryGetValue(p.Key, out var signal) && p.Value.Equals(signal)))
                 return "different material-property animation signals";
-            if (a.Properties.Count != 0 && !MaterialDefaultsMatch(x.sharedMaterials, y.sharedMaterials,
-                policy?.ReordersSlots(x) == true && policy.ReordersSlots(y)))
-                return "different animated material defaults";
+            if (a.Properties.Count != 0)
+            {
+                string materialIssue = a.Animations.MaterialInputs.Incompatibility(x, y,
+                    policy?.AllowsAnimatedMaterialDefaultChanges(x) == true && policy.AllowsAnimatedMaterialDefaultChanges(y));
+                if (materialIssue != null) return materialIssue;
+            }
             if (!(policy?.CoordinatesMatch(a, b) ?? MeshMergePolicy.CoordinateRoot(x) == MeshMergePolicy.CoordinateRoot(y)))
                 return "different coordinate systems or independent animated scale signs";
             if (policy?.ExpandBounds != true && !a.Bounds.Equals(b.Bounds)) return "different bounds with expansion disabled";
@@ -299,23 +303,6 @@ namespace Noname.AvatarTools.Meshes
                 b.Visibility.All(t => a.Visibility.Any(s => Matches(s, t)));
         }
 
-        private static bool MaterialDefaultsMatch(Material[] first, Material[] second, bool reorder)
-        {
-            if (!reorder) return MaterialRuns(first).SequenceEqual(MaterialRuns(second));
-            // Keep the default-material interface even under the explicit draw-order
-            // relaxation. Different material sets still require a separate proof.
-            return first.Length > 0 && second.Length > 0 && first[0] == second[0] && new HashSet<Material>(first).SetEquals(second);
-        }
-
-        private static IEnumerable<Material> MaterialRuns(IReadOnlyList<Material> materials)
-        {
-            // Repeating the same material in adjacent slots does not introduce a
-            // different animation default. Keep the order of distinct materials;
-            // the assembler still preserves each submesh's geometry and draw order.
-            for (int i = 0; i < materials.Count; i++)
-                if (i == 0 || materials[i] != materials[i - 1]) yield return materials[i];
-        }
-
         internal static Bounds StoredBounds(SkinnedMeshRenderer renderer)
         {
             // With updateWhenOffscreen enabled, localBounds may return the current posed
@@ -325,7 +312,7 @@ namespace Noname.AvatarTools.Meshes
             return property != null && property.propertyType == SerializedPropertyType.Bounds ? property.boundsValue : renderer.localBounds;
         }
 
-        private static string MaskCoverage(GameObject avatar, Transform target, AvatarAnimationIndex animations, Type bindingType)
+        internal static string MaskCoverage(GameObject avatar, Transform target, AvatarAnimationIndex animations, Type bindingType)
         {
             var profiles = new List<string>();
             foreach (var entry in animations.ControllerEntries)

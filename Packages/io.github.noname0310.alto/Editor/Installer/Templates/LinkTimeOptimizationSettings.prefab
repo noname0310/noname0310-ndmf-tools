@@ -119,6 +119,8 @@ MonoBehaviour:
     Names: []
     Prefixes: []
   FreezeMode: 1
+  UsePreserveForCompression: 1
+  CompressionPriority: 100
   FreezeParameters: []
   BakeInitialVisibility: 1
 --- !u!114 &1173928668677819961
@@ -167,6 +169,9 @@ MonoBehaviour:
   ApplyOnPlatforms: 6
   AllowCoordinateSpaceChanges: 1
   ConvertRigidMeshes: 1
+  AllowTransparentSortingChanges: 1
+  AllowShaderIndexChanges: 0
+  AllowAnimatedMaterialDefaultChanges: 1
   AllowMaterialSlotReordering: 1
 --- !u!1 &2097906271171728990
 GameObject:
@@ -319,6 +324,58 @@ MonoBehaviour:
   ReductionPriorities: []
   PreserveBorderEdges: 0
   OnBudgetUnreachable: 0
+--- !u!1 &4810802898665486145
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 5194118094593274324}
+  - component: {fileID: 8398744095273954990}
+  m_Layer: 0
+  m_Name: Policies
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &5194118094593274324
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4810802898665486145}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 5459708226960437616}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &8398744095273954990
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4810802898665486145}
+  m_Enabled: 0
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1c0eb3277edbe2a47a67221f476311d2, type: 3}
+  m_Name:
+  m_EditorClassIdentifier:
+  ScopeRoot: {fileID: 0}
+  ApplyOnPlatforms: 1
+  AllowCoordinateSpaceChanges: 0
+  ConvertRigidMeshes: 1
+  AllowTransparentSortingChanges: 0
+  AllowShaderIndexChanges: 0
+  AllowAnimatedMaterialDefaultChanges: 0
+  AllowMaterialSlotReordering: 0
 --- !u!1 &4995780524018215138
 GameObject:
   m_ObjectHideFlags: 0
@@ -395,6 +452,23 @@ MonoBehaviour:
   BakeConstantTransforms: 1
   RemoveUnusedTransformOutputs: 1
   RemoveRedundantConstraints: 1
+  MergeStaticObjects: 1
+  HoistComponents: 1
+  FoldStaticTransformsIntoComponents: 1
+  AssumeFixedHumanoidBoneScale: 0
+  ComponentHoisting:
+    SkinnedMeshRenderers: 1
+    MeshRenderers: 1
+    PhysBones: 1
+    PhysBoneColliders: 1
+    ContactSenders: 1
+    ContactReceivers: 1
+    VRCConstraints: 1
+    Raycasts: 1
+    HeadChop: 1
+    AudioSources: 1
+    Lights: 1
+    UnityColliders: 1
   RemoveUnusedObjects: 1
   PreserveObjects: []
   PreserveComponents: []
@@ -447,6 +521,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   ScopeRoot: {fileID: 0}
   ShareEquivalentColliders: 1
+  RebaseStaticColliderRoots: 1
   OptimizeIsAnimated: 1
   ReplaceUnusedEndBones: 1
   MergeCompatibleSimulations: 1
@@ -593,11 +668,11 @@ MonoBehaviour:
     Names: []
     Prefixes: []
   RemoveUnusedSynchronization: 1
-  KeepNativeParameters:
-    Sources: []
-    Names: []
-    Prefixes: []
-  Integers: []
+  InputAssumption: 0
+  KeepParameters: []
+  AllowUnsignedBitReduction: 1
+  PrecisionSourceOverrides: []
+  PrecisionOverrides: []
 --- !u!114 &574095320576803458
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -642,6 +717,7 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
+  - {fileID: 5194118094593274324}
   - {fileID: 5776018423526972430}
   - {fileID: 1335062108491463776}
   m_Father: {fileID: 6750986341100471480}

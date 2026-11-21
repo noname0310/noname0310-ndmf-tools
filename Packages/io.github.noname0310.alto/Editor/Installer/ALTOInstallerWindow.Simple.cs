@@ -66,14 +66,20 @@ namespace Noname.AvatarTools.Installer
 
         private void DrawSimpleFeatures()
         {
+            Frame("Common", "Controls to keep responsive", "PC synchronization + mobile controls", draft.IncludeMobile || draft.ParameterCompression, () =>
+            {
+                DrawParameterSources(false);
+            });
             Frame("Mobile", "Controls to keep working", MobilePlatforms, draft.IncludeMobile, () =>
             {
-                Text(draft.FreezeMode == AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved
-                    ? "Other menu and external inputs use their build defaults. Add facial tracking or other features that must remain adjustable. VRChat's built-in inputs remain active."
-                    : "Only the specific parameter values configured in Advanced are fixed. Other inputs remain adjustable.");
-                DrawParameterSources(false);
-                if (draft.PreserveParameters.Names.Count + draft.PreserveParameters.Prefixes.Count > 0)
-                    Text("Additional preserved names and prefixes are configured in Advanced > Parameters.");
+                draft.FreezeMode = Choice("Mobile control behavior", draft.FreezeMode,
+                    (AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved, "Ignore Compression inputs; keep only the list below"),
+                    (AnimatorParameterFreezeMode.RespectCompressionExternalInputs, "Keep Compression inputs and the list below"),
+                    (AnimatorParameterFreezeMode.SelectedParameters, "Fix only selected parameter values"));
+                Text(draft.FreezeMode == AnimatorParameterFreezeMode.SelectedParameters
+                    ? "Only the specific parameter values configured in Advanced are fixed. Other inputs remain adjustable."
+                    : "Other menu and external inputs use their build defaults. Add facial tracking or other features that must remain adjustable. VRChat's built-in inputs remain active.");
+                Text("The Preserve feature controls list above stays adjustable. Advanced > Parameters can add names, prefixes and separate Compression selections.");
                 if (draft.FreezeMode == AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved &&
                     draft.PreserveParameters.Sources.All(s => s?.Source == null) &&
                     draft.PreserveParameters.Names.Count == 0 && draft.PreserveParameters.Prefixes.Count == 0)

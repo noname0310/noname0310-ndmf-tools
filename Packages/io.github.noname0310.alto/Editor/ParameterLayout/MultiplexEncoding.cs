@@ -11,6 +11,9 @@ namespace Noname.AvatarTools.ParameterLayout
     internal sealed class MultiplexInput : ParameterLayoutEntry
     {
         public int Batch, Slot;
+        public bool AllowWiderPrecision;
+        internal bool Accepts(ParameterLayoutEntry slot) => SameEncoding(slot) || AllowWiderPrecision &&
+            Type == ValueType.Float && slot.Type == Type && slot.FlippedRepresentation == FlippedRepresentation && slot.Cost >= Cost;
     }
 
     // Typed reusable payloads, an atomic Int tag, and complete snapshot buffering.
@@ -59,7 +62,8 @@ namespace Noname.AvatarTools.ParameterLayout
 
         // Cost decreases monotonically with the batch count. The largest supported
         // count answers feasibility without allocating wire names or Animator assets.
-        internal static bool CanFit(Parameter[] all, ISet<string> eligible, int budget, int maxBatches = 127)
+        internal static bool CanFit(Parameter[] all, ISet<string> eligible, int budget, int maxBatches = 127,
+            ISet<string> minimumPrecision = null)
         {
             if (budget < 16 || budget > 256)
                 throw new InvalidOperationException("Choose a network budget from 16 to 256.");
@@ -67,49 +71,41 @@ namespace Noname.AvatarTools.ParameterLayout
                 throw new ArgumentOutOfRangeException(nameof(maxBatches));
             int before = Cost(all);
             if (before <= budget) return true;
-            var counts = new Dictionary<(ValueType Type, int Bits, bool Flipped), int>();
-            int selected = 0;
-            foreach (var parameter in all.Where(p => p.networkSynced && eligible.Contains(p.name) && CanMultiplex(p)))
-            {
-                var key = ParameterLayoutEntry.Capture(parameter).Encoding;
-                counts.TryGetValue(key, out int count);
-                counts[key] = count + 1;
-                selected += Cost(parameter);
-            }
-            int minimum = before - selected + 8 + counts.Sum(g => ((g.Value + maxBatches - 1) / maxBatches) * g.Key.Bits);
-            return counts.Count != 0 && minimum <= budget && minimum < before;
+            var planner = new MultiplexSlotPlanner(all.Where(p => p.networkSynced && eligible.Contains(p.name) && CanMultiplex(p)), minimumPrecision);
+            int minimum = before - planner.InputCost + 8 + planner.Cost(maxBatches);
+            return planner.InputCost != 0 && minimum <= budget && minimum < before;
         }
 
-        internal static MultiplexEncoding Plan(Parameter[] all, ISet<string> eligible, int budget, float hold, ISet<string> occupied)
+        internal static MultiplexEncoding Plan(Parameter[] all, ISet<string> eligible, int budget, float hold, ISet<string> occupied,
+            ISet<string> minimumPrecision = null)
         {
             if (budget < 16 || budget > 256 || !float.IsFinite(hold) || hold < .1f || hold > 1)
                 throw new InvalidOperationException("Choose a network budget from 16 to 256 and a packet hold from 0.1 to 1 second.");
             int before = Cost(all);
             if (before <= budget) return null;
-            var groups = all.Where(p => p.networkSynced && eligible.Contains(p.name) && CanMultiplex(p))
-                .OrderBy(p => p.name, StringComparer.Ordinal).GroupBy(p => ParameterLayoutEntry.Capture(p).Encoding)
-                .OrderBy(g => g.Key.Type).ThenBy(g => g.Key.Bits).ThenBy(g => g.Key.Flipped).ToArray();
-            int native = before - groups.Sum(g => g.Count() * g.Key.Bits);
+            var planner = new MultiplexSlotPlanner(all.Where(p => p.networkSynced && eligible.Contains(p.name) && CanMultiplex(p)), minimumPrecision);
+            int native = before - planner.InputCost;
             // Searching cycle length directly gives the shortest schedule within the budget.
-            // Separate typed slots preserve the platform's native numeric quantization.
+            // Unspecified and exact widths retain native quantization. Minimum
+            // precision rules explicitly permit wider slots of the same representation.
             for (int batches = 2; batches <= 127; batches++)
             {
-                int cost = native + 8 + groups.Sum(g => ((g.Count() + batches - 1) / batches) * g.Key.Bits);
-                if (groups.Length == 0 || cost > budget || cost >= before) continue;
+                int cost = native + 8 + planner.Cost(batches);
+                if (planner.InputCost == 0 || cost > budget || cost >= before) continue;
                 var result = new MultiplexEncoding
                 { Batches = batches, HoldSeconds = hold, Tag = Allocate(occupied, "__AdvancedMux/Tag") };
-                foreach (var group in groups)
+                foreach (var slot in planner.Allocate(batches))
                 {
-                    int width = (group.Count() + batches - 1) / batches, start = result.Slots.Count;
-                    for (int i = 0; i < width; i++) result.Slots.Add(new ParameterLayoutEntry
-                    { Name = Allocate(occupied, "__AdvancedMux/" + group.Key.Type + "/" + i), Type = group.Key.Type,
-                        BitWidth = group.Key.Bits, FlippedRepresentation = group.Key.Flipped });
+                    int indexOfSlot = result.Slots.Count;
+                    slot.Encoding.Name = Allocate(occupied, "__AdvancedMux/" + slot.Encoding.Type + "/" + indexOfSlot);
+                    result.Slots.Add(slot.Encoding);
                     int index = 0;
-                    foreach (var parameter in group)
+                    foreach (var parameter in slot.Inputs)
                     {
                         result.Inputs.Add(new MultiplexInput
-                        { Name = parameter.name, Type = parameter.valueType, BitWidth = group.Key.Bits,
-                            FlippedRepresentation = group.Key.Flipped, Batch = index / width, Slot = start + index % width });
+                        { Name = parameter.name, Type = parameter.valueType, BitWidth = Cost(parameter),
+                            FlippedRepresentation = parameter.flippedRepresentation, Batch = index, Slot = indexOfSlot,
+                            AllowWiderPrecision = parameter.valueType == ValueType.Float && minimumPrecision?.Contains(parameter.name) == true });
                         index++;
                     }
                 }
@@ -118,7 +114,7 @@ namespace Noname.AvatarTools.ParameterLayout
                 return result;
             }
             throw new InvalidOperationException("Cannot fit the synchronized parameter budget: " + before + "/" + budget +
-                " bits, " + native + " bits outside the eligible selection. Preserve/Keep Native and momentary-input exclusions are not overridden.");
+                " bits, " + native + " bits outside the eligible selection. Protected inputs and momentary-input exclusions are not overridden.");
         }
 
         internal void Validate()
@@ -135,7 +131,8 @@ namespace Noname.AvatarTools.ParameterLayout
             foreach (var input in Inputs)
                 if (input == null || string.IsNullOrWhiteSpace(input.Name) || !names.Add(input.Name) || wire.Contains(input.Name) ||
                     input.Batch < 0 || input.Batch >= Batches || input.Slot < 0 || input.Slot >= Slots.Count ||
-                    !input.Valid || !input.SameEncoding(Slots[input.Slot]) || !assignments.Add((input.Batch, input.Slot)))
+                    !input.Valid || input.AllowWiderPrecision && input.Type != ValueType.Float ||
+                    !input.Accepts(Slots[input.Slot]) || !assignments.Add((input.Batch, input.Slot)))
                     throw new InvalidOperationException("Invalid multiplexed input mapping.");
             if (Enumerable.Range(0, Batches).Any(b => Inputs.All(p => p.Batch != b)) ||
                 Enumerable.Range(0, Slots.Count).Any(s => Inputs.All(p => p.Slot != s)) || WireCost >= Inputs.Sum(p => p.Cost))

@@ -16,6 +16,7 @@ namespace Noname.AvatarTools.Expressions
         private readonly IReadOnlyDictionary<string, string> paths;
         private readonly Dictionary<VirtualClip, HashSet<Transform>> roots = new();
         private readonly Dictionary<(VirtualClip, EditorCurveBinding), bool> cache = new();
+        private readonly Dictionary<(Transform, string, Type), bool> destinations = new();
 
         internal ExpressionOutputUsage(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths)
@@ -38,9 +39,12 @@ namespace Noname.AvatarTools.Expressions
             foreach (var root in owners)
             {
                 if (root == null) return cache[key] = true;
-                foreach (var target in AnimationUsage.Resolve(avatar, root, binding.path, paths))
-                    if (binding.type == typeof(GameObject) || target.GetComponents(binding.type).Length > 0 ||
-                        typeof(Renderer).IsAssignableFrom(binding.type) && target.GetComponent<Renderer>() != null) return cache[key] = true;
+                var destination = (root, binding.path, binding.type);
+                if (!destinations.TryGetValue(destination, out bool exists))
+                    destinations.Add(destination, exists = AnimationUsage.Resolve(avatar, root, binding.path, paths).Any(target =>
+                        binding.type == typeof(GameObject) || target.GetComponents(binding.type).Length > 0 ||
+                        typeof(Renderer).IsAssignableFrom(binding.type) && target.GetComponent<Renderer>() != null));
+                if (exists) return cache[key] = true;
             }
             return cache[key] = false;
         }

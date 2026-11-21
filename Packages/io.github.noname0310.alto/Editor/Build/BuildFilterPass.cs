@@ -106,10 +106,17 @@ namespace Noname.AvatarTools.Build
                 throw new InvalidOperationException("Excluded objects and components must belong to the Build Exclusions' Scope Root: " + target.name);
         }
 
-        internal static bool Requires(Component dependant, Component dependency) =>
-            dependant.GetType().GetCustomAttributes(typeof(RequireComponent), true).Cast<RequireComponent>()
-                .SelectMany(a => new[] { a.m_Type0, a.m_Type1, a.m_Type2 })
-                .Any(type => type != null && type.IsInstanceOfType(dependency));
+        // Type metadata is immutable until a domain reload. Object/component
+        // membership is deliberately not cached across hierarchy mutations.
+        private static readonly Dictionary<Type, Type[]> requirements = new();
+        internal static bool Requires(Component dependant, Component dependency)
+        {
+            var owner = dependant.GetType();
+            if (!requirements.TryGetValue(owner, out var required))
+                requirements.Add(owner, required = owner.GetCustomAttributes(typeof(RequireComponent), true).Cast<RequireComponent>()
+                    .SelectMany(a => new[] { a.m_Type0, a.m_Type1, a.m_Type2 }).Where(t => t != null).Distinct().ToArray());
+            return required.Any(type => type.IsInstanceOfType(dependency));
+        }
 
         private static void ValidateIncomingReferences(BuildContext context, ALTOBuildExclusions filter, HashSet<Object> removed)
         {

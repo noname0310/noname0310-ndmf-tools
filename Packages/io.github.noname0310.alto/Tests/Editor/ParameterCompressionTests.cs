@@ -163,7 +163,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             string before = EditorJsonUtility.ToJson(source);
             var layout = root.AddComponent<ALTOParameterLayout>();
             var marker = root.AddComponent<ALTOParameterCompression>();
-            marker.Integers.Add(new CompressedIntegerParameter { Name = "Mode", Minimum = 10, Maximum = 17 });
+            marker.PrecisionOverrides.Add(new ParameterPrecisionOverride { Name = "Mode", Integers = new() { Range = IntegerRangeMode.LimitRange, Minimum = 10, Maximum = 17 } });
             var context = new BuildContext(root, null); ParameterLayoutPass.Capture(context);
             var settings = context.GetState<ParameterLayoutState>().Settings;
             Assert.That(marker == null && layout == null, Is.True);
@@ -235,8 +235,12 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 { type = VRCAvatarDescriptor.AnimLayerType.FX, isDefault = false, animatorController = controller } };
             string original = EditorJsonUtility.ToJson(source), originalController = EditorJsonUtility.ToJson(controller);
             var settings = new ParameterCompressionSettings();
-            settings.Integers.Add(new CompressedIntegerParameter { Name = "Mode", Maximum = conflict == "identity" ? 6 : 7 });
-            if (conflict == "preserved") settings.KeepNative.Add("Mode");
+            settings.PrecisionRules.Add(IntegerPrecisionRule("Mode", 0, conflict == "identity" ? 6 : 7));
+            if (conflict == "preserved")
+            {
+                settings.InputAssumption = ParameterInputAssumption.AvatarDrivenExceptListed;
+                var keep = new ResolvedParameterKeepRule(); keep.Names.Add("Mode"); settings.Keep.Add(keep);
+            }
             var record = conflict == "wire collision" ? new ParameterLayoutRecord { IntegerEncodings = new() { encoding } } : null;
             var context = new BuildContext(root, null);
             Assert.Throws<InvalidOperationException>(() => ParameterCompressionPass.Apply(context, settings, record,
@@ -278,7 +282,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 input.parameters = new[] { LayoutParameter("Mode", ValueType.Int) }; input.parameters[0].defaultValue = 15;
                 descriptor.expressionParameters = input;
                 root.AddComponent<ALTOParameterLayout>();
-                root.AddComponent<ALTOParameterCompression>().Integers.Add(new CompressedIntegerParameter { Name = "Mode", Minimum = 10, Maximum = 17 });
+                root.AddComponent<ALTOParameterCompression>().PrecisionOverrides.Add(new ParameterPrecisionOverride { Name = "Mode", Integers = new() { Range = IntegerRangeMode.LimitRange, Minimum = 10, Maximum = 17 } });
                 var context = new BuildContext(root, folder);
                 ParameterLayoutPass.Capture(context);
                 ParameterLayoutSdkSession.Begin(root);

@@ -71,7 +71,27 @@ namespace Noname.AvatarTools.Installer
                 if (draft.ExcludeAfkAnimations && (!draft.AfkScanComplete || draft.AfkScannedAvatar != avatar))
                     errors.Add("Refresh and review AFK animations in Setup before installing.");
             }
+            if (draft.ParameterCompression)
+            {
+                if (!Enum.IsDefined(typeof(ParameterInputAssumption), draft.InputAssumption)) errors.Add("Choose a valid parameter input assumption.");
+                if (draft.KeepPriority < 1) errors.Add("Compression Keep priority must be positive.");
+                foreach (var value in draft.KeepParameters.Sources)
+                {
+                    if (value?.Source == null || !ParameterSourceResolver.IsSupported(value.Source)) errors.Add("Choose a supported source for every Compression Keep selection.");
+                    else Owned(value.Source, "Compression Keep selections");
+                }
+            }
+            if (draft.IncludeMobile || draft.ParameterCompression && draft.UsePreserveForCompression)
+            {
+                if (draft.UsePreserveForCompression && draft.PreserveCompressionPriority < 1) errors.Add("Policy Compression priority must be positive.");
+                foreach (var value in draft.PreserveParameters.Sources)
+                {
+                    if (value?.Source == null || !ParameterSourceResolver.IsSupported(value.Source)) errors.Add("Choose a supported source for every preserved feature.");
+                    else Owned(value.Source, "Preserved features");
+                }
+            }
             if (!draft.IncludeMobile) return errors;
+            if (!Enum.IsDefined(typeof(AnimatorParameterFreezeMode), draft.FreezeMode)) errors.Add("Choose a valid mobile control behavior.");
             foreach (var value in draft.ExcludedObjects)
             {
                 Owned(value, "Feature objects");
@@ -82,11 +102,6 @@ namespace Noname.AvatarTools.Installer
                 Owned(value, "Excluded components");
                 if (value is Transform || value is VRCAvatarDescriptor || value is Animator animator && animator.gameObject == avatar.gameObject)
                     errors.Add("Cannot exclude the avatar's required component: " + value.GetType().Name);
-            }
-            foreach (var value in draft.PreserveParameters.Sources)
-            {
-                if (value?.Source == null || !ParameterSourceResolver.IsSupported(value.Source)) errors.Add("Choose a supported source for every preserved feature.");
-                else Owned(value.Source, "Preserved features");
             }
             foreach (var value in draft.FrozenValueOverrides)
             {
@@ -186,6 +201,18 @@ namespace Noname.AvatarTools.Installer
             anchors.ApplyOnPlatforms = OptimizationPlatforms.All;
             anchors.OverrideProbeAnchor = draft.NormalizeProbeAnchors;
             if (!draft.NormalizeProbeAnchors) Remove(anchors);
+            var commonMeshes = settings.transform.Find("Common/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
+            commonMeshes.AllowCoordinateSpaceChanges = draft.CommonAllowCoordinateSpaceChanges;
+            commonMeshes.AllowTransparentSortingChanges = draft.CommonAllowTransparentSortingChanges;
+            commonMeshes.AllowShaderIndexChanges = draft.CommonAllowShaderIndexChanges;
+            commonMeshes.AllowAnimatedMaterialDefaultChanges = draft.CommonAllowAnimatedMaterialDefaultChanges;
+            commonMeshes.ConvertRigidMeshes = true;
+            commonMeshes.enabled = draft.CommonAllowCoordinateSpaceChanges || draft.CommonAllowTransparentSortingChanges ||
+                draft.CommonAllowShaderIndexChanges || draft.CommonAllowAnimatedMaterialDefaultChanges;
+            // The mobile policy also contains mobile-only slot reordering. Keep
+            // the two policies disjoint, since same-scope policies must agree.
+            commonMeshes.ApplyOnPlatforms = draft.IncludeMobile ? OptimizationPlatforms.PC : OptimizationPlatforms.All;
+            commonMeshes.AllowMaterialSlotReordering = false;
             var shapes = Get<ALTOTraceAndOptimizeBlendShapes>();
             shapes.PreserveMmdBlendShapes = draft.PreserveMmdBlendShapes;
             shapes.ExcludedAnimations = draft.AdditionalExcludedAnimations.Concat(draft.ExcludeAfkAnimations
@@ -194,11 +221,32 @@ namespace Noname.AvatarTools.Installer
             var platformFilter = Get<ALTOOptimizationPlatformFilter>();
             platformFilter.enabled = draft.CommonMobileOnly;
             if (!draft.ParameterCompression) Remove(Get<ALTOParameterCompression>());
-            else Get<ALTOParameterCompression>().TargetBitBudget = 256;
+            else
+            {
+                var compression = Get<ALTOParameterCompression>(); compression.TargetBitBudget = 256;
+                compression.InputAssumption = draft.InputAssumption;
+                compression.AllowUnsignedBitReduction = draft.AllowUnsignedBitReduction;
+                compression.KeepParameters = new List<ParameterKeepRule>();
+                if (draft.KeepParameters.Sources.Count + draft.KeepParameters.Names.Count + draft.KeepParameters.Prefixes.Count != 0)
+                    compression.KeepParameters.Add(new() { Parameters = Copy(draft.KeepParameters), Priority = draft.KeepPriority });
+            }
             if (!draft.ParameterLayout) Remove(Get<ALTOParameterLayout>());
             if (!draft.ParameterLayout && !draft.ParameterCompression) Remove(settings.transform.Find("Parameters").gameObject);
             if (!draft.IncludeCommon) Remove(settings.transform.Find("Common").gameObject);
-            if (!draft.IncludeMobile) { Remove(settings.transform.Find("Mobile").gameObject); return; }
+            if (!draft.IncludeMobile)
+            {
+                Remove(settings.transform.Find("Mobile").gameObject);
+                if (draft.ParameterCompression && draft.UsePreserveForCompression &&
+                    draft.PreserveParameters.Sources.Count + draft.PreserveParameters.Names.Count + draft.PreserveParameters.Prefixes.Count != 0)
+                {
+                    var shared = settings.transform.Find("Parameters").gameObject.AddComponent<ALTOAnimatorParameterPolicy>();
+                    shared.ApplyOnPlatforms = OptimizationPlatforms.None;
+                    shared.UsePreserveForCompression = true;
+                    shared.CompressionPriority = draft.PreserveCompressionPriority;
+                    shared.PreserveParameters = Copy(draft.PreserveParameters);
+                }
+                return;
+            }
 
             var exclusions = Get<ALTOBuildExclusions>();
             exclusions.ExcludedObjects = draft.ExcludedObjects.Distinct().ToList();
@@ -206,6 +254,8 @@ namespace Noname.AvatarTools.Installer
             exclusions.RemoveAudioSources = draft.RemoveAudioSources;
             var policy = Get<ALTOAnimatorParameterPolicy>();
             policy.FreezeMode = draft.FreezeMode;
+            policy.UsePreserveForCompression = draft.UsePreserveForCompression;
+            policy.CompressionPriority = draft.PreserveCompressionPriority;
             policy.BakeInitialVisibility = true;
             policy.PreserveParameters = Copy(draft.PreserveParameters);
             policy.FreezeParameters = draft.FrozenValueOverrides.Select(CopyConstant).ToList();
@@ -222,8 +272,11 @@ namespace Noname.AvatarTools.Installer
             contacts.ObjectRoots = draft.ContactRoots.Select(v => new ContactObjectSelection { Root = v.Root, IncludeChildren = v.IncludeChildren }).ToList();
             var rendererSettings = settings.transform.Find("Mobile/Policies").GetComponent<ALTOMeshRendererSettingsOverride>();
             if (!draft.NormalizeRendererSettings) Remove(rendererSettings);
-            var meshes = Get<ALTOMeshOptimizationPolicy>();
+            var meshes = settings.transform.Find("Mobile/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
             meshes.AllowCoordinateSpaceChanges = draft.AllowCoordinateSpaceChanges;
+            meshes.AllowTransparentSortingChanges = draft.AllowTransparentSortingChanges;
+            meshes.AllowShaderIndexChanges = draft.AllowShaderIndexChanges;
+            meshes.AllowAnimatedMaterialDefaultChanges = draft.AllowAnimatedMaterialDefaultChanges;
             meshes.ConvertRigidMeshes = true;
             meshes.AllowMaterialSlotReordering = draft.AllowMaterialSlotReordering;
             var atlas = Get<ALTOMaterialAtlas>();
@@ -271,6 +324,8 @@ namespace Noname.AvatarTools.Installer
             var common = Child("Common");
             var platformFilter = common.AddComponent<ALTOOptimizationPlatformFilter>();
             platformFilter.ApplyOnPlatforms = Mobile; platformFilter.enabled = false;
+            var commonMeshes = Child("Common/Policies").AddComponent<ALTOMeshOptimizationPolicy>();
+            commonMeshes.enabled = false;
             var anchors = Child("Common/Rendering").AddComponent<ALTOMeshRendererSettingsOverride>();
             anchors.OverrideProbeAnchor = true; anchors.ApplyOnPlatforms = OptimizationPlatforms.All;
             var optimization = Child("Common/Optimization");
@@ -290,7 +345,8 @@ namespace Noname.AvatarTools.Installer
             rendering.OverrideLightProbeUsage = rendering.OverrideReflectionProbeUsage = true;
             rendering.OverrideShadowCasting = rendering.OverrideReceiveShadows = rendering.OverrideStaticShadowCaster = true;
             var meshPolicy = Child("Mobile/Policies").AddComponent<ALTOMeshOptimizationPolicy>();
-            meshPolicy.AllowCoordinateSpaceChanges = meshPolicy.AllowMaterialSlotReordering = true;
+            meshPolicy.AllowCoordinateSpaceChanges = meshPolicy.AllowTransparentSortingChanges = true;
+            meshPolicy.AllowMaterialSlotReordering = true;
             var filter = Child("Mobile/Filters").AddComponent<ALTORenderingFilter>();
             filter.RemoveAdditionalMaterialPasses = true;
             filter.ExcludedRendererTypes = RendererFilterTypes.ParticleSystems | RendererFilterTypes.Lines | RendererFilterTypes.Trails;
@@ -303,6 +359,7 @@ namespace Noname.AvatarTools.Installer
             reduction.TriangleBudget = 60000; reduction.PreserveBorderEdges = false;
             foreach (var component in root.GetComponentsInChildren<ALTOPlatformOptimizationComponent>(true))
                 component.ApplyOnPlatforms = component == anchors ? OptimizationPlatforms.All : Mobile;
+            commonMeshes.ApplyOnPlatforms = OptimizationPlatforms.PC;
             return root;
         }
     }

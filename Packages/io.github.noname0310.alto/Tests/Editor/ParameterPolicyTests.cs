@@ -31,6 +31,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             if (root.GetComponent<VRCAvatarDescriptor>() == null) root.AddComponent<VRCAvatarDescriptor>();
             var policy = (target != null ? target : root).AddComponent<ALTOAnimatorParameterPolicy>();
             policy.ApplyOnPlatforms = OptimizationPlatforms.All;
+            policy.FreezeMode = AnimatorParameterFreezeMode.SelectedParameters;
             return policy;
         }
 

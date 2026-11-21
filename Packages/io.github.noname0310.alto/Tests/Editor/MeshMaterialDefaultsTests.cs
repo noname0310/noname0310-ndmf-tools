@@ -26,7 +26,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         }
 
         [TestCase(false)] [TestCase(true)]
-        public void AnimatedMaterialDefaultsIgnoreOnlyAdjacentIdenticalSlotRepetition(bool differentOrder)
+        public void AnimatedMaterialDefaultsUseValuesAcrossDifferentSlotOrders(bool differentOrder)
         {
             var pair = MergePair(); var first = pair.First.sharedMaterial; var second = Track(new Material(first));
             RepeatMaterialSlots(pair.First, new[] { first, first, second });
@@ -36,7 +36,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 EditorCurveBinding.FloatCurve(part.name, typeof(SkinnedMeshRenderer), "material._Color.r"), AnimationCurve.Constant(0, 1, 0.5f));
             var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(Controller(clip));
             Assert.That(MeshMergeAnalysis.Group(MergeCandidates(new[] { pair.First, pair.Second }, controller), true).Count,
-                Is.EqualTo(differentOrder ? 2 : 1));
+                Is.EqualTo(1));
         }
 
         [TestCase(false)] [TestCase(true)]
@@ -54,7 +54,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         }
 
         [TestCase(false, false)] [TestCase(true, false)] [TestCase(true, true)]
-        public void ReorderingKeepsTheAnimatedFirstMaterialInterface(bool reorder, bool differentFirst)
+        public void ReorderingKeepsEquivalentAnimatedFirstMaterialInterfaces(bool reorder, bool differentFirst)
         {
             var pair = MergePair(); var a = pair.First.sharedMaterial; var b = Track(new Material(a)); var c = Track(new Material(a));
             RepeatMaterialSlots(pair.First, new[] { a, b, c, a });
@@ -65,7 +65,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(Controller(clip));
             var groups = MeshMergeAnalysis.Group(MergeCandidates(new[] { pair.First, pair.Second }, controller), true,
                 new MeshMergePolicy { AllowMaterialSlotReordering = reorder });
-            Assert.That(groups.Count, Is.EqualTo(reorder && !differentFirst ? 1 : 2));
+            Assert.That(groups.Count, Is.EqualTo(1));
         }
 
         [TestCase(true, BuildTarget.Android, OptimizationPlatforms.Android, true, true)]
@@ -144,7 +144,10 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             }
             var builtSource = TreeController(("Amount", builtClip)); builtSource.layers[0].stateMachine.defaultState.writeDefaultValues = writeDefaults;
             var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(builtSource);
-            var group = MeshMergeAnalysis.Group(MergeCandidates(new[] { builtFirst, builtSecond }, controller), true).Single();
+            // This test compares native animated pixels after an explicitly
+            // permitted merge, independently of the SDK shader's variant budget.
+            var policy = new MeshMergePolicy { AllowShaderIndexChanges = true };
+            var group = MeshMergeAnalysis.Group(MergeCandidates(new[] { builtFirst, builtSecond }, controller, policy: policy), true).Single();
             MeshOptimizationPass.Merge(group, "Built first", true, mesh => Track(mesh));
             Assert.That(builtFirst.sharedMaterials.Length, Is.EqualTo(1)); builtFirst.enabled = false;
             var camera = PolicyChild("Camera").AddComponent<Camera>(); camera.scene = scene; camera.enabled = false;

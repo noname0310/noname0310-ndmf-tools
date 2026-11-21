@@ -61,7 +61,6 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
                 .Run("Capture parameter policy", context =>
                 {
-                    ParameterLayout.ParameterCompressionPass.CapturePolicyPreservation(context);
                     ParameterPolicyPass.Capture(context);
                     ParameterPolicyPass.RemoveMarkers(context);
                 });

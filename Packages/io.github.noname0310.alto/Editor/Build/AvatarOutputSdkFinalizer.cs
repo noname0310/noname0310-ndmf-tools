@@ -9,6 +9,7 @@ using Noname.AvatarTools.Expressions;
 using Noname.AvatarTools.AnimatorOptimization;
 using Noname.AvatarTools.ObjectOptimization;
 using Noname.AvatarTools.Meshes;
+using Noname.AvatarTools.Physics;
 using Noname.AvatarTools.ParameterPolicy;
 using UnityEditor;
 using UnityEngine;
@@ -78,6 +79,7 @@ namespace Noname.AvatarTools.Build
                 !session.Context.GetState<ObjectOptimizationState>().Enabled &&
                 session.Context.GetState<AnimatorOptimizationState>().Settings?.Enabled != true &&
                 !session.Context.GetState<MeshOptimizationState>().Enabled &&
+                !session.Context.GetState<PhysBoneOptimizationState>().Enabled &&
                 !ContactFilterPass.HasPendingRemovals(session.Context)) return;
             using var measurement = OptimizationMeasurement.Begin(session.Report, "SDK finalizer", "runtime output cleanup");
             string unsupported = ObjectOptimizationSafety.UnsupportedRuntime(avatar);
@@ -112,6 +114,8 @@ namespace Noname.AvatarTools.Build
             // path mappings. The original build's asset saver owns generated controllers.
             var current = new VirtualControllerContext();
             current.OnActivate(session.Context);
+            var analysis = session.Context.GetState<OptimizationAnalysis>();
+            analysis.Invalidate(AnalysisDomain.All);
             try
             {
                 var finalEntries = current.Controllers.Where(e => !(e.Key is Object owner) || owner != null)
@@ -122,9 +126,16 @@ namespace Noname.AvatarTools.Build
                     new HashSet<string>(session.Context.GetState<ParameterPolicyState>().Constants.Keys, StringComparer.Ordinal),
                     session.Context.GetState<ObjectOptimizationState>(), session.Context.GetState<AnimatorOptimizationState>().Settings,
                     session.Settings, session.Report, saveForTests ?? saver.SaveAsset, session.LocalCandidates,
-                    () => MeshOptimizationPass.ApplyFinal(session.Context, finalEntries, policy, saveForTests ?? saver.SaveAsset));
+                    () => MeshOptimizationPass.ApplyFinal(session.Context, finalEntries, policy, saveForTests ?? saver.SaveAsset),
+                    () => PhysBoneOptimizationPass.ApplyFinal(session.Context, finalEntries, policy),
+                    () => StaticTransformOptimizationPass.ApplyFinal(session.Context, finalEntries, policy, mesh => (saveForTests ?? saver.SaveAsset)(mesh)),
+                    session.Context.GetState<OptimizationAnalysis>().Invalidate, session.Context.GetState<OptimizationAnalysis>().Shaders);
             }
-            finally { AnimatorAssetPersistence.Commit(session.Context, current, saveForTests ?? saver.SaveAsset); }
+            finally
+            {
+                try { AnimatorAssetPersistence.Commit(session.Context, current, saveForTests ?? saver.SaveAsset); }
+                finally { analysis.Invalidate(AnalysisDomain.All); }
+            }
         }
     }
 

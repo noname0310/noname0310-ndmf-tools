@@ -71,10 +71,10 @@ namespace Noname.AvatarTools.Analysis
         private void Root(Object value) { if (value != null) roots.Add(value); }
 
         internal static AvatarDependencyGraph Create(GameObject avatar, AvatarAnimationIndex animations,
-            ObjectOptimizationState settings, bool collectObjects)
+            ObjectOptimizationState settings, bool collectObjects, ShaderPropertyUsage shaders = null)
         {
             var result = new AvatarDependencyGraph(avatar, animations) { UnsafeReason = animations.UnsafeReason };
-            result.Build(settings, collectObjects);
+            result.Build(settings, collectObjects, shaders ?? new ShaderPropertyUsage());
             return result;
         }
 
@@ -100,10 +100,9 @@ namespace Noname.AvatarTools.Analysis
             return !invariantSettings.IsConstantProperty(component, "m_Enabled");
         }
 
-        private void Build(ObjectOptimizationState settings, bool collectObjects)
+        private void Build(ObjectOptimizationState settings, bool collectObjects, ShaderPropertyUsage shaderUsage)
         {
             Root(avatar.transform);
-            var shaderUsage = new ShaderPropertyUsage();
             var animatedGlobals = new HashSet<Component>(animations.Bindings.Where(u => u.Binding.type != null &&
                 typeof(VRCPhysBoneColliderBase).IsAssignableFrom(u.Binding.type) &&
                 (u.Binding.propertyName.StartsWith("globalCollision", StringComparison.Ordinal) || u.Binding.propertyName == "isGlobalCollider"))
@@ -160,8 +159,7 @@ namespace Noname.AvatarTools.Analysis
                     if (animator.applyRootMotion && !animator.isHuman)
                         foreach (var child in animator.GetComponentsInChildren<Transform>(true)) Edge(component, child);
                 }
-                // PhysBones also consume descendants that are not serialized individually.
-                // Keep ignored branches conservatively until the PhysBone specialization pass.
+                // PhysBones consume their included simulation chain, including endpoints.
                 if (component is VRCPhysBone physBone)
                 {
                     var physBoneTarget = physBone.rootTransform != null ? physBone.rootTransform : physBone.transform;
@@ -169,7 +167,7 @@ namespace Noname.AvatarTools.Analysis
                     // for surviving simulations, and collect it when its PhysBone is removed.
                     foreach (var helper in physBoneTarget.GetComponents<Component>().Where(ObjectOptimizationSafety.IsParentChangeDetector))
                         Edge(component, helper);
-                    foreach (var child in (physBone.rootTransform != null ? physBone.rootTransform : physBone.transform).GetComponentsInChildren<Transform>(true))
+                    foreach (var child in PhysBoneHierarchy.Included(physBone, animations))
                         Edge(component, child);
                 }
 
@@ -278,18 +276,21 @@ namespace Noname.AvatarTools.Analysis
         {
             if (owner == null || !inspected.Add(owner)) return;
             using var serialized = new SerializedObject(owner);
-            var property = serialized.GetIterator();
-            while (property.Next(true))
+            foreach (var property in SerializedReferences.Properties(serialized))
             {
-                if (property.propertyType != SerializedPropertyType.ObjectReference || property.propertyPath == "m_GameObject" ||
-                    property.propertyPath == "m_Script") continue;
+                if (property.propertyPath == "m_GameObject" || property.propertyPath == "m_Script") continue;
                 var reference = property.objectReferenceValue;
                 if (reference == null) continue;
                 // Native FT mesh references are output destinations, not input
                 // dependencies. A hidden, otherwise unused output must remain collectible.
                 bool nativeFaceOutput = owner is VRCAvatarDescriptor && property.propertyPath.StartsWith("faceTrackingMeshes.", StringComparison.Ordinal);
                 bool materialContactOutput = owner is VRCContactReceiver && property.propertyPath.StartsWith("shaderTargetRenderers.", StringComparison.Ordinal);
-                if (!nativeFaceOutput && !materialContactOutput) Edge(owner, reference);
+                // An exclusion is a traversal boundary, not a consumer of the excluded
+                // subtree. Retain it in ReferenceOwners so flattening cannot move a
+                // live child back into the simulation; an entirely dead branch can die.
+                bool ignoredBranch = owner is VRCPhysBone bone && PhysBoneHierarchy.FixedExclusions(bone, animations) &&
+                    property.propertyPath.StartsWith("ignoreTransforms.", StringComparison.Ordinal);
+                if (!nativeFaceOutput && !materialContactOutput && !ignoredBranch) Edge(owner, reference);
                 if (!ReferenceOwners.TryGetValue(reference, out var readers)) ReferenceOwners.Add(reference, readers = new());
                 readers.Add(owner);
                 // Traverse assets which can hold indirect scene references, without walking

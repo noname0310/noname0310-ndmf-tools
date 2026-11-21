@@ -37,6 +37,22 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             return context;
         }
 
+        [TestCase(BuildTarget.Android, true)] [TestCase(BuildTarget.iOS, true)] [TestCase(BuildTarget.StandaloneWindows64, false)]
+        public void AnimatedMaterialDefaultPolicyRespectsPlatformsAndMoreSpecificScopes(BuildTarget target, bool mobile)
+        {
+            var pair = MergePair(); MaterialDescriptor(); root.AddComponent<ALTOTraceAndOptimizeMeshes>();
+            var policy = MeshPolicy(coordinates: false);
+            Assert.That(policy.AllowAnimatedMaterialDefaultChanges, Is.False);
+            policy.AllowAnimatedMaterialDefaultChanges = true;
+            policy.ApplyOnPlatforms = OptimizationPlatforms.Android | OptimizationPlatforms.IOS;
+            MeshPolicy(coordinates: false, scope: pair.Second.transform);
+            var state = CaptureMeshPolicy(target).GetState<MeshOptimizationState>();
+            Assert.That(state.PermissionsFor(pair.First), Is.EqualTo(mobile ? MeshOptimizationPermissions.AnimatedMaterialDefaultChanges : MeshOptimizationPermissions.None));
+            Assert.That(state.PermissionsFor(pair.Second), Is.EqualTo(MeshOptimizationPermissions.None));
+            state.RecordPermissions(pair.First, MeshOptimizationPermissions.None);
+            Assert.That(state.PermissionsFor(pair.First), Is.EqualTo(MeshOptimizationPermissions.None));
+        }
+
         [Test]
         public void FreshMeshOptimizerUsesConservativePermissionsWithoutPlatformFields()
         {
@@ -57,7 +73,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var policy = MeshPolicy(reorder: true);
             policy.ApplyOnPlatforms = OptimizationPlatforms.Android | OptimizationPlatforms.IOS;
             var state = CaptureMeshPolicy(target).GetState<MeshOptimizationState>();
-            Assert.That(state.PermissionsFor(renderer), Is.EqualTo(expected ? MeshOptimizationPermissions.All : MeshOptimizationPermissions.None));
+            Assert.That(state.PermissionsFor(renderer), Is.EqualTo(expected ? MeshOptimizationPolicies.Permissions(true, true, true) : MeshOptimizationPermissions.None));
             Assert.That(root.GetComponentsInChildren<ALTOMeshOptimizationPolicy>(true), Is.Empty);
             Assert.That(state.Enabled, Is.True, "Platform policy selection does not disable the common optimizer.");
         }
@@ -84,7 +100,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             MeshPolicy(coordinates: false, scope: pair.First.transform);
             var state = CaptureMeshPolicy().GetState<MeshOptimizationState>();
             Assert.That(state.PermissionsFor(pair.First), Is.EqualTo(MeshOptimizationPermissions.None));
-            Assert.That(state.PermissionsFor(pair.Second), Is.EqualTo(MeshOptimizationPermissions.All));
+            Assert.That(state.PermissionsFor(pair.Second), Is.EqualTo(MeshOptimizationPolicies.Permissions(true, true, true)));
         }
 
         [Test]
@@ -136,7 +152,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var scope = PolicyChild("Generated scope"); MeshPolicy(reorder: true, scope: scope.transform);
             var state = CaptureMeshPolicy().GetState<MeshOptimizationState>();
             var generated = PolicyChild("Generated", scope.transform).AddComponent<SkinnedMeshRenderer>();
-            Assert.That(state.PermissionsFor(generated), Is.EqualTo(MeshOptimizationPermissions.All));
+            Assert.That(state.PermissionsFor(generated), Is.EqualTo(MeshOptimizationPolicies.Permissions(true, true, true)));
             Assert.That(state.PermissionsFor(renderer), Is.EqualTo(MeshOptimizationPermissions.None));
         }
 

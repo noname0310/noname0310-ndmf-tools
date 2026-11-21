@@ -15,41 +15,54 @@ namespace Noname.AvatarTools.Build
     // SDK generators must complete before this boundary. Authoring references protect
     // inputs during NDMF processing; only runtime outputs root the final dependency graph.
     // Current native paths are authoritative at this boundary. Mesh rewrites update
-    // the freshly opened controllers; transform reparenting remains in NDMF.
+    // the freshly opened controllers; checked hierarchy relocation commits native paths.
     internal static class FinalOutputOptimization
     {
         internal static void Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> entries,
             ResolvedParameterPolicy policy, ISet<string> frozen, ObjectOptimizationState objects,
             AnimatorOptimizationSettings animator, ExpressionSettings expressions, OptimizationBuildReport report,
-            Action<UnityEngine.Object> save, ISet<string> localCandidates, Func<int> optimizeMeshes = null)
+            Action<UnityEngine.Object> save, ISet<string> localCandidates, Func<int> optimizeMeshes = null,
+            Func<int> optimizePhysics = null, Func<int> optimizeStaticFrames = null, Action<AnalysisDomain> invalidate = null,
+            ShaderPropertyUsage shaders = null)
         {
+            shaders ??= new ShaderPropertyUsage();
             bool previous = objects.RuntimeDependenciesOnly;
             objects.RuntimeDependenciesOnly = true;
             // Late SDK writers can invalidate any proof captured before generation.
             objects.PrunedSensorInputs.Clear();
             var expressionReports = new List<ExpressionOptimizationReport>();
-            int changes, iterations = 0;
+            int iterations;
             try
             {
                 // Capture avatar-owned readers introduced by late generators before
                 // cleanup removes them. Private child inputs do not prove sensor use.
                 ObjectOptimizationPass.IncludeConsumers(objects, avatar, entries);
-                do
+                int Outputs()
                 {
-                    iterations++;
                     if (expressions != null)
                     {
                         ExpressionOptimizationPass.ApplyToAvatar(avatar, expressions, policy, frozen,
-                            entries, null, report, save, localCandidates, objects, animator);
+                            entries, null, report, save, localCandidates, objects, animator, shaders);
                         expressionReports.Add(report.Expressions);
                     }
                     bool expressionOwnsSensorProofs = expressions?.LocalParameters == true &&
                         avatar.GetComponent<VRCAvatarDescriptor>()?.expressionParameters != null;
                     // Expression cleanup already reaches its own fixed point. Only changes
                     // made afterwards can invalidate that result and require another round.
-                    changes = ApplyOutputs(avatar, entries, policy, objects, animator, report, expressionOwnsSensorProofs, frozen);
-                    changes += optimizeMeshes?.Invoke() ?? 0;
-                } while (changes != 0);
+                    return ApplyOutputs(avatar, entries, policy, objects, animator, report, expressionOwnsSensorProofs, frozen, shaders);
+                }
+                iterations = OptimizationWorklist.Run(new[]
+                {
+                    new OptimizationWorklist.Stage("runtime physics", AnalysisDomain.All, AnalysisDomain.Physics | AnalysisDomain.Hierarchy,
+                        () => optimizePhysics?.Invoke() ?? 0),
+                    new OptimizationWorklist.Stage("runtime static frames", AnalysisDomain.All,
+                        AnalysisDomain.Physics | AnalysisDomain.Meshes | AnalysisDomain.Hierarchy | AnalysisDomain.Animation,
+                        () => optimizeStaticFrames?.Invoke() ?? 0),
+                    new OptimizationWorklist.Stage("runtime consumers", AnalysisDomain.All,
+                        AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Physics | AnalysisDomain.ExternalInputs, Outputs),
+                    new OptimizationWorklist.Stage("runtime meshes", AnalysisDomain.All,
+                        AnalysisDomain.Meshes | AnalysisDomain.Hierarchy | AnalysisDomain.Animation, () => optimizeMeshes?.Invoke() ?? 0)
+                }, invalidate, report: report);
                 ExpressionOptimizationPass.MergeReports(expressionReports, report);
                 report.Messages.Add("Final runtime output analysis converged after " + iterations + " iterations.");
             }
@@ -58,7 +71,7 @@ namespace Noname.AvatarTools.Build
 
         private static int ApplyOutputs(GameObject avatar, IDictionary<object, VirtualAnimatorController> entries,
             ResolvedParameterPolicy policy, ObjectOptimizationState objects, AnimatorOptimizationSettings animator,
-            OptimizationBuildReport report, bool expressionOwnsSensorProofs, ISet<string> frozen)
+            OptimizationBuildReport report, bool expressionOwnsSensorProofs, ISet<string> frozen, ShaderPropertyUsage shaders)
         {
             if (!objects.Enabled && animator?.Enabled != true) return 0;
             var controllers = entries.Values.Distinct().ToArray();
@@ -84,14 +97,14 @@ namespace Noname.AvatarTools.Build
                     changes += SensorParameterPruning.Apply(avatar, controllers, objects, policy.Preserved, external,
                         report.Messages, frozenInputs: frozen);
                 if (objects.RemoveUnusedTransforms)
-                    changes += UnusedTransformOutputs.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages);
+                    changes += UnusedTransformOutputs.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages, shaders);
                 if (objects.RemoveRedundantConstraints)
                 {
-                    changes += ConstraintSourcePruning.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages);
-                    changes += RedundantConstraints.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages);
+                    changes += ConstraintSourcePruning.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages, shaders);
+                    changes += RedundantConstraints.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages, shaders);
                 }
                 if (objects.RemoveUnusedObjects)
-                    changes += UnusedObjectCollection.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages);
+                    changes += UnusedObjectCollection.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages, shaders);
             }
             if (animator?.Enabled == true)
             {

@@ -27,40 +27,53 @@ namespace Noname.AvatarTools.ParameterLayout
         internal float HoldSeconds = .15f;
         internal readonly HashSet<string> MultiplexNames = new(StringComparer.Ordinal);
         internal readonly List<string> MultiplexPrefixes = new();
-        internal readonly List<CompressedIntegerParameter> Integers = new();
-        internal readonly HashSet<string> KeepNative = new(StringComparer.Ordinal);
-        internal readonly List<string> KeepPrefixes = new();
+        internal readonly List<ResolvedParameterPrecisionRule> PrecisionRules = new();
+        internal ParameterInputAssumption InputAssumption;
+        internal bool AllowUnsignedBitReduction = true;
+        internal readonly List<ResolvedParameterKeepRule> Keep = new();
     }
 
     internal sealed class ParameterCompressionResult
     {
         internal List<IntegerEncoding> Integers = new();
         internal MultiplexEncoding Multiplexing;
+        internal List<FloatPrecisionEncoding> FloatPrecisions = new();
+        internal List<ParameterLayoutEntry> AvatarDriven = new();
     }
 
-    internal sealed class TransportPolicyPreservation
+    internal sealed class ResolvedParameterKeepRule
     {
         internal readonly HashSet<string> Names = new(StringComparer.Ordinal);
         internal readonly List<string> Prefixes = new();
+        internal int Priority = 100;
+    }
+
+    internal sealed class SharedCompressionSelections
+    {
+        internal bool Captured;
+        internal readonly List<ResolvedParameterKeepRule> Rules = new();
     }
 
     internal static class ParameterCompressionPass
     {
-        // Network representation is shared across platforms. A policy whose freezing
-        // only runs on Android can still require native inputs in the PC contract.
-        // Capture declarations still present here before policy markers are removed.
-        // Object-removing platform filters and generators remain a visibility boundary.
-        // ALTO's settings-only platform filter also contributes other-platform requirements;
-        // disabling their local optimization must not change the shared network contract.
-        internal static void CapturePolicyPreservation(BuildContext context)
+        // Capture before policy markers are removed. Only the component's own
+        // Preserve list is exported, never lists imported by its Freeze Mode.
+        // This keeps the two opt-in directions independent and avoids feedback.
+        internal static void CapturePolicySelections(BuildContext context)
         {
-            var avatar = context.AvatarRootObject;
-            if (!avatar.GetComponentsInChildren<ALTOParameterCompression>(true).Any(c => c.enabled &&
-                c.TimeMultiplexing == ParameterMultiplexingMode.AutomaticByPriority && BuildPlatformFilters.IncludesSettings(c.transform, context))) return;
-            var state = context.GetState<TransportPolicyPreservation>();
-            foreach (var policy in avatar.GetComponentsInChildren<ALTOAnimatorParameterPolicy>(true).Where(p => p.enabled &&
-                BuildPlatformFilters.IncludesSettingsOnAnyPlatform(p.transform, context, p.ApplyOnPlatforms)))
-                CaptureSelection(context, policy.PreserveParameters, state.Names, state.Prefixes);
+            var state = context.GetState<SharedCompressionSelections>();
+            state.Captured = true; state.Rules.Clear();
+            bool Visible(Behaviour component) => component.enabled && !ALTOPlugin.IsEditorOnly(component.transform) &&
+                BuildPlatformFilters.IncludesSettings(component.transform, context);
+            if (!context.AvatarRootObject.GetComponentsInChildren<ALTOParameterCompression>(true).Any(Visible)) return;
+            foreach (var policy in context.AvatarRootObject.GetComponentsInChildren<ALTOAnimatorParameterPolicy>(true)
+                .Where(p => Visible(p) && p.UsePreserveForCompression))
+            {
+                if (policy.CompressionPriority < 1) throw new InvalidOperationException("Policy Compression priority must be positive.");
+                var rule = new ResolvedParameterKeepRule { Priority = policy.CompressionPriority };
+                CaptureSelection(context, policy.PreserveParameters, rule.Names, rule.Prefixes);
+                state.Rules.Add(rule);
+            }
         }
 
         internal static ParameterCompressionSettings Capture(BuildContext context, bool hasLayout)
@@ -76,6 +89,7 @@ namespace Noname.AvatarTools.ParameterLayout
             {
                 var component = enabled[0];
                 if (!Enum.IsDefined(typeof(ParameterMultiplexingMode), component.TimeMultiplexing) ||
+                    !Enum.IsDefined(typeof(ParameterInputAssumption), component.InputAssumption) ||
                     !Enum.IsDefined(typeof(ParameterTransmissionMode), component.TransmissionMode) ||
                     (component.TimeMultiplexing != ParameterMultiplexingMode.Disabled &&
                     (component.TargetBitBudget < 16 || component.TargetBitBudget > 256 ||
@@ -83,44 +97,74 @@ namespace Noname.AvatarTools.ParameterLayout
                     throw new InvalidOperationException("Choose valid time multiplexing settings and budget.");
                 settings = new ParameterCompressionSettings { RemoveUnused = component.RemoveUnusedSynchronization,
                     Multiplexing = component.TimeMultiplexing, Transmission = component.TransmissionMode,
-                    Budget = component.TargetBitBudget, HoldSeconds = component.PacketHoldSeconds };
-                CaptureSelection(context, component.KeepNativeParameters, settings.KeepNative, settings.KeepPrefixes);
-                if (settings.Multiplexing == ParameterMultiplexingMode.AutomaticByPriority)
+                    Budget = component.TargetBitBudget, HoldSeconds = component.PacketHoldSeconds,
+                    InputAssumption = component.InputAssumption, AllowUnsignedBitReduction = component.AllowUnsignedBitReduction };
+                var shared = context.GetState<SharedCompressionSelections>();
+                if (!shared.Captured) CapturePolicySelections(context);
+                settings.Keep.AddRange(shared.Rules);
+                foreach (var rule in component.KeepParameters ?? new())
                 {
-                    var shared = context.GetState<TransportPolicyPreservation>();
-                    settings.KeepNative.UnionWith(shared.Names);
-                    settings.KeepPrefixes.AddRange(shared.Prefixes);
-                    if (shared.Names.Count != 0 || shared.Prefixes.Count != 0)
-                        context.GetState<OptimizationBuildReport>().Messages.Add("Automatic priority compression also retains native inputs required by visible " +
-                            "parameter policies on other platforms. Their freeze and object policies still run only on their selected platforms.");
+                    if (rule == null || rule.Priority < 1) throw new InvalidOperationException("Keep Parameters priorities must be positive.");
+                    var resolved = new ResolvedParameterKeepRule { Priority = rule.Priority };
+                    CaptureSelection(context, rule.Parameters, resolved.Names, resolved.Prefixes);
+                    settings.Keep.Add(resolved);
                 }
                 if (settings.Multiplexing == ParameterMultiplexingMode.SelectedInputs)
                     CaptureSelection(context, component.MultiplexedParameters, settings.MultiplexNames, settings.MultiplexPrefixes);
-                foreach (var rule in component.Integers ?? new())
+                foreach (var source in component.PrecisionSourceOverrides ?? new())
                 {
-                    if (rule == null || string.IsNullOrWhiteSpace(rule.Name))
-                        throw new InvalidOperationException("Each compressed integer needs a name. Remove unused rows.");
-                    IntegerEncoding.Width(rule.Minimum, rule.Maximum);
-                    string name = rule.Name;
-                    if (!ReferenceEquals(rule.Source, null) && rule.Source == null)
-                        throw new InvalidOperationException("The compression source was removed: " + name);
-                    if (rule.Source != null)
-                    {
-                        var resolved = ParameterSourceResolver.Resolve(new AnimatorParameterSource { Source = rule.Source },
-                            context.AvatarRootObject, context);
-                        var candidates = resolved.Parameters.Where(p => p.Name == name).ToArray();
-                        var names = candidates.Select(p => ParameterPolicyPass.ResolveName(context, p)).Distinct().ToArray();
-                        if (names.Length != 1 || candidates.Any(p => p.Owner == null) || resolved.Diagnostics.Count != 0)
-                            throw new InvalidOperationException("Cannot uniquely resolve compressed integer: " + name);
-                        name = names[0];
-                    }
-                    if (settings.Integers.Any(p => p.Name == name))
-                        throw new InvalidOperationException("Duplicate compressed integer: " + name);
-                    settings.Integers.Add(new CompressedIntegerParameter { Name = name, Minimum = rule.Minimum, Maximum = rule.Maximum });
+                    var rule = CapturePrecisionSettings(source);
+                    CaptureSelection(context, source.Parameters, rule.Names, rule.Prefixes);
+                    settings.PrecisionRules.Add(rule);
+                }
+                foreach (var individual in component.PrecisionOverrides ?? new())
+                {
+                    var rule = CapturePrecisionSettings(individual); rule.Individual = true; rule.Type = individual.Type;
+                    rule.Names.Add(ResolveSingleName(context, individual.Source, individual.Name));
+                    settings.PrecisionRules.Add(rule);
                 }
             }
             foreach (var component in all) Object.DestroyImmediate(component);
             return settings;
+        }
+
+        private static ResolvedParameterPrecisionRule CapturePrecisionSettings(ParameterPrecisionSettings source)
+        {
+            if (source == null) throw new InvalidOperationException("Remove empty precision override rows.");
+            if (source is ParameterPrecisionSourceOverride) ParameterPrecisionRules.Validate(source);
+            return new ResolvedParameterPrecisionRule
+            {
+                Floats = source.Floats == null ? null : new FloatPrecisionSettings { Precision = source.Floats.Precision, Bits = source.Floats.Bits, Representation = source.Floats.Representation },
+                Integers = source.Integers == null ? null : new IntegerRangeSettings { Range = source.Integers.Range, Minimum = source.Integers.Minimum, Maximum = source.Integers.Maximum }
+            };
+        }
+
+        internal static Dictionary<string, int> ResolveKeep(ParameterCompressionSettings settings,
+            IEnumerable<VRCExpressionParameters.Parameter> input, AnimatorParameterDependencies dependencies)
+        {
+            var priorities = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var rule in settings.Keep)
+            {
+                var roots = new HashSet<string>(rule.Names, StringComparer.Ordinal);
+                roots.UnionWith(input.Where(p => rule.Prefixes.Any(prefix => p.name.StartsWith(prefix, StringComparison.Ordinal))).Select(p => p.name));
+                foreach (var name in dependencies.Expand(roots).Concat(roots))
+                    priorities[name] = priorities.TryGetValue(name, out int previous) ? Math.Max(previous, rule.Priority) : rule.Priority;
+            }
+            return priorities;
+        }
+
+        private static string ResolveSingleName(BuildContext context, Object source, string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) throw new InvalidOperationException("Each individual parameter override needs a name. Remove unused rows.");
+            if (!ReferenceEquals(source, null) && source == null)
+                throw new InvalidOperationException("The parameter override source was removed: " + name);
+            if (source == null) return name;
+            var resolved = ParameterSourceResolver.Resolve(new AnimatorParameterSource { Source = source }, context.AvatarRootObject, context);
+            var candidates = resolved.Parameters.Where(p => p.Name == name).ToArray();
+            var names = candidates.Select(p => ParameterPolicyPass.ResolveName(context, p)).Distinct().ToArray();
+            if (names.Length != 1 || candidates.Any(p => p.Owner == null) || resolved.Diagnostics.Count != 0)
+                throw new InvalidOperationException("Cannot uniquely resolve parameter override: " + name);
+            return names[0];
         }
 
         private static void CaptureSelection(BuildContext context, AnimatorParameterSelection selection, ISet<string> names, ICollection<string> prefixes)
@@ -169,7 +213,8 @@ namespace Noname.AvatarTools.ParameterLayout
         {
             if (settings == null)
             {
-                if (reference?.IntegerEncodings?.Count > 0 || reference?.Multiplexing != null)
+                if (reference?.IntegerEncodings?.Count > 0 || reference?.Multiplexing != null || reference?.FloatPrecisionOverrides?.Count > 0 ||
+                    reference?.AvatarDrivenEncodings?.Count > 0)
                     throw new InvalidOperationException("The reference layout uses compression. Enable ALTO Parameter Compression on this platform too.");
                 return new();
             }
@@ -178,17 +223,24 @@ namespace Noname.AvatarTools.ParameterLayout
             var descriptor = avatar.GetComponent<VRCAvatarDescriptor>();
             var original = descriptor.expressionParameters;
             var input = ParameterLayoutModel.Read(original?.parameters);
+            int before = MultiplexEncoding.Cost(input);
+            var overrides = reference == null ? ParameterPrecisionRules.Resolve(settings.PrecisionRules, input) : new ResolvedParameterPrecisions();
+            var precisions = reference != null ? reference.FloatPrecisionOverrides ?? new() :
+                overrides.Floats;
+            input = FloatPrecisionOverrides.Apply(input, precisions);
+            var minimumPrecision = precisions.Where(p => p.MinimumPrecision).Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
             var clone = new CloneContext(VRChatPlatformAnimatorBindings.Instance);
             var entries = new Dictionary<object, VirtualAnimatorController>();
             foreach (var (key, controller, _) in VRChatPlatformAnimatorBindings.Instance.GetInnateControllers(avatar))
                 if (controller != null) entries[key] = clone.Clone(controller, key);
             var controllers = entries.Values.Distinct().ToArray();
-            var policy = ParameterPolicyPass.Resolve(context, entries);
-            if (policy.Uncertain) throw new InvalidOperationException("Cannot compress an uncertain parameter preservation mapping.");
-            var protectionRoots = new HashSet<string>(policy.Roots, StringComparer.Ordinal);
-            protectionRoots.UnionWith(settings.KeepNative);
-            protectionRoots.UnionWith(input.Where(p => settings.KeepPrefixes.Any(prefix => p.name.StartsWith(prefix, StringComparison.Ordinal))).Select(p => p.name));
-            var preserve = AnimatorParameterDependencies.Collect(avatar, controllers, controllerEntries: entries).Expand(protectionRoots);
+            // Transport inputs combine this component's Keep list with explicitly
+            // shared Policy Preserve lists. Freeze values never define transport.
+            var dependencies = AnimatorParameterDependencies.Collect(avatar, controllers, controllerEntries: entries);
+            var keepPriorities = ResolveKeep(settings, input, dependencies);
+            var protectionRoots = keepPriorities.Keys.ToHashSet(StringComparer.Ordinal);
+            var preserve = settings.InputAssumption == ParameterInputAssumption.AvatarDrivenExceptListed
+                ? new HashSet<string>(protectionRoots, StringComparer.Ordinal) : new HashSet<string>(StringComparer.Ordinal);
             preserve.UnionWith(AnimatorReachability.BuiltIns);
             var declared = input.ToDictionary(p => p.name, StringComparer.Ordinal);
             var occupied = new HashSet<string>(input.Select(p => p.name).Concat(controllers.SelectMany(c => c.Parameters.Keys)), StringComparer.Ordinal);
@@ -196,7 +248,7 @@ namespace Noname.AvatarTools.ParameterLayout
             occupied.UnionWith(new NativeFaceTracking(avatar).ForwardedParameters());
             occupied.UnionWith(ExpressionMenuOptimizer.Menus(descriptor.expressionsMenu).SelectMany(m => m.controls ?? new())
                 .Where(c => c != null).SelectMany(ExpressionMenuOptimizer.Parameters));
-            var encodings = reference?.IntegerEncodings ?? settings.Integers.Select(rule =>
+            var encodings = reference?.IntegerEncodings ?? overrides.Integers.Select(rule =>
                 declared.TryGetValue(rule.Name, out var parameter) ? IntegerEncoding.CreateForSdk(parameter, rule.Minimum, rule.Maximum, occupied)
                     : throw new InvalidOperationException("Compressed integer is absent: " + rule.Name)).ToList();
             var active = new List<IntegerEncoding>();
@@ -209,7 +261,7 @@ namespace Noname.AvatarTools.ParameterLayout
                     continue; // A removed/frozen feature gets anonymous wire padding, never a decoder.
                 }
                 if (preserve.Contains(encoding.Name)) throw new InvalidOperationException("Preserved parameter conflicts with integer compression: " + encoding.Name);
-                if (reference != null && encoding.Bits.Any(occupied.Contains))
+                if (reference != null && encoding.WireNames.Any(occupied.Contains))
                     throw new InvalidOperationException("Recorded integer wire name collides with a parameter on this platform: " + encoding.Name);
                 if (controllers.Any(c => c.Parameters.TryGetValue(encoding.Name, out var p) && p.type != AnimatorControllerParameterType.Int))
                     throw new InvalidOperationException("Compressed integer has conflicting controller types: " + encoding.Name);
@@ -230,40 +282,32 @@ namespace Noname.AvatarTools.ParameterLayout
             // Each explicitly encoded integer has one recorded transport contract.
             // Do not multiplex a native narrowed integer or its packed wire bits again.
             preserve.UnionWith(encodings.Select(e => e.Name));
-            preserve.UnionWith(encodings.SelectMany(e => e.Bits));
+            preserve.UnionWith(encodings.SelectMany(e => e.WireNames));
             MultiplexEncoding multiplex = reference?.Multiplexing;
+            var avatarDriven = reference?.AvatarDrivenEncodings ?? new List<ParameterLayoutEntry>();
             if (multiplex != null && settings.Multiplexing == ParameterMultiplexingMode.Disabled)
                 throw new InvalidOperationException("The reference upload uses time multiplexing. Enable it on this platform too.");
-            if (reference == null && settings.Multiplexing == ParameterMultiplexingMode.AutomaticByPriority)
+            if (reference == null)
             {
-                var warnings = new List<string>();
-                multiplex = MultiplexPriorities.Analyze(avatar, controllers, preserve, entries)
-                    .Plan(output, settings.Budget, settings.HoldSeconds, occupied, report.Messages, warnings);
-                foreach (string warning in warnings)
+                var excluded = precisions.Select(p => p.Name).Concat(encodings.Select(e => e.Name)).ToHashSet(StringComparer.Ordinal);
+                excluded.UnionWith(overrides.SelectedIntegers);
+                var candidates = settings.InputAssumption == ParameterInputAssumption.AvatarDrivenExceptListed && settings.AllowUnsignedBitReduction
+                    ? AvatarDrivenEncodingAnalysis.Analyze(avatar, controllers, output, preserve, excluded, report.Messages) : new List<ParameterLayoutEntry>();
+                var planned = ParameterTransportPlanning.Choose(avatar, controllers, entries, settings, output, preserve, keepPriorities,
+                    minimumPrecision, occupied, candidates, report);
+                output = planned.Parameters; multiplex = planned.Multiplexing; avatarDriven = planned.AvatarDriven;
+                report.Messages.AddRange(planned.Messages);
+                foreach (string warning in planned.Warnings)
                 {
                     report.Messages.Add("Warning: " + warning);
                     Debug.LogWarning("[ALTO] " + warning, avatar);
                 }
             }
-            else if (reference == null && settings.Multiplexing != ParameterMultiplexingMode.Disabled)
+            else
             {
-                var selection = settings.Multiplexing == ParameterMultiplexingMode.AutomaticMenuInputs
-                    ? MultiplexSelection.Analyze(avatar, controllers, preserve, report.Messages, entries) : null;
-                var eligible = settings.Multiplexing == ParameterMultiplexingMode.AutomaticMenuInputs
-                    ? selection.Eligible
-                    : settings.Multiplexing == ParameterMultiplexingMode.AllSynchronizedInputs
-                    ? input.Where(p => p.networkSynced).Select(p => p.name).ToHashSet(StringComparer.Ordinal)
-                    : new HashSet<string>(settings.MultiplexNames, StringComparer.Ordinal);
-                if (settings.Multiplexing == ParameterMultiplexingMode.SelectedInputs)
-                    eligible.UnionWith(input.Where(p => settings.MultiplexPrefixes.Any(prefix => p.name.StartsWith(prefix, StringComparison.Ordinal))).Select(p => p.name));
-                eligible.ExceptWith(preserve);
-                eligible.ExceptWith(encodings.SelectMany(e => e.Bits));
-                if (settings.Multiplexing == ParameterMultiplexingMode.AllSynchronizedInputs)
-                    report.Messages.Add("All Synchronized Inputs explicitly permits snapshot delay for continuous and momentary inputs. " +
-                        "Keep Native and policy preservation still apply; brief changes between snapshots can be missed.");
-                try { multiplex = MultiplexEncoding.Plan(output, eligible, settings.Budget, settings.HoldSeconds, occupied); }
-                catch (InvalidOperationException exception) when (selection != null)
-                { throw new InvalidOperationException(exception.Message + " Selection: " + selection.Summary(output), exception); }
+                if (avatarDriven.Any(p => preserve.Contains(p.Name) && output.Any(o => o.name == p.Name && o.networkSynced)))
+                    throw new InvalidOperationException("External input protection conflicts with a recorded avatar-driven encoding. Rebuild the reference platform.");
+                output = AvatarDrivenEncodingAnalysis.Apply(output, avatarDriven);
             }
             var multiplexActive = new HashSet<string>(StringComparer.Ordinal);
             var fallback = new Dictionary<string, float>(StringComparer.Ordinal);
@@ -314,18 +358,30 @@ namespace Noname.AvatarTools.ParameterLayout
                 }
                 finally { AnimatorAssetPersistence.Commit(context, current, save); }
             }
-            if (active.Count != 0 || unused.Count != 0 || multiplex != null)
+            if (active.Count != 0 || unused.Count != 0 || multiplex != null || precisions.Count != 0 || avatarDriven.Count != 0)
             {
                 var copy = original != null ? Object.Instantiate(original) : ScriptableObject.CreateInstance<VRCExpressionParameters>();
                 copy.name = "Compressed Expression Parameters"; copy.parameters = output; save(copy);
                 if (original != null) ObjectRegistry.RegisterReplacedObject(original, copy);
                 descriptor.expressionParameters = copy;
             }
-            int before = MultiplexEncoding.Cost(input);
             int after = MultiplexEncoding.Cost(output);
             report.Messages.Add("Parameter transport: " + before + " -> " + after + " bits; " + active.Count +
                 " Ints encoded; " + unused.Count + " unused synchronized inputs kept local. Logical names and Saved values retained.");
             foreach (var name in unused.OrderBy(n => n, StringComparer.Ordinal)) report.Messages.Add("Unused synchronized input kept local: " + name);
+            foreach (var encoding in active)
+                report.Messages.Add("Integer encoding: " + encoding.Name + ": " + (encoding.IsNative
+                    ? encoding.NativeBitWidth + "-bit native Int; no codec layer"
+                    : encoding.IsRemapped ? encoding.NativeBitWidth + "-bit remapped Int" : encoding.Bits.Count + " Bool wire bits (recorded or two-value range)"));
+            foreach (var precision in precisions)
+            {
+                var member = multiplex?.Inputs.FirstOrDefault(p => p.Name == precision.Name);
+                int actualBits = member != null ? multiplex.Slots[member.Slot].Cost : precision.Cost;
+                report.Messages.Add("Float precision override: " + precision.Name + ": " +
+                    (precision.MinimumPrecision ? "minimum " : "exact ") + precision.Cost + " bits, " +
+                    (precision.FlippedRepresentation ? "unsigned" : "signed") + "; " + actualBits + "-bit " +
+                    (member != null ? "shared slot" : output.Any(p => p.name == precision.Name && p.networkSynced) ? "direct synchronization" : "local input"));
+            }
             if (multiplex != null)
                 report.Messages.Add("Time multiplexing: " + multiplex.Inputs.Count + " inputs, " + multiplex.Slots.Count +
                     " typed payload slots, " + multiplex.Batches + " batches; " + (multiplex.Protocol == 2 ? "Low Latency" : "Guarded") +
@@ -335,7 +391,9 @@ namespace Noname.AvatarTools.ParameterLayout
             if (multiplex?.Protocol == 2)
                 report.Messages.Add("Low Latency transport assumes coherent packet field delivery. Every " + Math.Min(4, multiplex.EpochCount) +
                     "th sweep holds publications longer for slow observers. This does not guarantee delivery under arbitrary loss or field skew.");
-            return new ParameterCompressionResult { Integers = encodings, Multiplexing = multiplex };
+            var recordedPrecisions = reference != null ? precisions : precisions.Where(p =>
+                output.Any(o => o.name == p.Name && o.networkSynced) || multiplex?.Inputs.Any(i => i.Name == p.Name) == true).ToList();
+            return new ParameterCompressionResult { Integers = encodings, Multiplexing = multiplex, FloatPrecisions = recordedPrecisions, AvatarDriven = avatarDriven };
         }
     }
 }

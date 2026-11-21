@@ -50,6 +50,8 @@ namespace Noname.AvatarTools.Analysis
         private readonly Dictionary<VirtualAnimatorController, HashSet<Type>> controllerBindingTypes = new();
         private BooleanAnimationEquivalence booleanSignals;
         internal BooleanAnimationEquivalence BooleanSignals => booleanSignals ??= new BooleanAnimationEquivalence(this);
+        private MaterialAnimationInputs materialInputs;
+        internal MaterialAnimationInputs MaterialInputs => materialInputs ??= new MaterialAnimationInputs(this);
 
         internal bool Writes(UnityEngine.Object target, string property) => writes.Contains((target, property));
         internal IReadOnlyList<BindingUse> ForObject(UnityEngine.Object target) =>
@@ -81,9 +83,15 @@ namespace Noname.AvatarTools.Analysis
             var dependencies = preserved.Count == 0 ? null : AnimatorParameterDependencies.Collect(avatar, result.Controllers,
                 forExpressions: true, controllerEntries: controllers);
             var resolutions = new Dictionary<(VirtualClip, string), (Transform[] Targets, bool Complete)>();
+            // Clips share animation roots and paths. Resolve each root/path once
+            // while constructing this immutable snapshot, including missing and
+            // ambiguous paths. Never reuse these results after a hierarchy edit.
+            var rootPaths = new Dictionary<(Transform, string), List<Transform>>();
+            var components = new Dictionary<(Transform, Type), UnityEngine.Object[]>();
             foreach (var pair in owners)
             {
                 var clip = pair.Key;
+                var roots = pair.Value.ToArray();
                 var source = MotionAnalysis.Source(clip);
                 if (source == null || source.events.Length > 0)
                     result.UnsafeReason ??= "animation events or unavailable clip metadata: " + clip.Name;
@@ -99,9 +107,10 @@ namespace Noname.AvatarTools.Analysis
                     {
                         var targets = new HashSet<Transform>();
                         bool complete = true;
-                        foreach (var owner in pair.Value)
+                        foreach (var owner in roots)
                         {
-                            var found = AnimationUsage.Resolve(avatar.transform, owner, binding.path, paths);
+                            if (!rootPaths.TryGetValue((owner, binding.path), out var found))
+                                rootPaths.Add((owner, binding.path), found = AnimationUsage.Resolve(avatar.transform, owner, binding.path, paths));
                             complete &= found.Count == 1;
                             targets.UnionWith(found);
                         }
@@ -109,7 +118,7 @@ namespace Noname.AvatarTools.Analysis
                     }
                     var use = new BindingUse
                     {
-                        Clip = clip, Binding = binding, Targets = resolution.Targets, Roots = pair.Value.ToArray(), Complete = resolution.Complete,
+                        Clip = clip, Binding = binding, Targets = resolution.Targets, Roots = roots, Complete = resolution.Complete,
                         Immutable = immutable, PreservedInput = preservedInput,
                         Curve = binding.isPPtrCurve ? null : clip.IsMarkerClip && source != null ?
                             AnimationUtility.GetEditorCurve(source, binding) : clip.GetFloatCurve(binding),
@@ -117,12 +126,22 @@ namespace Noname.AvatarTools.Analysis
                             AnimationUtility.GetObjectReferenceCurve(source, binding) : clip.GetObjectCurve(binding)
                     };
                     result.Bindings.Add(use);
-                    foreach (var target in use.Objects())
+                    foreach (var transform in use.Targets)
                     {
-                        if (target == null) continue;
-                        result.writes.Add((target, binding.propertyName));
-                        if (!result.writers.TryGetValue(target, out var uses)) result.writers.Add(target, uses = new());
-                        uses.Add(use);
+                        if (!components.TryGetValue((transform, binding.type), out var targets))
+                        {
+                            targets = binding.type == typeof(GameObject) ? new UnityEngine.Object[] { transform.gameObject } :
+                                binding.type != null && typeof(Component).IsAssignableFrom(binding.type) ?
+                                    transform.GetComponents(binding.type) : Array.Empty<UnityEngine.Object>();
+                            components.Add((transform, binding.type), targets);
+                        }
+                        foreach (var target in targets)
+                        {
+                            if (target == null) continue;
+                            result.writes.Add((target, binding.propertyName));
+                            if (!result.writers.TryGetValue(target, out var uses)) result.writers.Add(target, uses = new());
+                            uses.Add(use);
+                        }
                     }
                 }
             }

@@ -118,8 +118,11 @@ namespace Noname.AvatarTools.Meshes
         }
 
         internal static void Apply(BuildContext context)
+            => ApplyAndCountChanges(context);
+
+        internal static int ApplyAndCountChanges(BuildContext context)
         {
-            try { ApplyCore(context); }
+            try { return ApplyCore(context); }
             finally
             {
                 CaptureMappedInputs(context.GetState<MeshOptimizationState>());
@@ -134,14 +137,14 @@ namespace Noname.AvatarTools.Meshes
                 settings.Inputs[i] = (settings.Component.BuildInputRenderers[i], settings.Inputs[i].InScope, settings.Inputs[i].Preserved);
         }
 
-        private static void ApplyCore(BuildContext context)
+        private static int ApplyCore(BuildContext context)
         {
-            if (!context.GetState<MeshOptimizationState>().Enabled) return;
+            if (!context.GetState<MeshOptimizationState>().Enabled) return 0;
             using var lease = OptimizationSession.Acquire(context);
             var services = lease.Services;
             var entries = services.ControllerContext.Controllers.Where(e => !(e.Key is Object owner) || owner != null).ToDictionary(e => e.Key, e => e.Value);
             var policy = ParameterPolicyPass.Resolve(context, entries);
-            ApplyCore(context, entries, policy, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
+            return ApplyCore(context, entries, policy, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
                 services.ObjectPathRemapper.GetVirtualPathForObject, mesh => context.AssetSaver.SaveAsset(mesh), false);
         }
 
@@ -172,7 +175,8 @@ namespace Noname.AvatarTools.Meshes
             { Scope = new OptimizationBuildScope { Root = avatar.transform }, RuntimeDependenciesOnly = runtimeDependenciesOnly };
             referenceSettings.ProtectedComponents.UnionWith(objectSettings.ProtectedComponents);
             referenceSettings.ProtectedSubtrees.AddRange(objectSettings.ProtectedSubtrees);
-            var references = AvatarDependencyGraph.Create(avatar, animations, referenceSettings, collectObjects: false);
+            var references = AvatarDependencyGraph.Create(avatar, animations, referenceSettings, collectObjects: false,
+                shaders: context.GetState<OptimizationAnalysis>().Shaders);
             int converted = 0, weighted = 0;
             if (settings.MayConvertRigid)
             {
@@ -182,7 +186,10 @@ namespace Noname.AvatarTools.Meshes
                     if ((permissions & MeshOptimizationPermissions.RigidConversion) == 0) continue;
                     if (settings.Preserved.Contains(ObjectRegistry.GetReference(renderer)) || objectSettings.Protected(renderer) || InputProtected(settings, renderer, out _)) continue;
                     string issue = RigidMeshConversion.ValidateExplicitConversion(renderer, animations, references,
-                        context.GetState<OptimizationAnalysis>().Shaders, true);
+                        context.GetState<OptimizationAnalysis>().Shaders, true,
+                        (permissions & MeshOptimizationPermissions.TransparentSortingChanges) != 0,
+                        context.GetState<OptimizationBuildEnvironment>().Target,
+                        (permissions & MeshOptimizationPermissions.ShaderIndexChanges) != 0);
                     if (issue != null) { report.Messages.Add("Rigid renderer retained '" + renderer.name + "': " + issue + "."); continue; }
                     var convertedRenderer = RigidMeshConversion.Convert(renderer, animations, save);
                     settings.RecordPermissions(convertedRenderer, permissions); converted++;
@@ -191,13 +198,17 @@ namespace Noname.AvatarTools.Meshes
                 {
                     settings.Changed = true;
                     animations = AvatarAnimationIndex.Create(avatar, entries, paths, policy.Preserved);
-                    references = AvatarDependencyGraph.Create(avatar, animations, referenceSettings, collectObjects: false);
+                    references = AvatarDependencyGraph.Create(avatar, animations, referenceSettings, collectObjects: false,
+                        shaders: context.GetState<OptimizationAnalysis>().Shaders);
                     renderers = avatar.GetComponentsInChildren<SkinnedMeshRenderer>(true).Where(r => settings.Scope.Contains(r.transform)).ToArray();
                 }
             }
-            var mutations = TransformMutationAnalysis.Create(avatar, animations);
+            var mutations = TransformMutationAnalysis.Create(avatar, animations, objectSettings.AssumeFixedHumanoidBoneScale);
+            int independentlyRebound = StaticSkinningOptimization.Apply(avatar, settings, objectSettings,
+                animations, references, new StaticTransformProof(avatar, animations, objectSettings), save);
             var permissionsByRenderer = renderers.ToDictionary(r => (Renderer)r, settings.PermissionsFor);
             var mergePolicy = new MeshMergePolicy { ExpandBounds = settings.ExpandBounds,
+                Target = context.GetState<OptimizationBuildEnvironment>().Target,
                 PermissionsFor = renderer => permissionsByRenderer[renderer], Mutations = mutations };
             var candidates = new List<MeshMergeCandidate>();
             var invariants = animations.Bindings.Any(u => u.Binding.propertyName == MeshMergeAnalysis.UpdateWhenOffscreenProperty) ?
@@ -220,15 +231,7 @@ namespace Noname.AvatarTools.Meshes
                 else report.Messages.Add("Mesh retained '" + renderer.name + "': " + reason + ".");
             }
             var skinning = new Dictionary<SkinnedMeshRenderer, StaticSkinningPlan>();
-            if (settings.RebindStaticBones)
-            {
-                if (mutations.Uncertain != null) report.Messages.Add("Static skin bones retained: " + mutations.Uncertain + ".");
-                else foreach (var candidate in candidates)
-                    skinning.Add(candidate.Renderer, StaticSkinningPlan.Create(candidate.Renderer, bone =>
-                        bone != avatar.transform && bone.IsChildOf(avatar.transform) && settings.Scope.Contains(bone) &&
-                        !(bone is RectTransform) && !mutations.Mutable.Contains(bone) && !objectSettings.Protected(bone)));
-            }
-            int removed = 0, slots = 0, groups = 0, vertices = 0, palette = 0, rebound = 0, equivalentVisibility = 0;
+            int removed = 0, slots = 0, groups = 0, vertices = 0, palette = 0, rebound = independentlyRebound, equivalentVisibility = 0;
             var partitions = MeshMergeAnalysis.Group(candidates, settings.MergeRenderers, mergePolicy);
             foreach (var partition in partitions.Skip(1))
             {
@@ -256,6 +259,12 @@ namespace Noname.AvatarTools.Meshes
                     continue;
                 }
                 var destination = group[0].Renderer;
+                if ((permissions & MeshOptimizationPermissions.AnimatedMaterialDefaultChanges) != 0)
+                    foreach (var candidate in group.Skip(1))
+                        foreach (var change in animations.MaterialInputs.DefaultChanges(destination, candidate.Renderer))
+                            report.Messages.Add("Animated material default changed by explicit mesh policy: '" + candidate.Renderer.name + "' " +
+                                change.Property + " from " + change.Previous.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + " to " +
+                                change.Retained.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + " (retained renderer '" + destination.name + "').");
                 if (group.Skip(1).Any(c => !MeshMergeAnalysis.SameVisibility(group[0], c, semantic: false))) equivalentVisibility++;
                 int oldVertices = group.Sum(c => c.Renderer.sharedMesh.vertexCount), oldPalette = group.Sum(c => c.Renderer.bones.Length);
                 Merge(group, pathFor(destination.transform), settings.MergeSlots,
@@ -273,7 +282,7 @@ namespace Noname.AvatarTools.Meshes
                 permissionsByRenderer.Values.Count(p => (p & MeshOptimizationPermissions.MaterialSlotReordering) != 0) + " inspected renderers" +
                 "; " + equivalentVisibility + " groups use equivalent Animator visibility outputs; " + watch.ElapsedMilliseconds + " ms.");
             context.GetState<OptimizationAnalysis>().Invalidate(AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Meshes);
-            return groups + converted + weighted;
+            return groups + converted + weighted + independentlyRebound;
         }
 
         internal static void Merge(IReadOnlyList<MeshMergeCandidate> group, string destinationPath, bool mergeSlots, Action<Mesh> save, bool removeUnusedData = false,

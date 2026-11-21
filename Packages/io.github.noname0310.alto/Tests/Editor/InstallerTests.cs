@@ -48,6 +48,79 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(template.GetComponentInChildren<ALTOMaterialAtlas>().MergeGroups.Single().ReferenceMaterial,
                 Is.EqualTo(AssetDatabase.LoadAssetAtPath<Material>(ALTOInstallerWindow.MobileMaterialPath)));
             Assert.That(AssetDatabase.GetDependencies(AvatarInstaller.TemplatePath).Any(p => p.StartsWith("Assets/", StringComparison.Ordinal)), Is.False);
+            foreach (var policy in template.GetComponentsInChildren<ALTOMeshOptimizationPolicy>(true))
+            {
+                bool mobile = policy.transform == template.transform.Find("Mobile/Policies");
+                Assert.That(policy.enabled, Is.EqualTo(mobile));
+                Assert.That(policy.AllowCoordinateSpaceChanges, Is.EqualTo(mobile));
+                Assert.That(policy.AllowTransparentSortingChanges, Is.EqualTo(mobile));
+                Assert.That(policy.AllowShaderIndexChanges, Is.False);
+                Assert.That(policy.AllowAnimatedMaterialDefaultChanges, Is.EqualTo(mobile));
+            }
+        }
+
+        [Test, Combinatorial, Category("Installer")]
+        public void InstallerCommonMeshChoicesReachExactlyTheSelectedPlatforms(
+            [Values(false, true)] bool mobileSetup, [Values(false, true)] bool mobileOnly,
+            [Values(false, true)] bool allowCommonChanges, [Values(false, true)] bool allowMobileChanges,
+            [Values(BuildTarget.StandaloneWindows64, BuildTarget.Android, BuildTarget.iOS)] BuildTarget target)
+        {
+            var draft = InstallerChoices(mobileSetup);
+            Assert.That(draft.CommonAllowCoordinateSpaceChanges || draft.CommonAllowTransparentSortingChanges, Is.False);
+            Assert.That(draft.AllowCoordinateSpaceChanges && draft.AllowTransparentSortingChanges, Is.True);
+            draft.CommonMobileOnly = mobileOnly;
+            draft.CommonAllowCoordinateSpaceChanges = draft.CommonAllowTransparentSortingChanges = allowCommonChanges;
+            draft.AllowCoordinateSpaceChanges = draft.AllowTransparentSortingChanges = allowMobileChanges;
+            InstallerSettings(draft);
+            var context = CaptureMeshPolicy(target);
+            bool mobileTarget = target != BuildTarget.StandaloneWindows64;
+            bool commonApplies = !mobileOnly || mobileTarget;
+            bool allowChanges = mobileSetup && mobileTarget ? allowMobileChanges : allowCommonChanges;
+            var expected = MeshOptimizationPolicies.Permissions(commonApplies && allowChanges, true,
+                mobileSetup && mobileTarget, commonApplies && allowChanges,
+                animatedMaterialDefaults: mobileSetup && mobileTarget);
+            var state = context.GetState<MeshOptimizationState>();
+            Assert.That(state.Enabled, Is.EqualTo(commonApplies));
+            Assert.That(state.PermissionsFor(renderer), Is.EqualTo(expected));
+        }
+
+        [Test, Category("Installer")]
+        public void InstallerShaderIndexChoicesRemainIndependentAndDefaultOff()
+        {
+            var draft = InstallerChoices(true);
+            Assert.That(draft.CommonAllowShaderIndexChanges || draft.AllowShaderIndexChanges, Is.False);
+            draft.CommonAllowShaderIndexChanges = true;
+            var settings = InstallerSettings(draft);
+            var common = settings.transform.Find("Common/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
+            var mobile = settings.transform.Find("Mobile/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
+            Assert.That(common.enabled && common.AllowShaderIndexChanges, Is.True);
+            Assert.That(common.AllowCoordinateSpaceChanges || common.AllowTransparentSortingChanges, Is.False);
+            Assert.That(common.ApplyOnPlatforms, Is.EqualTo(OptimizationPlatforms.PC));
+            Assert.That(mobile.AllowShaderIndexChanges, Is.False);
+            draft.CommonAllowShaderIndexChanges = false; draft.AllowShaderIndexChanges = true;
+            settings = InstallerSettings(draft);
+            common = settings.transform.Find("Common/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
+            mobile = settings.transform.Find("Mobile/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
+            Assert.That(common.enabled || common.AllowShaderIndexChanges, Is.False);
+            Assert.That(mobile.AllowShaderIndexChanges, Is.True);
+            Assert.That(mobile.ApplyOnPlatforms, Is.EqualTo(OptimizationPlatforms.Android | OptimizationPlatforms.IOS));
+        }
+
+        [Test, Category("Installer")]
+        public void InstallerMaterialDefaultChoicesEnableMobileOnlyAndCanBeReversed()
+        {
+            var draft = InstallerChoices(true);
+            Assert.That(draft.CommonAllowAnimatedMaterialDefaultChanges, Is.False);
+            Assert.That(draft.AllowAnimatedMaterialDefaultChanges, Is.True);
+            draft.CommonAllowAnimatedMaterialDefaultChanges = true;
+            draft.AllowAnimatedMaterialDefaultChanges = false;
+            var settings = InstallerSettings(draft);
+            var common = settings.transform.Find("Common/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
+            var mobile = settings.transform.Find("Mobile/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
+            Assert.That(common.enabled && common.AllowAnimatedMaterialDefaultChanges, Is.True);
+            Assert.That(common.AllowShaderIndexChanges || common.AllowCoordinateSpaceChanges || common.AllowTransparentSortingChanges, Is.False);
+            Assert.That(common.ApplyOnPlatforms, Is.EqualTo(OptimizationPlatforms.PC));
+            Assert.That(mobile.AllowAnimatedMaterialDefaultChanges, Is.False);
         }
 
         [Test, Category("Installer")]
@@ -264,10 +337,10 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(foreign != null, Is.True);
         }
 
-        [TestCase(OptimizationPlatforms.Android | OptimizationPlatforms.IOS, true), Category("Installer")]
-        [TestCase(OptimizationPlatforms.PC, false)]
+        [TestCase(OptimizationPlatforms.Android | OptimizationPlatforms.IOS, false), Category("Installer")]
+        [TestCase(OptimizationPlatforms.PC, true)]
         [TestCase(OptimizationPlatforms.None, false)]
-        public void InstallerMobilePreservationStillProtectsPcSynchronization(OptimizationPlatforms platforms, bool preserved)
+        public void InstallerMobilePreservationSharesPcPrioritySubjectToParentFilters(OptimizationPlatforms platforms, bool preserved)
         {
             var draft = InstallerChoices(true); draft.ParameterCompression = draft.ParameterLayout = true;
             draft.PreserveParameters.Names.Add("External input");
@@ -276,8 +349,9 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var context = new BuildContext(root, null);
             typeof(OptimizationBuildEnvironment).GetField("Target", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
                 .SetValue(context.GetState<OptimizationBuildEnvironment>(), BuildTarget.StandaloneWindows64);
-            ParameterCompressionPass.CapturePolicyPreservation(context); ParameterPolicyPass.Capture(context);
-            Assert.That(context.GetState<TransportPolicyPreservation>().Names.Contains("External input"), Is.EqualTo(preserved));
+            ParameterPolicyPass.Capture(context);
+            var compression = ParameterCompressionPass.Capture(context, true);
+            Assert.That(compression.Keep.SelectMany(r => r.Names).Contains("External input"), Is.EqualTo(preserved));
             Assert.That(context.GetState<ParameterPolicyState>().Enabled, Is.False);
         }
 
