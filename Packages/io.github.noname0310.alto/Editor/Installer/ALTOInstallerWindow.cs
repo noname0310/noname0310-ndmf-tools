@@ -309,17 +309,20 @@ namespace Noname.AvatarTools.Installer
         {
             EditorGUILayout.Space(8);
             EditorGUILayout.LabelField("Preserve feature controls", EditorStyles.boldLabel);
-            Text("Add facial tracking or other controls to keep adjustable on mobile. These selections are stored in Animator Parameter Policy's Preserve Parameters.");
+            Text("Add facial tracking or other controls to keep adjustable on mobile.");
             if (details)
             {
+                Text("These selections are stored in Animator Parameter Policy's Preserve Parameters.");
                 draft.UsePreserveForCompression = EditorGUILayout.ToggleLeft("Also prioritize these controls during compression", draft.UsePreserveForCompression);
                 if (draft.UsePreserveForCompression && draft.InputAssumption == ParameterInputAssumption.ExternalWithCompression)
                     draft.PreserveCompressionPriority = Mathf.Max(1, EditorGUILayout.IntField("Compression priority", draft.PreserveCompressionPriority));
             }
-            if (draft.UsePreserveForCompression)
+            if (details && draft.UsePreserveForCompression)
                 Text(draft.InputAssumption == ParameterInputAssumption.ExternalWithCompression
                     ? "On PC and mobile, compression considers these controls last. They may still be compressed if needed to fit the budget."
                     : "In Avatar-Driven mode, these controls remain protected external inputs on PC and mobile.");
+            else if (!details && draft.ParameterCompression && draft.UsePreserveForCompression)
+                Text("These selections also help keep the chosen controls responsive for other players on PC and mobile.");
             for (int i = 0; i < draft.PreserveParameters.Sources.Count; i++)
             {
                 var source = draft.PreserveParameters.Sources[i];
@@ -551,11 +554,13 @@ namespace Noname.AvatarTools.Installer
             {
                 if (!draft.IncludeMobile) { Text("Additional mobile simplification is not included."); return; }
                 Text("Remove " + draft.ExcludedObjects.Count + " feature objects and " + draft.ExcludedComponents.Count + " individual components.");
-                Text(draft.FreezeMode == AnimatorParameterFreezeMode.SelectedParameters
-                    ? "Fix only the parameter values explicitly listed."
-                    : draft.FreezeMode == AnimatorParameterFreezeMode.RespectCompressionExternalInputs
-                        ? "Fix inputs except Compression Keep selections and additional mobile controls."
-                        : "Ignore Compression selections; keep only the mobile Preserve list adjustable.");
+                if (advancedMode)
+                    Text(draft.FreezeMode == AnimatorParameterFreezeMode.SelectedParameters
+                        ? "Fix only the parameter values explicitly listed."
+                        : draft.FreezeMode == AnimatorParameterFreezeMode.RespectCompressionExternalInputs
+                            ? "Fix inputs except Compression Keep selections and additional mobile controls."
+                            : "Ignore Compression selections; keep only the mobile Preserve list adjustable.");
+                else DrawSimpleMobileControlSummary();
                 Text(draft.PhysBoneFilterMode == PhysBoneFilterMode.KeepListed ? "Keep only selected PhysBones." : "Keep all except selected PhysBones.");
                 Text(draft.PhysBones.Count + " individual PhysBones and " + draft.PhysBoneRoots.Count + " bone hierarchies selected.");
                 if (draft.PhysBoneFilterMode == PhysBoneFilterMode.KeepListed && draft.PhysBones.Count == 0 && draft.PhysBoneRoots.Count == 0)

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.17
+
+- Keep mobile control behavior settings in the Installer's Advanced mode. Simple mode explains which controls remain adjustable without requiring knowledge of parameter compression, and retains any custom Advanced settings.
+
 ## 0.0.16
 
 - Reduce repeated object and Animator analysis within unchanged build snapshots, share immutable clip-output facts between local and remote contexts, and invalidate reused facts after rewrites or callbacks. Stop propagating value domains that already contain every representable input. Reuse proven irrelevant shader text only when its observed macro inputs and query are unchanged. Reduce shader-analysis allocations and run independent native compiler requests concurrently while preserving deterministic proof consumption and analysis limits.

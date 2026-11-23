@@ -72,14 +72,7 @@ namespace Noname.AvatarTools.Installer
             });
             Frame("Mobile", "Controls to keep working", MobilePlatforms, draft.IncludeMobile, () =>
             {
-                draft.FreezeMode = Choice("Mobile control behavior", draft.FreezeMode,
-                    (AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved, "Ignore Compression inputs; keep only the list below"),
-                    (AnimatorParameterFreezeMode.RespectCompressionExternalInputs, "Keep Compression inputs and the list below"),
-                    (AnimatorParameterFreezeMode.SelectedParameters, "Fix only selected parameter values"));
-                Text(draft.FreezeMode == AnimatorParameterFreezeMode.SelectedParameters
-                    ? "Only the specific parameter values configured in Advanced are fixed. Other inputs remain adjustable."
-                    : "Other menu and external inputs use their build defaults. Add facial tracking or other features that must remain adjustable. VRChat's built-in inputs remain active.");
-                Text("The Preserve feature controls list above stays adjustable. Advanced > Parameters can add names, prefixes and separate Compression selections.");
+                DrawSimpleMobileControlSummary();
                 if (draft.FreezeMode == AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved &&
                     draft.PreserveParameters.Sources.All(s => s?.Source == null) &&
                     draft.PreserveParameters.Names.Count == 0 && draft.PreserveParameters.Prefixes.Count == 0)
@@ -90,6 +83,25 @@ namespace Noname.AvatarTools.Installer
                 Text("Choose gimmicks you do not need on mobile. Explicit exclusions can remove more content and reduce build analysis work. You can leave unrecognized features for automatic optimization.");
                 DrawFeatureExclusions();
             });
+        }
+
+        private void DrawSimpleMobileControlSummary()
+        {
+            if (draft.FreezeMode == AnimatorParameterFreezeMode.SelectedParameters)
+                Text("Only the controls fixed in Advanced > Parameters stop responding. Other controls remain adjustable.");
+            else
+            {
+                Text(draft.FreezeMode == AnimatorParameterFreezeMode.RespectCompressionExternalInputs
+                    ? "Selected feature controls and additional controls kept in Advanced > Parameters remain adjustable on mobile."
+                    : "Selected feature controls remain adjustable on mobile.");
+                Text(draft.FrozenValueOverrides.Count == 0
+                    ? "Other controls stay at their build defaults instead of responding to menus or external input."
+                    : "Other controls stay at the fixed values configured in Advanced > Parameters.");
+            }
+            Text("VRChat's built-in controls remain active.");
+            if (draft.FreezeMode != AnimatorParameterFreezeMode.AllExternalInputsExceptPreserved ||
+                draft.FrozenValueOverrides.Count > 0)
+                Text("Custom mobile control settings are active. Change them in Advanced > Parameters.");
         }
 
         private void DrawFeatureExclusions()
