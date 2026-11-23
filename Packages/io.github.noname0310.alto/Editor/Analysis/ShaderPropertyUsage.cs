@@ -13,7 +13,7 @@ namespace Noname.AvatarTools.Analysis
     // An absence proof, not a shader compiler or an active-variant approximation. All source
     // branches, includes, passes, UsePass and fallback dependencies contribute possible names.
     // A declaration counts as usage. Missing/generated-only source keeps the binding alive.
-    internal sealed class ShaderPropertyUsage
+    internal sealed partial class ShaderPropertyUsage
     {
         internal sealed class Programs
         {
@@ -23,6 +23,9 @@ namespace Noname.AvatarTools.Analysis
             internal readonly HashSet<string> ShaderLabIdentifiers = new(StringComparer.Ordinal);
             internal readonly HashSet<string> ShaderLabStateIdentifiers = new(StringComparer.Ordinal);
             internal bool ShaderLabStatesComplete = true;
+            internal readonly HashSet<string> NativeDependencyPaths = new(StringComparer.Ordinal);
+            internal readonly HashSet<Shader> NativeShaderDependencies = new();
+            internal bool NativeDependenciesComplete = true;
             internal string Uncertain;
         }
 
@@ -35,9 +38,11 @@ namespace Noname.AvatarTools.Analysis
             internal bool TokenPasting;
             internal string Uncertain;
 
-            internal bool MayUse(string property)
+            internal bool MayUse(string property) => Uncertain != null || MayExpandName(property);
+
+            internal bool MayExpandName(string property)
             {
-                if (Uncertain != null || string.IsNullOrEmpty(property) || property.Length > 128 ||
+                if (string.IsNullOrEmpty(property) || property.Length > 128 ||
                     !Identifier.IsMatch(property) || Tokens.Contains(property)) return true;
                 if (!TokenPasting) return false;
                 // A generated identifier must be the result of a paste expression. Literal
@@ -59,6 +64,7 @@ namespace Noname.AvatarTools.Analysis
         private static readonly Regex Tokens = new(@"""(?:\\.|[^""\\])*""|'(?:\\.|[^'\\])*'|[_A-Za-z][_A-Za-z0-9]*|[0-9]+", RegexOptions.CultureInvariant);
         private static readonly Regex Include = new(@"^\s*#\s*include(?:_with_pragmas)?\b([^\r\n]*)", RegexOptions.Multiline | RegexOptions.CultureInvariant);
         private static readonly Regex IncludePath = new(@"^\s*[""<]([^"">]+)["">]\s*$", RegexOptions.CultureInvariant);
+        private static readonly Regex UntrackedInclude = new(@"^\s*#\s*(include_next|import|using|embed)\b", RegexOptions.Multiline | RegexOptions.CultureInvariant);
         private static readonly Regex ShaderDependency = new(@"\b(Fallback|UsePass)\s+""([^""]+)""|\bDependency\s+""[^""]+""\s*=\s*""([^""]+)""",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         private static readonly Regex Define = new(@"^\s*#\s*define\s+[_A-Za-z][_A-Za-z0-9]*(?:\(([^)]*)\))?\s+(.*)$", RegexOptions.CultureInvariant);
@@ -69,7 +75,7 @@ namespace Noname.AvatarTools.Analysis
         private readonly Dictionary<string, string> files = new(StringComparer.Ordinal);
         private readonly Dictionary<(string, string), PpDocument> parsedPreprocessorDocuments = new();
         private readonly Dictionary<(Shader, Shader, string, string), ShaderPreprocessorGraph.Source[]> resolvedIncludes = new();
-        private readonly Dictionary<(Shader Owner, string Source, string Query, string Context, string IncludeSearch), ShaderPreprocessorGraph> preprocessorGraphs = new();
+        private readonly Dictionary<(Shader Owner, ShaderTextKey Source, string Query, string Context, string IncludeSearch), ShaderPreprocessorGraph> preprocessorGraphs = new();
         private readonly Dictionary<(Shader, int, int, bool), ShaderData.Pass> passSnapshots = new();
         private readonly Dictionary<ShaderData.Pass, string> passSources = new();
         private readonly Dictionary<(BuildTarget, ShaderCompilerPlatform, ShaderType, UnityEngine.Rendering.GraphicsTier?), Dictionary<string, string>> preprocessorContexts = new();
@@ -78,6 +84,9 @@ namespace Noname.AvatarTools.Analysis
         internal double PreprocessorDiscoveryMilliseconds { get; private set; }
         internal double PreprocessorEvaluationMilliseconds { get; private set; }
         internal int PreprocessorGraphs => preprocessorGraphs.Count;
+        internal readonly ShaderAnalysisArtifacts Artifacts;
+        internal ShaderPropertyUsage() : this(new ShaderAnalysisArtifacts()) { }
+        internal ShaderPropertyUsage(ShaderAnalysisArtifacts artifacts) { Artifacts = artifacts; }
         private ShaderMeshInputs meshInputs;
         internal ShaderMeshInputs MeshInputs => meshInputs ??= new ShaderMeshInputs(this);
 
@@ -264,8 +273,8 @@ namespace Noname.AvatarTools.Analysis
                 return result;
             }
             var timer = System.Diagnostics.Stopwatch.StartNew();
-            var graph = demand == null ? ShaderPreprocessorGraph.Analyze(source, Includes, query, owner.keywordSpace.keywords.Select(k => k.name), definitions, parsedPreprocessorDocuments) :
-                ShaderPreprocessorGraph.AnalyzeDemand(source, Includes, demand, owner.keywordSpace.keywords.Select(k => k.name), definitions, parsedPreprocessorDocuments);
+            var graph = ShaderPreprocessorGraph.AnalyzeCached(source, Includes, query,
+                owner.keywordSpace.keywords.Select(k => k.name), definitions, parsedPreprocessorDocuments, demand);
             PreprocessorGraphMilliseconds += timer.Elapsed.TotalMilliseconds;
             PreprocessorDiscoveryMilliseconds += graph.DiscoveryMilliseconds;
             PreprocessorEvaluationMilliseconds += graph.EvaluationMilliseconds;
@@ -287,6 +296,7 @@ namespace Noname.AvatarTools.Analysis
             void Uncertain(string reason) { proof.Uncertain ??= reason; }
             string Read(string path)
             {
+                sourcePrograms.NativeDependencyPaths.Add(path);
                 if (files.TryGetValue(path, out var source)) return StripComments(source);
                 if (files.Count >= 512 || new FileInfo(path).Length > 4 * 1024 * 1024)
                     throw new InvalidOperationException("shader source analysis limit reached");
@@ -294,18 +304,27 @@ namespace Noname.AvatarTools.Analysis
             }
             void Scan(string text, string directory)
             {
+                if (UntrackedInclude.IsMatch(text)) sourcePrograms.NativeDependenciesComplete = false;
                 foreach (Match token in Tokens.Matches(text))
-                    if (token.Value[0] != '"' && token.Value[0] != '\'') proof.Tokens.Add(token.Value);
+                    if (token.Value[0] != '"' && token.Value[0] != '\'')
+                    {
+                        proof.Tokens.Add(token.Value);
+                        if (token.Value == "__TIME__" || token.Value == "__DATE__" || token.Value == "__TIMESTAMP__")
+                            sourcePrograms.NativeDependenciesComplete = false;
+                    }
                 proof.TokenPasting |= text.Contains("##");
                 ScanPasting(text, proof);
                 foreach (Match include in Include.Matches(text))
                 {
                     var match = IncludePath.Match(include.Groups[1].Value);
-                    if (!match.Success) { Uncertain("macro or unsupported include path"); continue; }
+                    if (!match.Success)
+                    { sourcePrograms.NativeDependenciesComplete = false; Uncertain("macro or unsupported include path"); continue; }
                     string path = match.Groups[1].Value.Replace('\\', '/');
                     var roots = directories.Concat(new[] { directory, includeDirectory }).Where(d => !string.IsNullOrEmpty(d));
-                    var candidates = roots.Select(d => Path.GetFullPath(Path.Combine(d, path)))
-                        .Concat(new[] { PhysicalPath(path) }).Where(p => p != null && File.Exists(p)).Distinct(StringComparer.Ordinal).ToArray();
+                    var possiblePaths = roots.Select(d => Path.GetFullPath(Path.Combine(d, path)))
+                        .Concat(new[] { PhysicalPath(path) }).Where(p => p != null).Distinct(StringComparer.Ordinal).ToArray();
+                    sourcePrograms.NativeDependencyPaths.UnionWith(possiblePaths);
+                    var candidates = possiblePaths.Where(File.Exists).ToArray();
                     if (candidates.Length == 0) Uncertain("unresolved include " + path);
                     foreach (string candidate in candidates)
                         if (seenFiles.Add(candidate)) Scan(Read(candidate), Path.GetDirectoryName(candidate));
@@ -319,6 +338,7 @@ namespace Noname.AvatarTools.Analysis
                 else if (requiredPass == null) requiredPasses[current] = null;
                 else required?.Add(requiredPass);
                 if (!seenShaders.Add(current)) return;
+                sourcePrograms.NativeShaderDependencies.Add(current);
                 if (seenShaders.Count > 64 || ShaderUtil.ShaderHasError(current))
                 { Uncertain("invalid or excessive shader dependencies"); return; }
                 for (int i = 0; i < current.GetPropertyCount(); i++)
@@ -393,6 +413,7 @@ namespace Noname.AvatarTools.Analysis
             }
             catch (Exception exception)
             {
+                sourcePrograms.NativeDependenciesComplete = false;
                 sourcePrograms.Uncertain ??= "cannot inspect shader source: " + exception.Message;
                 Uncertain(sourcePrograms.Uncertain);
             }

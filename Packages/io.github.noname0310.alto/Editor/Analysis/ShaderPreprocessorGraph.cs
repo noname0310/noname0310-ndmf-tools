@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Numerics;
 using UnityEngine.Rendering;
@@ -34,6 +35,56 @@ namespace Noname.AvatarTools.Analysis
         internal PpDialectEffects DialectEffects { get; private set; }
         private static readonly HashSet<string> PlatformDefinitions = Enum.GetNames(typeof(BuiltinShaderDefine)).ToHashSet(StringComparer.Ordinal);
         internal bool CanIgnore(string keyword) => !IsDeclarationProjection && Issue == null && !CodeDependencies.Contains(keyword);
+
+        internal static ShaderPreprocessorGraph AnalyzeCached(Source source, Func<string, string, Source[]> includes,
+            ShaderInputQuery query, IEnumerable<string> keywordNames, IReadOnlyDictionary<string, string> definitions,
+            Dictionary<(string, string), PpDocument> parsedDocuments, ShaderInputDemand demand)
+        {
+            if (!ContentFactCache.Enabled) return AnalyzeCore(source, includes, query, keywordNames, definitions, parsedDocuments, demand);
+            const string kind = "shader preprocessing";
+            var keywords = keywordNames?.ToArray();
+            var cache = ContentFactCache.Shared;
+            // Structured encoding avoids separator collisions in file names and
+            // macro values. Null keyword coverage differs from an empty universe.
+            string context;
+            using (var data = new MemoryStream())
+            {
+                using (var writer = new BinaryWriter(data, System.Text.Encoding.UTF8, true))
+                {
+                    writer.Write(keywords != null);
+                    if (keywords != null) { writer.Write(keywords.Length); foreach (string name in keywords) writer.Write(name); }
+                    writer.Write(definitions != null);
+                    if (definitions != null)
+                    {
+                        writer.Write(definitions.Count);
+                        foreach (var pair in definitions.OrderBy(p => p.Key, StringComparer.Ordinal))
+                        { writer.Write(pair.Key); writer.Write(pair.Value != null); if (pair.Value != null) writer.Write(pair.Value); }
+                    }
+                }
+                context = ShaderAnalysisCache.Digest(data.ToArray());
+            }
+            string key = cache.Key(kind, source.Id, ContentFactCache.TextDigest(source.Text), query.Signature, demand?.ContentSignature, context);
+            if (cache.TryRead(kind, key, reader =>
+            {
+                ShaderSourceTrace.Validate(reader, includes);
+                var result = new ShaderPreprocessorGraph { InputAbsent = reader.ReadBoolean(),
+                    IncludesWithoutKeywordPragmas = reader.ReadBoolean(), IsDeclarationProjection = reader.ReadBoolean(),
+                    Nodes = reader.ReadInt32(), ExecutedDialects = reader.ReadInt32(), DialectEffects = (PpDialectEffects)reader.ReadInt32() };
+                int count = ContentFactCache.Count(reader);
+                for (int i = 0; i < count; i++) result.CodeDependencies.Add(reader.ReadString());
+                return result;
+            }, out ShaderPreprocessorGraph previous)) return previous;
+            var trace = new ShaderSourceTrace(includes);
+            var graph = AnalyzeCore(source, trace.Resolve, query, keywords, definitions, parsedDocuments, demand);
+            if (graph.Issue == null) cache.Store(kind, key, writer =>
+            {
+                trace.Write(writer); writer.Write(graph.InputAbsent); writer.Write(graph.IncludesWithoutKeywordPragmas);
+                writer.Write(graph.IsDeclarationProjection); writer.Write(graph.Nodes); writer.Write(graph.ExecutedDialects);
+                writer.Write((int)graph.DialectEffects); writer.Write(graph.CodeDependencies.Count);
+                foreach (string name in graph.CodeDependencies) writer.Write(name);
+            });
+            return graph;
+        }
 
         internal static ShaderPreprocessorGraph Analyze(Source source, Func<string, string, Source[]> includes, bool addSkinning,
             IEnumerable<string> keywordNames = null, IReadOnlyDictionary<string, string> definitions = null,

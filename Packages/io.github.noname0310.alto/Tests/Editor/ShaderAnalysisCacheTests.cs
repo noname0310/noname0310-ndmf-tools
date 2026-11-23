@@ -23,28 +23,32 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         private static D3DShaderInputs.Input[] Facts() => new[] {
             new D3DShaderInputs.Input("SV_VertexID", 0), new D3DShaderInputs.Input("TEXCOORD", 3, 2),
             new D3DShaderInputs.Input("_Active", 1, 0, D3DShaderInputs.InputKind.Uniform),
-            new D3DShaderInputs.Input("_Inactive", 0, 0, D3DShaderInputs.InputKind.Uniform) };
+            new D3DShaderInputs.Input("_Inactive", 0, 0, D3DShaderInputs.InputKind.Uniform),
+            new D3DShaderInputs.Input("_Texture", 1, 0, D3DShaderInputs.InputKind.Resource) };
 
         [Test]
-        public void ShaderCacheReusesAProgramAcrossOwnersAndAddsIndependentInputQueries()
+        public void ShaderCacheAnswersNewQueriesFromTheCompleteProgramInventory()
         {
             int calls = 0; var first = Cache();
             string key = first.Key("static const float gate=0;", "vert", ShaderType.Vertex, "compiler-v1");
             var facts = first.Compile(key, () => { calls++; return (Facts(), null); }).Inputs;
-            Assert.That(first.Usage(key, ShaderInputQuery.VertexId, facts), Is.False);
+            Assert.That(ShaderInputQuery.VertexId.MayReadCompiled(facts), Is.False);
             facts[0] = new D3DShaderInputs.Input("SV_VertexID", 1);
             var second = Cache();
             var reused = second.Compile(key, () => { calls++; return (Facts(), null); }).Inputs;
             Assert.That(reused[0].ReadMask, Is.Zero, "Caller mutation must not alter durable facts.");
-            Assert.That(second.Usage(key, ShaderInputQuery.Uniform("_Active"), reused, true), Is.True);
-            Assert.That(second.Usage(key, ShaderInputQuery.Uniform("_Inactive"), reused, true), Is.False);
-            Assert.That(second.Usage(key, ShaderInputQuery.Uniform("_Inactive"), reused), Is.True,
+            Assert.That(ShaderInputQuery.Uniform("_Active").MayReadCompiled(reused, true), Is.True);
+            Assert.That(ShaderInputQuery.Uniform("_Inactive").MayReadCompiled(reused, true), Is.False);
+            Assert.That(ShaderInputQuery.Uniform("_Texture").MayReadCompiled(reused, true), Is.True);
+            Assert.That(ShaderInputQuery.Uniform("_Absent").MayReadCompiled(reused, true), Is.False);
+            Assert.That(ShaderInputQuery.Uniform("_Inactive").MayReadCompiled(reused), Is.True,
                 "A cached absence must not authorize queries without verified uniform coverage.");
-            Assert.That(second.Usage(key, ShaderInputQuery.VertexId, reused), Is.False);
-            Assert.That(second.Usage(key, new ShaderInputQuery(new ShaderInputQuery.Semantic("TEXCOORD", 2)), reused), Is.True);
-            Assert.That(second.Usage(key, new ShaderInputQuery(new ShaderInputQuery.Semantic("TEXCOORD", 1)), reused), Is.False);
+            Assert.That(ShaderInputQuery.VertexId.MayReadCompiled(reused), Is.False);
+            Assert.That(new ShaderInputQuery(new ShaderInputQuery.Semantic("TEXCOORD", 2)).MayReadCompiled(reused), Is.True);
+            Assert.That(new ShaderInputQuery(new ShaderInputQuery.Semantic("TEXCOORD", 1)).MayReadCompiled(reused), Is.False);
             Assert.That(calls, Is.EqualTo(1)); Assert.That(second.Hits, Is.EqualTo(1));
-            Assert.That(Directory.GetFiles(directory, "*.bin").Length, Is.EqualTo(6));
+            Assert.That(Directory.GetFiles(directory, "*.bin").Length, Is.EqualTo(1),
+                "Every query must reuse the same complete program record without extra disk writes.");
         }
 
         [Test]
@@ -76,7 +80,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 Assert.That(cache.Compile(key, () => { calls++; return (Facts(), null); }).Inputs, Is.Not.Null);
             }
             Assert.That(calls, Is.EqualTo(4));
-            Assert.That(Cache().Compile(key, () => throw new Exception("Must reuse repaired record")).Inputs.Length, Is.EqualTo(4));
+            Assert.That(Cache().Compile(key, () => throw new Exception("Must reuse repaired record")).Inputs.Length, Is.EqualTo(5));
         }
 
         [Test]
@@ -84,8 +88,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         {
             File.WriteAllText(directory, "A file cannot contain cache records.");
             var cache = Cache(); var key = cache.Key("source", "main", ShaderType.Vertex, "v1");
-            Assert.That(cache.Compile(key, () => (Facts(), null)).Inputs.Length, Is.EqualTo(4));
-            Assert.That(cache.Usage(key, ShaderInputQuery.VertexId, Facts()), Is.False);
+            Assert.That(cache.Compile(key, () => (Facts(), null)).Inputs.Length, Is.EqualTo(5));
+            Assert.That(ShaderInputQuery.VertexId.MayReadCompiled(Facts()), Is.False);
         }
 
         [Test]

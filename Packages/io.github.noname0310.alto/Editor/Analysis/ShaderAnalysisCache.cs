@@ -89,22 +89,6 @@ namespace Noname.AvatarTools.Analysis
             }
         }
 
-        // Query records extend independently; recording another input cannot
-        // overwrite an earlier fact, including when compiler workers overlap.
-        internal bool Usage(string programKey, ShaderInputQuery query, D3DShaderInputs.Input[] inputs, bool uniformsVerified = false)
-        {
-            if (inputs == null) throw new ArgumentNullException(nameof(inputs));
-            // Signature-only reflection (e.g. Unity's stripped bytecode) must
-            // never establish uniform/resource absence, including on cache hits.
-            if (query.UniformQuery && !uniformsVerified) return true;
-            string key = programKey == null ? null : Digest(Encoding.UTF8.GetBytes(programKey + "\nquery\n" + query.Signature));
-            if (key != null && TryRead(key, out var bytes) && bytes.Length == 1 && bytes[0] <= 1)
-                return bytes[0] != 0;
-            bool used = inputs.Any(i => i.ReadMask != 0 && query.MatchesCompiled(i));
-            if (key != null) Store(key, new[] { used ? (byte)1 : (byte)0 });
-            return used;
-        }
-
         private bool TryRead(string key, out byte[] payload)
         {
             payload = null;
@@ -172,11 +156,12 @@ namespace Noname.AvatarTools.Analysis
         private static bool ReadFailure(Exception exception) => exception is IOException || exception is UnauthorizedAccessException ||
             exception is ArgumentException || exception is System.Security.SecurityException || exception is NotSupportedException;
         internal static string Digest(byte[] bytes)
-        { using var hash = SHA256.Create(); return BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant(); }
+        { return BitConverter.ToString(ContentDigest.Bytes(bytes)).Replace("-", "").ToLowerInvariant(); }
 
         [MenuItem("Tools/Noname/ALTO/Clear Shader Analysis Cache")]
         private static void Clear()
         {
+            ContentFactCache.Shared.Clear();
             var cache = Shared;
             if (!Directory.Exists(cache.directory)) return;
             // Delete only our flat records, never recursively delete a caller's path.

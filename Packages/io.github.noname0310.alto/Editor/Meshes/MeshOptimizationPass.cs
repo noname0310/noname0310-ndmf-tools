@@ -175,6 +175,7 @@ namespace Noname.AvatarTools.Meshes
             var shaderInputs = shaderSources.MeshInputs;
             double preprocessingBefore = shaderSources.PreprocessorGraphMilliseconds;
             double nativePreprocessBefore = shaderInputs.NativePreprocessMilliseconds;
+            int nativePreprocessHitsBefore = shaderInputs.NativePreprocessCacheHits;
             double nativeCompileBefore = shaderInputs.NativeCompileMilliseconds;
             double nativeWaitBefore = shaderInputs.NativeCompileWaitMilliseconds;
             double slicesBefore = shaderInputs.UseSliceMilliseconds;
@@ -340,6 +341,9 @@ namespace Noname.AvatarTools.Meshes
                 ", specialization=" + (shaderInputs.SpecializationMilliseconds - specializationBefore).ToString("F1") +
                 ", keyword planning=" + (shaderInputs.KeywordPlanMilliseconds - keywordsBefore).ToString("F1") +
                 ", program inspection=" + (shaderInputs.PreprocessedInspectionMilliseconds - inspectedProgramsBefore).ToString("F1") + ".");
+            report.Messages.Add("Shader preprocessing artifact hits: " + (shaderInputs.NativePreprocessCacheHits - nativePreprocessHitsBefore) +
+                "; " + shaderSources.Artifacts.NativeProgramCount + " programs for " + shaderSources.Artifacts.NativeVariantCount +
+                " variants, " + shaderSources.Artifacts.NativeProgramBytes + " source bytes retained.");
             report.Messages.Add((runtimeDependenciesOnly ? "Final runtime mesh optimization: " : "Mesh optimization: ") + removed + " renderers and " + slots + " material slots merged in " + groups + " groups; " +
                 vertices + " unused vertices and " + palette + " unused or duplicate bone-palette entries removed; " +
                 rebound + " static skin-bone entries rebound; " + converted + " rigid renderers converted and " + weighted +

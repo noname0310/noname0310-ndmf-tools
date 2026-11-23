@@ -26,6 +26,7 @@ namespace Noname.AvatarTools.Analysis
 
         private const uint CompilerFlags = (1u << 15) | (1u << 13) | (1u << 12);
         private static readonly Lazy<string> CompilerIdentity = new(GetCompilerIdentity);
+        internal static string CompilerFingerprint => CompilerIdentity.Value;
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr LoadLibrary(string name);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern uint GetModuleFileName(IntPtr module, StringBuilder filename, int size);
         private static string GetCompilerIdentity()

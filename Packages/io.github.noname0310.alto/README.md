@@ -1136,7 +1136,8 @@ includes and substituted constants), entry point, stage, compiler identity and
 settings, and analysis assembly revision. Unity compilation additionally records
 the shader dependency hash, target, graphics tier and keywords. Semantic read
 masks, uniform usage and resource bindings serve subsequent input queries without
-recompiling. Query results are added independently. Each build still checks that
+recompiling. Each program record stores the complete reflected inventory;
+subsequent queries inspect it in memory without additional disk records. Each build still checks that
 its constant assumptions and variant coverage are valid; cache hits consume the
 same logical proof budgets as fresh compilation.
 Only successful, complete reflection is persisted. Atomic writes, integrity checks
@@ -1144,6 +1145,23 @@ and bounded storage protect the optional cache; absent, corrupt or inaccessible
 records trigger normal compilation. Use **Tools > Noname > ALTO > Clear Shader
 Analysis Cache** to discard it. The cache survives editor restarts, but updates to
 the analysis assembly invalidate its records.
+Shader declaration plans, specialized source, preprocessor dependencies and input-use
+summaries also use `Library/ALTO/AnalysisFacts`.
+These records share no avatar objects. Include resolution and contents are checked
+again, full pass coverage is still evaluated, and probe requests retain their
+normal logical budgets. Existing snapshot-local lookups run before
+content hashing; immutable source strings reuse their digests. Storage is bounded
+to 32 MiB of in-memory records, with disk records periodically trimmed to 256 MiB. The same cache-clear command
+discards these records. Large inputs use native SHA-256 on supported Windows
+editors, with an equivalent managed fallback on other environments.
+Within a build, bounded caches also share immutable source inspections and
+specialization plans across optimization stages. Source lookup hashes are computed
+once per immutable string. Preprocessed programs are reused only after each new
+source snapshot validates shader imports, include contents and missing include
+candidates, live editor graphics settings, keywords, pass, stage, target and tier.
+Unresolved dynamic includes or time-dependent macros disable that reuse. Material
+constants, animation effects and variant coverage are still checked in each stage;
+shared artifacts never carry an avatar's optimization decision into another stage.
 Input declarations trigger the compiled refinement described above when supported;
 ALTO does not implement its own HLSL control-flow analyzer. Tessellation input
 interfaces, unsupported uniform layouts and unproved runtime values remain

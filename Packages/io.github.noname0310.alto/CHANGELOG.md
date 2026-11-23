@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.19
+
+- Reduce repeated shader inspection across optimization stages. Reuse immutable declaration, specialization and lexical facts, memoize long-source lookup hashes, and reuse Unity preprocessing only after checking source dependencies and live compiler settings. Keep material assumptions, variant coverage and logical analysis budgets separate.
+- Reuse content-addressed shader declaration plans, specialized programs, preprocessor dependencies and input-use summaries across builds. Revalidate includes and constant inputs, retain full keyword coverage and logical compiler budgets, and use optional native SHA-256 for large inputs without changing digest values.
+- Answer shader-input queries directly from the cached complete compiler reflection inventory. Remove redundant per-query disk records and repeated source hashing during input lookups.
+
 ## 0.0.18
 
 - Extend material-animation interference checks with compiler-proven uniform usage after substituting immutable material constants. Keep every property the proposed merge can animate dynamic, retain ShaderLab render states and runtime keyword coverage, and preserve unknown inputs.

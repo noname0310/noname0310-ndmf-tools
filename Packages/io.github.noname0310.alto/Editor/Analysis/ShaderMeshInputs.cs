@@ -23,22 +23,24 @@ namespace Noname.AvatarTools.Analysis
         internal const int MaximumCallsPerShader = 1024;
         internal const int MaximumCallsPerSnapshot = 2048;
         internal const int MaximumCompilesPerSnapshot = 128;
-        private const string IndexIssue = "shader may depend on the queried inputs";
+        private const string IndexIssue = ShaderProgramInspection.InputIssue;
         internal static readonly ShaderType[] Stages = { ShaderType.Vertex, ShaderType.Fragment,
             ShaderType.Geometry, ShaderType.Hull, ShaderType.Domain };
         internal static readonly GraphicsTier[] Tiers = { GraphicsTier.Tier1, GraphicsTier.Tier2, GraphicsTier.Tier3 };
         private readonly ShaderPropertyUsage sources;
+        private readonly ShaderAnalysisArtifacts artifacts;
         private readonly Dictionary<(ShaderPropertyUsage.Proof, string), string> sourceIssues = new();
         private readonly Dictionary<(Shader, BuildTarget, string), string> cache = new();
         private readonly Dictionary<(Shader, BuildTarget, string, string), string> materialCache = new();
         private readonly Dictionary<(Shader, BuildTarget, string, string), List<Dictionary<string, int>>> inputCertificates = new();
         private readonly Dictionary<(Shader, ShaderData.Pass, ShaderType, ShaderCompilerPlatform, GraphicsTier, BuildTarget, string, string),
             List<Dictionary<string, int>>> unitCertificates = new();
-        private readonly Dictionary<(string Program, string Entry, ShaderType Stage, bool Native), (D3DShaderInputs.Input[] Inputs, string Error)> compiled = new();
+        private readonly Dictionary<(ShaderTextKey Program, string Entry, ShaderType Stage, bool Native), (D3DShaderInputs.Input[] Inputs, string Error)> compiled = new();
         private readonly Dictionary<(ShaderData.Pass, ShaderType, string, ShaderCompilerPlatform, BuildTarget, GraphicsTier), (bool Success, string Code)> preprocessed = new();
-        private readonly Dictionary<(bool, string, string), string> inspectedPrograms = new();
+        private readonly Dictionary<(bool, ShaderTextKey, string), string> inspectedPrograms = new();
         private readonly Dictionary<(ShaderData.Pass, ShaderType), string> entries = new();
         private readonly Dictionary<ShaderData.Pass, string> passCompilerIdentities = new();
+        private readonly Dictionary<ShaderData.Pass, string> preprocessingIdentities = new();
         private static readonly Lazy<string> UnityCompilerIdentity = new(() =>
         {
             try
@@ -58,13 +60,12 @@ namespace Noname.AvatarTools.Analysis
         internal int PreprocessCalls { get; private set; }
         internal int CompileCalls { get; private set; }
         internal readonly List<string> UnitDiagnostics = new();
-        private readonly BoundedAnalysisCache<(string Source, string Query, string Original, string Specialized, string Entry), ShaderInputUseSlice> useSlices = new(MaximumVariantsPerUnit, 32 * 1024 * 1024);
-        private readonly BoundedAnalysisCache<(string, string), (string Code, int Count)> specializedPrograms = new(MaximumVariantsPerUnit, 16 * 1024 * 1024);
-        private readonly BoundedAnalysisCache<string, ShaderConstantInputs.Plan> specializationPlans = new(MaximumVariantsPerUnit, 16 * 1024 * 1024, StringComparer.Ordinal);
+        private readonly BoundedAnalysisCache<(string Source, string Query, ShaderTextKey Original, ShaderTextKey Specialized, string Entry), ShaderInputUseSlice> useSlices = new(MaximumVariantsPerUnit, 32 * 1024 * 1024);
         internal int UseSliceAnalyses { get; private set; }
         internal int SpecializationCalls { get; private set; }
         internal double SpecializationMilliseconds { get; private set; }
         internal double NativePreprocessMilliseconds { get; private set; }
+        internal int NativePreprocessCacheHits { get; private set; }
         internal double NativeCompileMilliseconds { get; private set; }
         internal double UseSliceMilliseconds { get; private set; }
         internal double KeywordPlanMilliseconds { get; private set; }
@@ -73,7 +74,7 @@ namespace Noname.AvatarTools.Analysis
         internal int PrefetchedCompiles { get; private set; }
         internal int UnitCertificateHits { get; private set; }
 
-        internal ShaderMeshInputs(ShaderPropertyUsage sources) { this.sources = sources; }
+        internal ShaderMeshInputs(ShaderPropertyUsage sources) { this.sources = sources; artifacts = sources.Artifacts; }
 
         internal string Issue(Shader shader, bool addSkinning, BuildTarget? target)
             => Issue(shader, ShaderInputQuery.ForMeshChange(addSkinning), target);
@@ -194,62 +195,7 @@ namespace Noname.AvatarTools.Analysis
             => InspectPreprocessed(success, code, ShaderInputQuery.ForMeshChange(addSkinning));
 
         internal static string InspectPreprocessed(bool success, string code, ShaderInputQuery query)
-        {
-            // Unity can report success with empty code for an unavailable program.
-            // This is not evidence that a runtime input is unused.
-            if (!success || string.IsNullOrWhiteSpace(code)) return Unknown("a shader variant has no verified preprocessed program");
-            for (int i = 0; i < code.Length; i++)
-                if (char.IsControl(code[i]) && code[i] != '\r' && code[i] != '\n' && code[i] != '\t')
-                    return Unknown("shader preprocessing returned malformed source text");
-            if (code.Length > 4 * 1024 * 1024) return Unknown("preprocessed shader size limit reached");
-            code = ShaderPropertyUsage.StripComments(code);
-            // Line/pragma directives are metadata, not identifiers used by HLSL.
-            // Any other remaining directive means preprocessing is incomplete.
-            for (int lineStart = 0; lineStart < code.Length;)
-            {
-                int lineEnd = code.IndexOf('\n', lineStart);
-                if (lineEnd < 0) lineEnd = code.Length;
-                int cursor = lineStart;
-                while (cursor < lineEnd && char.IsWhiteSpace(code[cursor])) cursor++;
-                lineStart = lineEnd + 1;
-                if (cursor < lineEnd && code[cursor] == '#')
-                {
-                    string text = code.Substring(cursor, lineEnd - cursor);
-                    if (Regex.IsMatch(text, @"^#\s*(line\b|pragma\b|[0-9])", RegexOptions.CultureInvariant)) continue;
-                    return Unknown("an unsupported directive remains after shader preprocessing");
-                }
-                for (int i = cursor; i < lineEnd;)
-                {
-                    if (!PpLexer.IdentifierStart(code[i])) { i++; continue; }
-                    int start = i++;
-                    while (i < lineEnd && PpLexer.IdentifierPart(code[i])) i++;
-                    // Match the former Unicode-aware regex word boundaries,
-                    // including identifiers adjacent to non-ASCII source text.
-                    if ((start == cursor || !RegexWord(code[start - 1])) &&
-                        (i == lineEnd || !RegexWord(code[i])) && query.MatchesToken(code, start, i - start)) return IndexIssue;
-                }
-            }
-            return null;
-        }
-
-        private static bool RegexWord(char c)
-        {
-            if (c < 128) return PpLexer.IdentifierPart(c);
-            // .NET regex boundaries additionally include the two join controls.
-            if (c == '\u200c' || c == '\u200d') return true;
-            switch (char.GetUnicodeCategory(c))
-            {
-                case System.Globalization.UnicodeCategory.UppercaseLetter:
-                case System.Globalization.UnicodeCategory.LowercaseLetter:
-                case System.Globalization.UnicodeCategory.TitlecaseLetter:
-                case System.Globalization.UnicodeCategory.ModifierLetter:
-                case System.Globalization.UnicodeCategory.OtherLetter:
-                case System.Globalization.UnicodeCategory.NonSpacingMark:
-                case System.Globalization.UnicodeCategory.DecimalDigitNumber:
-                case System.Globalization.UnicodeCategory.ConnectorPunctuation: return true;
-                default: return false;
-            }
-        }
+            => success ? new ShaderProgramInspection(code).Inspect(true, query) : Unknown("a shader variant has no verified preprocessed program");
 
         [StructLayout(LayoutKind.Explicit)]
         private struct FloatRepresentation
@@ -305,7 +251,8 @@ namespace Noname.AvatarTools.Analysis
                     {
                         string asset = AssetDatabase.GetAssetPath(p.Shader);
                         passCompilerIdentities[p.Pass] = UnityCompilerIdentity.Value == null || string.IsNullOrEmpty(asset) ? null :
-                            UnityCompilerIdentity.Value + "/" + AssetDatabase.GetAssetDependencyHash(asset) + "/" + PassSource(p.Pass);
+                            UnityCompilerIdentity.Value + "/" + AssetDatabase.GetAssetDependencyHash(asset) + "/" + ContentFactCache.TextDigest(PassSource(p.Pass));
+                        preprocessingIdentities[p.Pass] = sources.NativePreprocessIdentity(shader, p.Shader, p.Pass, id, UnityCompilerIdentity.Value);
                     }
                     // Unity 2022's pass-keyword API cannot address imported
                     // UsePass entries or built-in fallback pass indices reliably.
@@ -474,7 +421,7 @@ namespace Noname.AvatarTools.Analysis
             if (useSlices.TryGetValue(key, out var previous)) return previous;
             UseSliceAnalyses++;
             var timer = Stopwatch.StartNew();
-            var slice = ShaderInputVariantProof.Slice(value, query, entry, CompileProgram);
+            var slice = ShaderSliceFacts.Get(value, query, entry, CompileProgram);
             UseSliceMilliseconds += timer.Elapsed.TotalMilliseconds;
             useSlices.Add(key, slice, (value.Original?.Length ?? 0) + (value.Specialized?.Length ?? 0));
             return slice;
@@ -483,10 +430,10 @@ namespace Noname.AvatarTools.Analysis
         private (string Code, int Count) Specialize(string source, IReadOnlyDictionary<string, float> constants)
         {
             var timer = Stopwatch.StartNew();
-            if (!specializationPlans.TryGetValue(source, out var plan))
+            if (!artifacts.Declarations.TryGetValue(source, out var plan))
             {
-                plan = ShaderConstantInputs.Prepare(source);
-                specializationPlans.Add(source, plan, source.Length + plan.Source.Length);
+                plan = ShaderConstantInputs.PrepareCached(source);
+                artifacts.Declarations.Add(source, plan, (source.Length + plan.Source.Length) * 2);
             }
             var signatureBuilder = new StringBuilder();
             if (constants != null)
@@ -498,14 +445,24 @@ namespace Noname.AvatarTools.Analysis
                     }
             string signature = signatureBuilder.ToString();
             var key = (source, signature);
-            if (specializedPrograms.TryGetValue(key, out var previous))
+            if (artifacts.Specializations.TryGetValue(key, out var previous))
             { SpecializationMilliseconds += timer.Elapsed.TotalMilliseconds; return previous; }
             SpecializationCalls++;
-            string code = plan.Apply(constants, out int count);
-            SpecializationMilliseconds += timer.Elapsed.TotalMilliseconds;
+            var shared = ContentFactCache.Shared;
+            string sharedKey = ContentFactCache.Enabled ? shared.Key("shader specialization", ContentFactCache.TextDigest(source), signature) : null;
+            string code; int count;
+            if (shared.TryRead("shader specialization", sharedKey, reader => (Code: reader.ReadString(), Count: reader.ReadInt32()), out var cached))
+            { code = cached.Code; count = cached.Count; }
+            else
+            {
+                code = plan.Apply(constants, out count);
+                shared.Store("shader specialization", sharedKey, writer => { writer.Write(code); writer.Write(count); });
+            }
+            code = new ShaderTextKey(code).Text;
             // This cache is build-local and bounded by text size as well as count.
             // Keep recently used programs even when earlier shaders fill the cache.
-            specializedPrograms.Add(key, (code, count), source.Length + signature.Length + code.Length);
+            artifacts.Specializations.Add(key, (code, count), (source.Length + signature.Length + code.Length) * 2);
+            SpecializationMilliseconds += timer.Elapsed.TotalMilliseconds;
             return (code, count);
         }
 
@@ -527,10 +484,7 @@ namespace Noname.AvatarTools.Analysis
                 if ((prefetch == null || !prefetch.Programs.TryGetValue(variantKey, out variant)) &&
                     (ahead == null || !ahead.Programs.TryGetValue(variantKey, out variant)))
                 {
-                    var timer = Stopwatch.StartNew();
-                    var value = pass.PreprocessVariant(stage, keywords, backend, target, tier, false);
-                    NativePreprocessMilliseconds += timer.Elapsed.TotalMilliseconds;
-                    variant = (value.Success, value.PreprocessedCode);
+                    variant = NativePreprocess(pass, stage, keywords, backend, target, tier);
                 }
                 preprocessed.Add(variantKey, variant);
             }
@@ -547,10 +501,6 @@ namespace Noname.AvatarTools.Analysis
             // when no constants could be substituted.
             bool native = count != 0 || query.UniformQuery;
             var key = (program, entry, stage, native);
-            string programKey = native ? D3DShaderInputs.CacheKey(program, entry, stage) :
-                passCompilerIdentities.TryGetValue(pass, out string identity) && identity != null
-                    ? ShaderAnalysisCache.Shared.Key(program, entry, stage, identity + "/" + backend + "/" + target + "/" + tier + "/" + string.Join(";", keywords))
-                    : null;
             if (!compiled.TryGetValue(key, out var proof))
             {
                 if (native)
@@ -558,7 +508,8 @@ namespace Noname.AvatarTools.Analysis
                     // Parsing does not consume compiler/proof budgets. Overlap it
                     // with the native call (or an already queued compile), then
                     // consume the same native result before inspecting the slice.
-                    if (CompileCalls < MaximumCompilesPerSnapshot && preparation != null && !preparation.Started)
+                    if (CompileCalls < MaximumCompilesPerSnapshot && preparation != null && !preparation.Started &&
+                        !ContentFactCache.Shared.Contains(ShaderSliceFacts.Key(preparation.SourceId, raw, program, query, entry)))
                         preparation.Start(raw, program);
                     proof = CompileProgram(program, entry, stage);
                 }
@@ -568,6 +519,9 @@ namespace Noname.AvatarTools.Analysis
                     CompileCalls++;
                     var timer = Stopwatch.StartNew();
                     using var cost = AnalysisCost.Measure("Unity shader compiler");
+                    string programKey = passCompilerIdentities.TryGetValue(pass, out string identity) && identity != null
+                        ? ShaderAnalysisCache.Shared.Key(program, entry, stage, identity + "/" + backend + "/" + target + "/" + tier + "/" + string.Join(";", keywords))
+                        : null;
                     proof = ShaderAnalysisCache.Shared.Compile(programKey, () =>
                     {
                         var result = pass.CompileVariant(stage, keywords, backend, target, tier, true);
@@ -581,7 +535,7 @@ namespace Noname.AvatarTools.Analysis
                 }
             }
             if (proof.Inputs == null) return Unknown(proof.Error ?? "shader input reflection was incomplete");
-            return ShaderAnalysisCache.Shared.Usage(programKey, query, proof.Inputs, native) ? IndexIssue : null;
+            return query.MayReadCompiled(proof.Inputs, native) ? IndexIssue : null;
         }
 
         private string PassSource(ShaderData.Pass pass)
@@ -628,11 +582,26 @@ namespace Noname.AvatarTools.Analysis
             var key = (success, source, query.Signature);
             if (!inspectedPrograms.TryGetValue(key, out string issue))
             {
-                issue = InspectPreprocessed(success, source, query);
+                issue = success ? artifacts.Inspection(source).Inspect(true, query) : Unknown("a shader variant has no verified preprocessed program");
                 inspectedPrograms.Add(key, issue);
             }
             PreprocessedInspectionMilliseconds += timer.Elapsed.TotalMilliseconds;
             return issue;
+        }
+
+        private (bool Success, string Code) NativePreprocess(ShaderData.Pass pass, ShaderType stage, string[] keywords,
+            ShaderCompilerPlatform backend, BuildTarget target, GraphicsTier tier)
+        {
+            preprocessingIdentities.TryGetValue(pass, out string identity);
+            string signature = string.Join(";", keywords);
+            if (artifacts.TryPreprocessed(identity, stage, signature, backend, target, tier, out string previous))
+            { NativePreprocessCacheHits++; return (true, previous); }
+            var timer = Stopwatch.StartNew();
+            var value = pass.PreprocessVariant(stage, keywords, backend, target, tier, false);
+            NativePreprocessMilliseconds += timer.Elapsed.TotalMilliseconds;
+            string code = value.PreprocessedCode;
+            artifacts.StorePreprocessed(identity, stage, signature, backend, target, tier, value.Success, code);
+            return (value.Success, code);
         }
 
         private sealed class CompilePrefetch : IDisposable
@@ -685,10 +654,7 @@ namespace Noname.AvatarTools.Analysis
                 PreprocessCalls - shaderStart + pending >= MaximumCallsPerShader) return;
             if (!preprocessed.TryGetValue(key, out var value) && !batch.Programs.TryGetValue(key, out value))
             {
-                var timer = Stopwatch.StartNew();
-                var native = unit.Pass.PreprocessVariant(unit.Stage, keywords, unit.Backend, target, unit.Tier, false);
-                NativePreprocessMilliseconds += timer.Elapsed.TotalMilliseconds;
-                batch.Programs.Add(key, value = (native.Success, native.PreprocessedCode));
+                batch.Programs.Add(key, value = NativePreprocess(unit.Pass, unit.Stage, keywords, unit.Backend, target, unit.Tier));
             }
             if (InspectProgram(value.Success, value.Code, query) != IndexIssue) return;
             var specialized = Specialize(value.Code, constants);
@@ -698,7 +664,8 @@ namespace Noname.AvatarTools.Analysis
             batch.Native.Add(specialized.Code, entry, unit.Stage);
             var preparation = new ShaderInputPreparation(ShaderPropertyUsage.ProgramSourceId(unit.Shader));
             batch.Preparations.Add(key, preparation);
-            preparation.Start(value.Code, specialized.Code);
+            if (!ContentFactCache.Shared.Contains(ShaderSliceFacts.Key(preparation.SourceId, value.Code, specialized.Code, query, entry)))
+                preparation.Start(value.Code, specialized.Code);
         }
 
         private IDisposable BeginCompileBatch(ShaderData.Pass pass, ShaderType stage, IReadOnlyList<string[]> variants,
@@ -727,10 +694,7 @@ namespace Noname.AvatarTools.Analysis
                     {
                         if (PreprocessCalls + batch.Programs.Count >= MaximumCallsPerSnapshot ||
                             PreprocessCalls - shaderStart + batch.Programs.Count >= MaximumCallsPerShader) break;
-                        var timer = Stopwatch.StartNew();
-                        var native = pass.PreprocessVariant(stage, keywords, backend, target, tier, false);
-                        NativePreprocessMilliseconds += timer.Elapsed.TotalMilliseconds;
-                        batch.Programs.Add(key, value = (native.Success, native.PreprocessedCode));
+                        batch.Programs.Add(key, value = NativePreprocess(pass, stage, keywords, backend, target, tier));
                     }
                     if (InspectProgram(value.Success, value.Code, query) != IndexIssue) continue;
                     var specialized = Specialize(value.Code, constants);
@@ -746,7 +710,8 @@ namespace Noname.AvatarTools.Analysis
                     {
                         var preparation = new ShaderInputPreparation(sourceId);
                         batch.Preparations.Add(key, preparation);
-                        preparation.Start(value.Code, specialized.Code);
+                        if (!ContentFactCache.Shared.Contains(ShaderSliceFacts.Key(preparation.SourceId, value.Code, specialized.Code, query, entry)))
+                            preparation.Start(value.Code, specialized.Code);
                     }
                 }
                 return batch;

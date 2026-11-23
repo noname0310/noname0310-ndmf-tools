@@ -18,6 +18,8 @@ namespace Noname.AvatarTools.Analysis
         private readonly Dictionary<TKey, LinkedListNode<Entry>> entries;
         private readonly LinkedList<Entry> recent = new();
         private long cost;
+        internal int Count => entries.Count;
+        internal long Cost => cost;
         internal BoundedAnalysisCache(int maximumCount, int maximumCost, IEqualityComparer<TKey> comparer = null)
         {
             if (maximumCount < 1 || maximumCost < 1) throw new ArgumentOutOfRangeException();
@@ -40,5 +42,6 @@ namespace Noname.AvatarTools.Analysis
         }
         private void Remove(LinkedListNode<Entry> node)
         { entries.Remove(node.Value.Key); cost -= node.Value.Cost; recent.Remove(node); }
+        internal void Clear() { entries.Clear(); recent.Clear(); cost = 0; }
     }
 }

@@ -28,6 +28,8 @@ namespace Noname.AvatarTools.Analysis
         private readonly IReadOnlyDictionary<string, string> constants;
         private readonly Func<string, string, ShaderType, (D3DShaderInputs.Input[] Inputs, string Error)> compile;
 
+        internal ShaderInputUseSlice() { }
+
         internal ShaderInputUseSlice(string source, ShaderInputProgram program, ShaderInputQuery query, string entry,
             IReadOnlyDictionary<string, string> constants,
             Func<string, string, ShaderType, (D3DShaderInputs.Input[] Inputs, string Error)> compile)

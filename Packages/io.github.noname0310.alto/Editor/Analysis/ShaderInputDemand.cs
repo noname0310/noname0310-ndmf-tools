@@ -24,6 +24,31 @@ namespace Noname.AvatarTools.Analysis
         private bool lastRegionMatch;
         internal bool LocationsComplete { get; private set; } = true;
         internal ShaderInputDemand(ShaderInputQuery query) { Query = query; }
+        internal string ContentSignature
+        {
+            get
+            {
+                using var data = new MemoryStream();
+                using (var writer = new BinaryWriter(data, System.Text.Encoding.UTF8, true))
+                {
+                    writer.Write(Query.Signature); writer.Write(LocationsComplete);
+                    writer.Write(Names.Count); foreach (string name in Names.OrderBy(n => n, StringComparer.Ordinal)) writer.Write(name);
+                    writer.Write(WholeValues.Count); foreach (string name in WholeValues.OrderBy(n => n, StringComparer.Ordinal)) writer.Write(name);
+                    writer.Write(regions.Count);
+                    foreach (var pair in regions.OrderBy(p => p.Key, StringComparer.Ordinal))
+                    {
+                        writer.Write(pair.Key); writer.Write(pair.Value.Count);
+                        foreach (var region in pair.Value.OrderBy(r => r.First).ThenBy(r => r.Last))
+                        { writer.Write(region.First); writer.Write(region.Last); }
+                    }
+                    writer.Write(wholeValueScopes.Count);
+                    foreach (var scope in wholeValueScopes.OrderBy(s => s.Name, StringComparer.Ordinal).ThenBy(s => s.File, StringComparer.Ordinal)
+                                 .ThenBy(s => s.First).ThenBy(s => s.Last))
+                    { writer.Write(scope.Name); writer.Write(scope.File); writer.Write(scope.First); writer.Write(scope.Last); }
+                }
+                return ShaderAnalysisCache.Digest(data.ToArray());
+            }
+        }
         internal string Signature => Query.Signature + "|" + string.Join(",", Names.OrderBy(n => n, StringComparer.Ordinal)) + "|" +
             string.Join(",", WholeValues.OrderBy(n => n, StringComparer.Ordinal)) + "|" + string.Join(";", regions.OrderBy(p => p.Key, StringComparer.Ordinal)
                 .SelectMany(p => p.Value.OrderBy(r => r.First).ThenBy(r => r.Last).Select(r => p.Key + ":" + r.First + ":" + r.Last))) + "|scopes:" +

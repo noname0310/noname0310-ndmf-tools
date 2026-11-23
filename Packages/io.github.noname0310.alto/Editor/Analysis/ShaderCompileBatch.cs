@@ -20,7 +20,7 @@ namespace Noname.AvatarTools.Analysis
             { Inputs = inputs; Error = error; Milliseconds = milliseconds; }
         }
 
-        private readonly Dictionary<(string, string, ShaderType), Task<Result>> jobs = new();
+        private readonly Dictionary<(ShaderTextKey, string, ShaderType), Task<Result>> jobs = new();
         private readonly Func<string, string, ShaderType, (D3DShaderInputs.Input[] Inputs, string Error)> compile;
         private readonly int limit;
         private bool disposed;

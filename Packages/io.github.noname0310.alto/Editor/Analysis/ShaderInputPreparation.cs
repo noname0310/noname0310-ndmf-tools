@@ -10,6 +10,7 @@ namespace Noname.AvatarTools.Analysis
     internal sealed class ShaderInputPreparation : IDisposable
     {
         private readonly string sourceId;
+        internal string SourceId => sourceId;
         private readonly Func<string, string, ShaderInputProgram> parse;
         private Task<ShaderInputProgram> original, specialized;
         internal bool Started => original != null;

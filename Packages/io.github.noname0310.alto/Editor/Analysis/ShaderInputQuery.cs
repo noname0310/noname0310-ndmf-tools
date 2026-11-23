@@ -63,6 +63,17 @@ namespace Noname.AvatarTools.Analysis
             ? input.Kind != D3DShaderInputs.InputKind.Semantic && identifiers.Contains(input.Semantic)
             : input.Kind == D3DShaderInputs.InputKind.Semantic && Matches(input.Semantic, input.SemanticIndex);
 
+        internal bool MayReadCompiled(D3DShaderInputs.Input[] inputs, bool uniformsVerified = false)
+        {
+            // The compiler cache stores the complete reflected inventory. Answer
+            // new queries directly; no compilation or per-query disk record is needed.
+            // Stripped uniform metadata is unknown, not evidence of absence.
+            if (inputs == null || UniformQuery && !uniformsVerified) return true;
+            foreach (var input in inputs)
+                if (input.ReadMask != 0 && MatchesCompiled(input)) return true;
+            return false;
+        }
+
         internal bool Matches(string name, uint index)
         {
             foreach (var semantic in Semantics)
@@ -72,6 +83,15 @@ namespace Noname.AvatarTools.Analysis
         }
 
         internal bool MatchesToken(string text) => MatchesToken(text, 0, text.Length);
+
+        internal bool MatchesTokens(HashSet<string> tokens)
+        {
+            if (identifiers != null)
+                foreach (string name in identifiers) if (tokens.Contains(name)) return true;
+            if (Semantics.Length != 0)
+                foreach (string token in tokens) if (MatchesToken(token)) return true;
+            return false;
+        }
 
         internal bool MatchesToken(string text, int start, int length)
         {

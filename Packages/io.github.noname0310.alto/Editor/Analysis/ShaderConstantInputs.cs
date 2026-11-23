@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -122,7 +123,7 @@ namespace Noname.AvatarTools.Analysis
             internal readonly string Source;
             internal readonly List<(int Start, int Length, string Type, string Name)> Declarations = new();
             internal string[] UniformNames;
-            internal Plan(string source) { Source = source; }
+            internal Plan(string source) { Source = new ShaderTextKey(source).Text; }
             internal string Apply(IReadOnlyDictionary<string, float> constants, out int specialized)
             {
                 specialized = 0;
@@ -140,6 +141,39 @@ namespace Noname.AvatarTools.Analysis
                 }
                 return output == null ? Source : output.Append(Source, cursor, Source.Length - cursor).ToString();
             }
+        }
+
+        internal static Plan PrepareCached(string source)
+        {
+            if (!ContentFactCache.Enabled) return Prepare(source);
+            const string kind = "shader declarations";
+            var cache = ContentFactCache.Shared;
+            string key = cache.Key(kind, ContentFactCache.TextDigest(source));
+            if (cache.TryRead(kind, key, ReadPlan, out Plan previous)) return previous;
+            var plan = Prepare(source);
+            cache.Store(kind, key, writer =>
+            {
+                writer.Write(plan.Source); writer.Write(plan.Declarations.Count);
+                foreach (var declaration in plan.Declarations)
+                { writer.Write(declaration.Start); writer.Write(declaration.Length); writer.Write(declaration.Type); writer.Write(declaration.Name); }
+                writer.Write(plan.UniformNames.Length);
+                foreach (string name in plan.UniformNames) writer.Write(name);
+            });
+            return plan;
+        }
+
+        private static Plan ReadPlan(BinaryReader reader)
+        {
+            var plan = new Plan(reader.ReadString()); int count = ContentFactCache.Count(reader);
+            for (int i = 0; i < count; i++)
+            {
+                int start = reader.ReadInt32(), length = reader.ReadInt32();
+                if (start < 0 || length < 0 || (long)start + length > plan.Source.Length) throw new InvalidDataException();
+                plan.Declarations.Add((start, length, reader.ReadString(), reader.ReadString()));
+            }
+            plan.UniformNames = new string[ContentFactCache.Count(reader)];
+            for (int i = 0; i < plan.UniformNames.Length; i++) plan.UniformNames[i] = reader.ReadString();
+            return plan;
         }
 
         internal static Plan Prepare(string source)

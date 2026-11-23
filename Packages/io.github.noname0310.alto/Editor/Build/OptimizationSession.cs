@@ -25,6 +25,7 @@ namespace Noname.AvatarTools.Build
             internal object Value;
         }
         private readonly Dictionary<object, Entry> entries = new();
+        private readonly ShaderAnalysisArtifacts shaderArtifacts = new();
         internal T Get<T>(object key, AnalysisDomain dependencies, Func<T> create)
         {
             if (entries.TryGetValue(key, out var entry))
@@ -38,7 +39,8 @@ namespace Noname.AvatarTools.Build
         {
             foreach (var key in entries.Where(p => (p.Value.Dependencies & changed) != 0).Select(p => p.Key).ToArray()) entries.Remove(key);
         }
-        internal ShaderPropertyUsage Shaders => Get(typeof(ShaderPropertyUsage), AnalysisDomain.ShaderSources, () => new ShaderPropertyUsage());
+        internal ShaderPropertyUsage Shaders => Get(typeof(ShaderPropertyUsage), AnalysisDomain.ShaderSources,
+            () => new ShaderPropertyUsage(ShaderAnalysisArtifacts.ShareAcrossSnapshots ? shaderArtifacts : new ShaderAnalysisArtifacts()));
     }
 
     // Design reference: AAO 1.9.20 OptimizerPlugin's staged execution. Independently
