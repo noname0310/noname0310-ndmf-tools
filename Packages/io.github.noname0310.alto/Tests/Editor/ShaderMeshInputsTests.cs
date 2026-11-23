@@ -26,7 +26,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var shader = MeshInputShader("Inactive"); var sources = new ShaderPropertyUsage();
             Assert.That(sources.Get(shader).Uncertain, Does.Contain("include"));
             Assert.That(sources.MeshInputs.Issue(shader, true, BuildTarget.StandaloneWindows64), Is.Null);
-            Assert.That(sources.MeshInputs.PreprocessCalls, Is.GreaterThan(1), "One keyword sample cannot prove absence.");
+            Assert.That(sources.MeshInputs.PreprocessCalls, Is.Zero,
+                "A complete preprocessor absence proof covers all keyword states without native enumeration.");
             int calls = sources.MeshInputs.PreprocessCalls;
             Assert.That(sources.MeshInputs.Issue(shader, true, BuildTarget.StandaloneWindows64), Is.Null);
             Assert.That(sources.MeshInputs.PreprocessCalls, Is.EqualTo(calls), "Reuse the complete proof within the source snapshot.");
@@ -50,10 +51,10 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         }
 
         [Test]
-        public void ShaderMeshProofRetainsMeshesWhenVariantCoverageExceedsItsBudget()
+        public void ShaderMeshProofFindsLiveInputsWithoutEnumeratingUnrelatedKeywords()
         {
             var shader = MeshInputShader("Budget"); var sources = new ShaderPropertyUsage();
-            Assert.That(sources.MeshInputs.Issue(shader, false, BuildTarget.StandaloneWindows64), Does.Contain("bounded analysis limit"));
+            Assert.That(sources.MeshInputs.Issue(shader, false, BuildTarget.StandaloneWindows64), Does.Contain("may depend"));
             Assert.That(sources.MeshInputs.PreprocessCalls, Is.LessThan(10));
         }
 
@@ -117,7 +118,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var shader = Shader.Find("Legacy Shaders/Diffuse"); Assert.That(shader, Is.Not.Null);
             var sources = new ShaderPropertyUsage();
             Assert.That(sources.MeshInputs.Issue(shader, false, BuildTarget.StandaloneWindows64), Does.Contain("unverified"));
-            Assert.That(sources.MeshInputs.PreprocessCalls, Is.Zero, "An incomplete variant universe must stay conservative.");
+            Assert.That(sources.MeshInputs.PreprocessCalls, Is.LessThanOrEqualTo(1),
+                "A discovery probe cannot authorize an incomplete variant universe.");
         }
 
         [TestCase(BuildTarget.StandaloneWindows64)] [TestCase(BuildTarget.Android)] [TestCase(BuildTarget.iOS)]

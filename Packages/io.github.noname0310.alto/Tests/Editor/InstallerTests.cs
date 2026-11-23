@@ -85,24 +85,17 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         }
 
         [Test, Category("Installer")]
-        public void InstallerShaderIndexChoicesRemainIndependentAndDefaultOff()
+        public void InstallerKeepsShaderInputProofsEnabledOnEveryPlatform()
         {
             var draft = InstallerChoices(true);
-            Assert.That(draft.CommonAllowShaderIndexChanges || draft.AllowShaderIndexChanges, Is.False);
-            draft.CommonAllowShaderIndexChanges = true;
+            draft.CommonAllowCoordinateSpaceChanges = true;
             var settings = InstallerSettings(draft);
             var common = settings.transform.Find("Common/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
             var mobile = settings.transform.Find("Mobile/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
-            Assert.That(common.enabled && common.AllowShaderIndexChanges, Is.True);
-            Assert.That(common.AllowCoordinateSpaceChanges || common.AllowTransparentSortingChanges, Is.False);
+            Assert.That(common.enabled, Is.True);
+            Assert.That(common.AllowShaderIndexChanges, Is.False);
             Assert.That(common.ApplyOnPlatforms, Is.EqualTo(OptimizationPlatforms.PC));
             Assert.That(mobile.AllowShaderIndexChanges, Is.False);
-            draft.CommonAllowShaderIndexChanges = false; draft.AllowShaderIndexChanges = true;
-            settings = InstallerSettings(draft);
-            common = settings.transform.Find("Common/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
-            mobile = settings.transform.Find("Mobile/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
-            Assert.That(common.enabled || common.AllowShaderIndexChanges, Is.False);
-            Assert.That(mobile.AllowShaderIndexChanges, Is.True);
             Assert.That(mobile.ApplyOnPlatforms, Is.EqualTo(OptimizationPlatforms.Android | OptimizationPlatforms.IOS));
         }
 
@@ -213,6 +206,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         [Test, Category("Installer")]
         public void InstallerIsOneUndoableAdditionWithoutChangingSourceAssetsOrExistingSettings()
         {
+            // Selection-driven windows must not match reports from earlier, closed preview scenes.
+            root.name = "Installer Undo Test " + Guid.NewGuid().ToString("N");
             Mesh("custom face"); renderer.SetBlendShapeWeight(0, 43);
             var mesh = renderer.sharedMesh;
             var draft = InstallerChoices();
@@ -244,14 +239,15 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             }
             finally
             {
-                if (group >= 0) Undo.RevertAllDownToGroup(group);
-                Selection.objects = oldSelection;
+                try { if (group >= 0) Undo.RevertAllDownToGroup(group); }
+                finally { Selection.objects = oldSelection; }
             }
         }
 
         [Test, Category("Installer")]
         public void InstallerPrefabOverridesSurviveSavingInsideAnAvatarPrefab()
         {
+            root.name = "Installer Prefab Test " + Guid.NewGuid().ToString("N");
             var draft = InstallerChoices(true);
             draft.CommonMobileOnly = true;
             draft.CreateMaterialAtlas = draft.RemoveOccludedMesh = draft.ReduceMeshes = false;
@@ -290,10 +286,16 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             }
             finally
             {
-                if (reloaded != null) Object.DestroyImmediate(reloaded);
-                if (group >= 0) Undo.RevertAllDownToGroup(group);
-                AssetDatabase.DeleteAsset(path);
-                Selection.objects = previousSelection;
+                try
+                {
+                    if (reloaded != null) Object.DestroyImmediate(reloaded);
+                    if (group >= 0) Undo.RevertAllDownToGroup(group);
+                }
+                finally
+                {
+                    try { AssetDatabase.DeleteAsset(path); }
+                    finally { Selection.objects = previousSelection; }
+                }
             }
         }
 

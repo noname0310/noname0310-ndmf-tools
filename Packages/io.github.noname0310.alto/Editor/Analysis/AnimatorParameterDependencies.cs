@@ -26,6 +26,99 @@ namespace Noname.AvatarTools.Analysis
         private HashSet<StateMachineBehaviour> activeBehaviours;
         internal VirtualClip[] Clips;
 
+        // Shared immutable facts for one liveness query. Local/remote execution
+        // still has separate reachability and dependency sets; only structural
+        // facts and pure output predicates are shared between those contexts.
+        private sealed class Facts
+        {
+            internal readonly HashSet<string> Names = new(StringComparer.Ordinal);
+            internal readonly Dictionary<VirtualClip, HashSet<string>> Declarations = new();
+            internal readonly Dictionary<VRC_AvatarParameterDriver, HashSet<VirtualAnimatorController>> DriverOwners = new();
+            internal readonly VirtualNode[] Nodes;
+            private readonly Dictionary<VirtualClip, ClipOutputs> clipOutputs = new();
+            private readonly Dictionary<VirtualLayer, VirtualNode[]> layers = new();
+            private readonly Dictionary<VirtualClip, bool> clipDurations = new();
+            private readonly Dictionary<VirtualMotion, bool> motionDurations = new();
+            private readonly Func<VirtualClip, EditorCurveBinding, bool> observable;
+
+            internal readonly struct ClipOutputs
+            {
+                internal readonly string[] Parameters;
+                internal readonly bool Observable;
+                internal ClipOutputs(string[] parameters, bool observable)
+                { Parameters = parameters; Observable = observable; }
+            }
+
+            internal Facts(VirtualAnimatorController[] controllers, Func<VirtualClip, EditorCurveBinding, bool> observable)
+            {
+                this.observable = observable;
+                var all = new HashSet<VirtualNode>();
+                var ordered = new List<VirtualNode>();
+                foreach (var controller in controllers)
+                {
+                    Names.UnionWith(controller.Parameters.Keys);
+                    var declared = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var parameter in controller.Parameters.Values)
+                        if (parameter.type == AnimatorControllerParameterType.Float) declared.Add(parameter.name);
+                    foreach (var node in controller.AllReachableNodes())
+                    {
+                        if (all.Add(node)) ordered.Add(node);
+                        if (node is VirtualClip clip)
+                        {
+                            if (Declarations.TryGetValue(clip, out var existing)) existing.IntersectWith(declared);
+                            else Declarations.Add(clip, new HashSet<string>(declared, StringComparer.Ordinal));
+                        }
+                        IEnumerable<StateMachineBehaviour> behaviours = node is VirtualState state ? state.Behaviours :
+                            node is VirtualStateMachine machine ? machine.Behaviours : Array.Empty<StateMachineBehaviour>();
+                        foreach (var behaviour in behaviours)
+                            if (behaviour is VRC_AvatarParameterDriver driver)
+                            {
+                                if (!DriverOwners.TryGetValue(driver, out var owners)) DriverOwners.Add(driver, owners = new());
+                                owners.Add(controller);
+                            }
+                    }
+                }
+                Nodes = ordered.ToArray();
+            }
+
+            internal VirtualNode[] LayerNodes(VirtualLayer layer)
+            {
+                if (!layers.TryGetValue(layer, out var nodes)) layers.Add(layer, nodes = layer.AllReachableNodes().ToArray());
+                return nodes;
+            }
+
+            internal bool HasDuration(VirtualMotion motion)
+            {
+                if (motionDurations.TryGetValue(motion, out bool result)) return result;
+                foreach (var clip in MotionAnalysis.Clips(motion))
+                {
+                    if (!clipDurations.TryGetValue(clip, out bool timed))
+                        clipDurations.Add(clip, timed = MotionAnalysis.EndTime(clip) != 0 || clip.Settings.stopTime != 0);
+                    if (timed) { result = true; break; }
+                }
+                motionDurations.Add(motion, result); return result;
+            }
+
+            internal ClipOutputs Outputs(VirtualClip clip)
+            {
+                if (clipOutputs.TryGetValue(clip, out var previous)) return previous;
+                var parameters = new List<string>(); bool output = false;
+                foreach (var binding in clip.GetFloatCurveBindings())
+                {
+                    if (binding.type == typeof(Animator) && binding.path == "" && !binding.isDiscreteCurve &&
+                        Declarations[clip].Contains(binding.propertyName)) parameters.Add(binding.propertyName);
+                    else if (!output && (observable == null || observable(clip, binding))) output = true;
+                }
+                if (!output)
+                    foreach (var binding in clip.GetObjectCurveBindings())
+                        if (observable == null || observable(clip, binding)) { output = true; break; }
+                var source = MotionAnalysis.Source(clip);
+                output |= clip.IsMarkerClip || source == null || source.humanMotion || source.events.Length > 0;
+                var result = new ClipOutputs(parameters.ToArray(), output);
+                clipOutputs.Add(clip, result); return result;
+            }
+        }
+
         internal bool MotionDependsOn(VirtualClip clip, ISet<string> inputs) =>
             motionInputs.TryGetValue(clip, out var controls) && controls.Overlaps(inputs);
 
@@ -141,9 +234,13 @@ namespace Noname.AvatarTools.Analysis
             bool forExpressions = false, Func<VirtualClip, EditorCurveBinding, bool> observableBinding = null,
             AnimatorReachability analysis = null, IDictionary<object, VirtualAnimatorController> controllerEntries = null)
         {
+            using var cost = AnalysisCost.Measure("Parameter dependencies");
             var contexts = AnimatorInstanceContexts.Analyze(avatar, controllers, controllerEntries);
-            if (contexts == null) return CollectInstance(avatar, controllers, forExpressions, observableBinding, analysis);
-            var parts = contexts.Select(c => CollectInstance(avatar, controllers, forExpressions, observableBinding, analysis, c)).ToArray();
+            var facts = new Facts(controllers, observableBinding);
+            if (contexts == null) return CollectInstance(avatar, controllers, forExpressions, observableBinding, analysis, facts);
+            var parts = new AnimatorParameterDependencies[contexts.Length];
+            for (int i = 0; i < parts.Length; i++)
+                parts[i] = CollectInstance(avatar, controllers, forExpressions, observableBinding, analysis, facts, contexts[i]);
             var result = parts[0];
             // Keep the combined wrapper separate: each closure must traverse one instance
             // graph before crossing an explicit network edge.
@@ -165,6 +262,7 @@ namespace Noname.AvatarTools.Analysis
 
         private static AnimatorParameterDependencies CollectInstance(GameObject avatar, VirtualAnimatorController[] controllers,
             bool forExpressions, Func<VirtualClip, EditorCurveBinding, bool> observableBinding, AnimatorReachability analysis,
+            Facts facts,
             AnimatorInstanceContexts.Context instance = null)
         {
             bool contextual = instance != null;
@@ -175,25 +273,10 @@ namespace Noname.AvatarTools.Analysis
                 var transitions = source.ToArray(); bool solo = transitions.Any(t => t.Solo);
                 return transitions.Where(t => !t.Mute && (!solo || t.Solo) && instance.CanTake(t));
             }
-            var names = new HashSet<string>(controllers.SelectMany(c => c.Parameters.Keys), StringComparer.Ordinal);
-            var declarations = new Dictionary<VirtualClip, HashSet<string>>();
+            var names = facts.Names;
+            var declarations = facts.Declarations;
             var motionInputs = new Dictionary<VirtualClip, HashSet<string>>();
-            var driverOwners = new Dictionary<VRC_AvatarParameterDriver, HashSet<VirtualAnimatorController>>();
-            foreach (var controller in controllers)
-            {
-                var controllerNodes = controller.AllReachableNodes().ToArray();
-                var declared = controller.Parameters.Values.Where(p => p.type == AnimatorControllerParameterType.Float).Select(p => p.name).ToArray();
-                foreach (var clip in controllerNodes.OfType<VirtualClip>())
-                    if (declarations.TryGetValue(clip, out var existing)) existing.IntersectWith(declared);
-                    else declarations.Add(clip, new HashSet<string>(declared, StringComparer.Ordinal));
-                foreach (var driver in controllerNodes.OfType<VirtualState>().SelectMany(s => s.Behaviours)
-                    .Concat(controllerNodes.OfType<VirtualStateMachine>().SelectMany(s => s.Behaviours))
-                    .OfType<VRC_AvatarParameterDriver>())
-                {
-                    if (!driverOwners.TryGetValue(driver, out var owners)) driverOwners.Add(driver, owners = new());
-                    owners.Add(controller);
-                }
-            }
+            var driverOwners = facts.DriverOwners;
             var live = new HashSet<string>(AnimatorReachability.BuiltIns, StringComparer.Ordinal);
             var dependencies = names.ToDictionary(n => n, _ => new HashSet<string>(StringComparer.Ordinal));
             // Menu and Expression declarations are input sources, not evidence of observable use.
@@ -202,13 +285,6 @@ namespace Noname.AvatarTools.Analysis
             var external = ExternalParameterAccess.Collect();
             live.UnionWith(names.Where(n => external.IsRead(n) || external.IsWritten(n)));
 
-            bool Parameter(VirtualClip clip, EditorCurveBinding binding) => binding.type == typeof(Animator) && binding.path == "" &&
-                !binding.isDiscreteCurve && declarations[clip].Contains(binding.propertyName);
-            void Output(VirtualClip clip, EditorCurveBinding binding, IEnumerable<string> inputs)
-            {
-                if (Parameter(clip, binding)) dependencies[binding.propertyName].UnionWith(inputs);
-                else if (observableBinding == null || observableBinding(clip, binding)) live.UnionWith(inputs);
-            }
             void Visit(VirtualMotion motion, HashSet<string> inputs, HashSet<VirtualMotion> stack)
             {
                 if (motion == null || !stack.Add(motion)) return;
@@ -216,25 +292,30 @@ namespace Noname.AvatarTools.Analysis
                 {
                     if (!motionInputs.TryGetValue(clip, out var controls)) motionInputs.Add(clip, controls = new());
                     controls.UnionWith(inputs);
-                    foreach (var binding in clip.GetFloatCurveBindings()) Output(clip, binding, inputs);
-                    var source = MotionAnalysis.Source(clip);
-                    if (clip.GetObjectCurveBindings().Any(b => observableBinding == null || observableBinding(clip, b)) || clip.IsMarkerClip || source == null ||
-                        source.humanMotion || source.events.Length > 0) live.UnionWith(inputs);
-                    if (clip.IsMarkerClip) live.UnionWith(clip.GetFloatCurveBindings().Where(b => Parameter(clip, b)).Select(b => b.propertyName));
+                    var output = facts.Outputs(clip);
+                    foreach (string parameter in output.Parameters) dependencies[parameter].UnionWith(inputs);
+                    if (output.Observable) live.UnionWith(inputs);
+                    if (clip.IsMarkerClip) live.UnionWith(output.Parameters);
                 }
                 else if (motion is VirtualBlendTree tree)
                 {
-                    var shared = new HashSet<string>(inputs);
+                    // Borrow one input set for this depth-first traversal. A
+                    // branch only adds its own controls and restores them on
+                    // return; no retained dependency summary owns this scratch.
+                    bool addedX = false, addedY = false;
+                    List<string> addedWeights = null;
                     if (tree.BlendType != BlendTreeType.Direct)
                     {
-                        shared.Add(tree.BlendParameter);
+                        addedX = inputs.Add(tree.BlendParameter);
                         // Simple1D retains a serialized Y name, but Unity does not read it.
-                        if (tree.BlendType != BlendTreeType.Simple1D) shared.Add(tree.BlendParameterY);
+                        if (tree.BlendType != BlendTreeType.Simple1D) addedY = inputs.Add(tree.BlendParameterY);
                     }
-                    else if (tree.NormalizedBlendValues) shared.UnionWith(tree.Children.Select(c => c.DirectBlendParameter));
+                    else if (tree.NormalizedBlendValues)
+                        foreach (var child in tree.Children)
+                            if (inputs.Add(child.DirectBlendParameter)) (addedWeights ??= new()).Add(child.DirectBlendParameter);
                     // Tree weights also influence effective clip duration, and therefore exit times
                     // and normalized transition durations, even when the sampled values are unused.
-                    if (!forExpressions && MotionAnalysis.Clips(tree).Any(c => MotionAnalysis.EndTime(c) != 0 || c.Settings.stopTime != 0))
+                    if (!forExpressions && facts.HasDuration(tree))
                     {
                         if (tree.BlendType == BlendTreeType.Direct) live.UnionWith(tree.Children.Select(c => c.DirectBlendParameter));
                         else
@@ -243,11 +324,20 @@ namespace Noname.AvatarTools.Analysis
                             if (tree.BlendType != BlendTreeType.Simple1D) live.Add(tree.BlendParameterY);
                         }
                     }
-                    foreach (var child in tree.Children)
+                    try
                     {
-                        var childInputs = new HashSet<string>(shared);
-                        if (tree.BlendType == BlendTreeType.Direct) childInputs.Add(child.DirectBlendParameter);
-                        Visit(child.Motion, childInputs, stack);
+                        foreach (var child in tree.Children)
+                        {
+                            bool added = tree.BlendType == BlendTreeType.Direct && inputs.Add(child.DirectBlendParameter);
+                            try { Visit(child.Motion, inputs, stack); }
+                            finally { if (added) inputs.Remove(child.DirectBlendParameter); }
+                        }
+                    }
+                    finally
+                    {
+                        if (addedX) inputs.Remove(tree.BlendParameter);
+                        if (addedY) inputs.Remove(tree.BlendParameterY);
+                        if (addedWeights != null) foreach (string weight in addedWeights) inputs.Remove(weight);
                     }
                 }
                 stack.Remove(motion);
@@ -260,9 +350,10 @@ namespace Noname.AvatarTools.Analysis
                 c.GetFloatCurveBindings().Any(b => observableBinding == null || observableBinding(c, b)) ||
                 c.GetObjectCurveBindings().Any(b => observableBinding == null || observableBinding(c, b)) ||
                 c.IsMarkerClip || MotionAnalysis.Source(c) == null || MotionAnalysis.Source(c).humanMotion);
+            using (AnalysisCost.Measure("Dependency layer summaries"))
             foreach (var layer in controllers.SelectMany(c => c.Layers))
             {
-                var layerNodes = layer.AllReachableNodes().ToArray();
+                var layerNodes = facts.LayerNodes(layer);
                 var statesInContext = layerNodes.OfType<VirtualState>().Where(StateActive).ToArray();
                 var machinesInContext = layerNodes.OfType<VirtualStateMachine>().Where(MachineActive).ToArray();
                 var treesInContext = (contextual ? statesInContext.Where(s => s.Motion != null)
@@ -282,7 +373,7 @@ namespace Noname.AvatarTools.Analysis
                         controls.UnionWith(new[] { state.TimeParameter, state.SpeedParameter, state.CycleOffsetParameter, state.MirrorParameter });
                     foreach (var tree in treesInContext)
                     {
-                        if (!MotionAnalysis.Clips(tree).Any(c => MotionAnalysis.EndTime(c) != 0 || c.Settings.stopTime != 0)) continue;
+                        if (!facts.HasDuration(tree)) continue;
                         if (tree.BlendType == BlendTreeType.Direct) controls.UnionWith(tree.Children.Select(c => c.DirectBlendParameter));
                         else
                         {
@@ -323,18 +414,27 @@ namespace Noname.AvatarTools.Analysis
                     inputs.UnionWith(controls);
                 }
             }
-            var nodes = controllers.SelectMany(c => c.AllReachableNodes()).Distinct().ToArray();
+            var nodes = facts.Nodes;
             if (!forExpressions)
                 foreach (var transition in activeTransitions)
                     live.UnionWith(transition.Conditions.Select(c => c.parameter));
-            foreach (var state in nodes.OfType<VirtualState>().Where(StateActive))
+            using (AnalysisCost.Measure("Dependency motion traversal"))
             {
-                // State timing can control transitions and behaviour execution without any pose output.
-                if (!forExpressions) live.UnionWith(new[] { state.TimeParameter, state.SpeedParameter, state.CycleOffsetParameter, state.MirrorParameter });
-                Visit(state.Motion, stateInputs.TryGetValue(state, out var inputs) ? inputs : new(), new());
+                var motionStack = new HashSet<VirtualMotion>();
+                var motionControls = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var node in nodes)
+                {
+                    if (!(node is VirtualState state) || !StateActive(state)) continue;
+                    // State timing can control transitions and behaviour execution without any pose output.
+                    if (!forExpressions) live.UnionWith(new[] { state.TimeParameter, state.SpeedParameter, state.CycleOffsetParameter, state.MirrorParameter });
+                    motionControls.Clear();
+                    if (stateInputs.TryGetValue(state, out var inputs)) motionControls.UnionWith(inputs);
+                    Visit(state.Motion, motionControls, motionStack);
+                }
             }
             var behaviours = behaviourInputs.Keys;
             var faceTracking = new NativeFaceTracking(avatar);
+            using (AnalysisCost.Measure("Dependency behaviour summaries"))
             foreach (var behaviour in behaviours)
             {
                 if (behaviour is VRC_AvatarParameterDriver driver)

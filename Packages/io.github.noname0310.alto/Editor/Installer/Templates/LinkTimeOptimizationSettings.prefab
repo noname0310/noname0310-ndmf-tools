@@ -544,6 +544,9 @@ MonoBehaviour:
   ExpandBounds: 1
   MergeIdenticalMaterialSlots: 1
   RemoveUnusedMeshData: 1
+  PreserveVertexIds: 1
+  VertexIdUniformThreshold: 3
+  PreserveParticleRandomSequence: 0
   RebindStaticBones: 1
   PreserveRenderers: []
 --- !u!114 &6507688796856187044

@@ -24,9 +24,11 @@ namespace Noname.AvatarTools.Analysis
     {
         private readonly GameObject avatar;
         private readonly AvatarAnimationIndex animations;
+        private readonly SerializedReferenceSnapshot references;
         private readonly Dictionary<Object, HashSet<Object>> edges = new();
         private readonly HashSet<Object> roots = new();
         private readonly HashSet<Object> live = new();
+        private readonly Dictionary<Transform, bool> activation = new();
         private InvariantComponentSettings invariantSettings;
         internal readonly Dictionary<Component, Transform> Constraints = new();
         internal readonly HashSet<Component> Components;
@@ -35,9 +37,9 @@ namespace Noname.AvatarTools.Analysis
         internal readonly Dictionary<Object, HashSet<Object>> ReferenceOwners = new();
         internal string UnsafeReason;
 
-        private AvatarDependencyGraph(GameObject avatar, AvatarAnimationIndex animations)
+        private AvatarDependencyGraph(GameObject avatar, AvatarAnimationIndex animations, SerializedReferenceSnapshot references)
         {
-            this.avatar = avatar; this.animations = animations;
+            this.avatar = avatar; this.animations = animations; this.references = references;
             Components = new(avatar.GetComponentsInChildren<Component>(true).Where(c => c != null));
         }
 
@@ -71,9 +73,10 @@ namespace Noname.AvatarTools.Analysis
         private void Root(Object value) { if (value != null) roots.Add(value); }
 
         internal static AvatarDependencyGraph Create(GameObject avatar, AvatarAnimationIndex animations,
-            ObjectOptimizationState settings, bool collectObjects, ShaderPropertyUsage shaders = null)
+            ObjectOptimizationState settings, bool collectObjects, ShaderPropertyUsage shaders = null, SerializedReferenceSnapshot references = null)
         {
-            var result = new AvatarDependencyGraph(avatar, animations) { UnsafeReason = animations.UnsafeReason };
+            using var cost = AnalysisCost.Measure("Object dependencies");
+            var result = new AvatarDependencyGraph(avatar, animations, references) { UnsafeReason = animations.UnsafeReason };
             result.Build(settings, collectObjects, shaders ?? new ShaderPropertyUsage());
             return result;
         }
@@ -82,10 +85,22 @@ namespace Noname.AvatarTools.Analysis
         {
             // An animation can turn an initially disabled object on. Treat every write as
             // potentially active, including additive/direct trees and ambiguous bindings.
-            // The invariant-curve pass can remove proven redundant writes beforehand.
-            for (var current = transform; current != null && current != avatar.transform; current = current.parent)
-                if (!current.gameObject.activeSelf && !animations.Writes(current.gameObject, "m_IsActive")) return false;
-            return true;
+            // Share ancestor results only during this immutable graph construction.
+            if (transform == null) return true;
+            if (activation.TryGetValue(transform, out bool known)) return known;
+            var pending = new List<Transform>();
+            bool active = true;
+            var root = avatar.transform;
+            for (var current = transform; current != null && current != root; current = current.parent)
+            {
+                if (activation.TryGetValue(current, out active)) break;
+                pending.Add(current);
+                var obj = current.gameObject;
+                if (!obj.activeSelf && !animations.Writes(obj, "m_IsActive")) { active = false; break; }
+                active = true;
+            }
+            foreach (var current in pending) activation.Add(current, active);
+            return active;
         }
 
         private bool CanEnable(Component component)
@@ -96,7 +111,7 @@ namespace Noname.AvatarTools.Analysis
             // A binding kept for Write Defaults does not necessarily enable the output.
             // Only fold a disabled component when all reachable evaluations preserve it.
             invariantSettings ??= new InvariantComponentSettings(animations,
-                AnimatorReachability.Analyze(avatar, animations.Controllers, animations.PreservedParameters), animations.ControllerEntries);
+                animations.Reachability, animations.ControllerEntries);
             return !invariantSettings.IsConstantProperty(component, "m_Enabled");
         }
 
@@ -275,21 +290,21 @@ namespace Noname.AvatarTools.Analysis
         private void ReadReferences(Object owner)
         {
             if (owner == null || !inspected.Add(owner)) return;
-            using var serialized = new SerializedObject(owner);
-            foreach (var property in SerializedReferences.Properties(serialized))
+            using var cost = AnalysisCost.Measure("Object serialized references");
+            using var typedCost = AnalysisCost.Measure("Object references by type", owner.GetType());
+            bool fixedExclusions = owner is VRCPhysBone bone && PhysBoneHierarchy.FixedExclusions(bone, animations);
+            foreach (var property in references == null ? SerializedReferenceSnapshot.Read(owner) : references.Get(owner))
             {
-                if (property.propertyPath == "m_GameObject" || property.propertyPath == "m_Script") continue;
-                var reference = property.objectReferenceValue;
+                var reference = property.Value;
                 if (reference == null) continue;
                 // Native FT mesh references are output destinations, not input
                 // dependencies. A hidden, otherwise unused output must remain collectible.
-                bool nativeFaceOutput = owner is VRCAvatarDescriptor && property.propertyPath.StartsWith("faceTrackingMeshes.", StringComparison.Ordinal);
-                bool materialContactOutput = owner is VRCContactReceiver && property.propertyPath.StartsWith("shaderTargetRenderers.", StringComparison.Ordinal);
+                bool nativeFaceOutput = owner is VRCAvatarDescriptor && property.Path.StartsWith("faceTrackingMeshes.", StringComparison.Ordinal);
+                bool materialContactOutput = owner is VRCContactReceiver && property.Path.StartsWith("shaderTargetRenderers.", StringComparison.Ordinal);
                 // An exclusion is a traversal boundary, not a consumer of the excluded
                 // subtree. Retain it in ReferenceOwners so flattening cannot move a
                 // live child back into the simulation; an entirely dead branch can die.
-                bool ignoredBranch = owner is VRCPhysBone bone && PhysBoneHierarchy.FixedExclusions(bone, animations) &&
-                    property.propertyPath.StartsWith("ignoreTransforms.", StringComparison.Ordinal);
+                bool ignoredBranch = fixedExclusions && property.Path.StartsWith("ignoreTransforms.", StringComparison.Ordinal);
                 if (!nativeFaceOutput && !materialContactOutput && !ignoredBranch) Edge(owner, reference);
                 if (!ReferenceOwners.TryGetValue(reference, out var readers)) ReferenceOwners.Add(reference, readers = new());
                 readers.Add(owner);
@@ -299,14 +314,23 @@ namespace Noname.AvatarTools.Analysis
             }
         }
 
+        private static readonly Dictionary<Type, System.Reflection.FieldInfo> ConstraintTargetFields = new();
+
         internal static bool TryConstraintTarget(Component component, out Transform target)
         {
             target = null;
             if (component is IConstraint) { target = component.transform; return true; }
             var type = component.GetType();
-            if (type.Assembly.GetName().Name != "VRC.SDK3.Dynamics.Constraint") return false;
-            var field = type.GetField("TargetTransform");
-            if (field?.FieldType != typeof(Transform)) return false;
+            if (!ConstraintTargetFields.TryGetValue(type, out var field))
+            {
+                if (ObjectOptimizationSafety.AssemblyName(type) == "VRC.SDK3.Dynamics.Constraint")
+                {
+                    field = type.GetField("TargetTransform");
+                    if (field?.FieldType != typeof(Transform)) field = null;
+                }
+                ConstraintTargetFields.Add(type, field);
+            }
+            if (field == null) return false;
             var configured = field.GetValue(component) as Transform;
             // Empty serialized references can be Unity missing-object wrappers.
             // The SDK treats these as self-targets, just like an ordinary null.

@@ -18,7 +18,7 @@ namespace Noname.AvatarTools.Analysis
                     c.targetBones != null && c.targetBones.All(b => b != null && Nonnegative(b.scaleFactor) &&
                         (b.transform == null || Positive(b.transform.localScale)))).ToArray();
             if (candidates.Length == 0) yield break;
-            var analysis = AnimatorReachability.Analyze(avatar, index.Controllers, index.PreservedParameters);
+            var analysis = index.Reachability;
             if (analysis.FallbackReason != null) yield break;
             var proof = new InvariantComponentSettings(index, analysis, index.ControllerEntries);
             foreach (var candidate in candidates)

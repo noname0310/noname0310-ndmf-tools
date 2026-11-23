@@ -14,6 +14,10 @@ namespace Noname.AvatarTools.Meshes
             EditorGUILayout.PropertyField(serializedObject.FindProperty("ExpandBounds"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("MergeIdenticalMaterialSlots"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("RemoveUnusedMeshData"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("PreserveVertexIds"));
+            if (serializedObject.FindProperty("PreserveVertexIds").boolValue)
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("VertexIdUniformThreshold"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("PreserveParticleRandomSequence"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("RebindStaticBones"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("PreserveRenderers"), true);
             var component = (ALTOTraceAndOptimizeMeshes)target;

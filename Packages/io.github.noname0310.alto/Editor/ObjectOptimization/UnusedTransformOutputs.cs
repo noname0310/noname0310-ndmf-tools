@@ -14,12 +14,22 @@ namespace Noname.AvatarTools.ObjectOptimization
     {
         internal static int Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
-            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null)
+            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null,
+            ObjectAnalysisSnapshot snapshot = null)
         {
-            var index = AvatarAnimationIndex.Create(avatar, controllers, paths, preservedParameters);
+            snapshot ??= new ObjectAnalysisSnapshot(avatar, controllers, paths, settings, preservedParameters, shaders);
+            return snapshot.Rewrite(() => ApplyCore(avatar, controllers, paths, settings, preservedParameters, messages, shaders, snapshot));
+        }
+
+        private static int ApplyCore(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
+            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders,
+            ObjectAnalysisSnapshot snapshot)
+        {
+            var index = snapshot.Index;
             if (index.UnsafeReason != null)
             { messages.Add("Unused transform analysis skipped: " + index.UnsafeReason); return 0; }
-            var graph = AvatarDependencyGraph.Create(avatar, index, settings, collectObjects: false, shaders: shaders);
+            var graph = snapshot.Dependencies(false);
             var constraints = new HashSet<Component>(graph.Constraints.Keys.Where(c => !graph.IsLive(c) &&
                 settings.Scope.Contains(c.transform) && !settings.Protected(c) &&
                 !c.GetComponents<Component>().Any(owner => owner != null && owner != c && Build.BuildFilterPass.Requires(owner, c))));

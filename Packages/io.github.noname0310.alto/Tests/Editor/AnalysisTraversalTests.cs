@@ -18,6 +18,22 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         public string Text;
     }
 
+    [Serializable]
+    public class ReferenceFreeTraversalEntry
+    {
+        public string Name;
+        public float Value;
+        public List<int> Data;
+        public object RuntimeCache;
+    }
+
+    [Serializable]
+    public class ReferenceDerivedTraversalEntry : ReferenceFreeTraversalEntry
+    {
+        [SerializeField] private UnityEngine.Object target;
+        public ReferenceDerivedTraversalEntry(UnityEngine.Object target) { this.target = target; }
+    }
+
     public class ReferenceTraversalFixture : ScriptableObject
     {
         public ReferenceTraversalEntry[] Entries;
@@ -29,6 +45,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         public Vector3[] Vectors;
         public AnimationCurve Curve;
         public Gradient Gradient;
+        public ReferenceFreeTraversalEntry[] ScalarEntries;
+        [SerializeReference] public ReferenceFreeTraversalEntry Polymorphic;
     }
 
     public sealed partial class BlendShapeOptimizationTests
@@ -43,6 +61,10 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             fixture.Objects = new UnityEngine.Object[] { null, root, renderer };
             fixture.Numbers = new float[1000]; fixture.Vectors = new Vector3[100];
             fixture.Text = new string('y', 4096); fixture.Curve = AnimationCurve.Linear(0, 0, 1, 1); fixture.Gradient = new Gradient();
+            fixture.ScalarEntries = Enumerable.Range(0, 100).Select(i => new ReferenceFreeTraversalEntry {
+                Name = "Scalar " + i, Value = i, Data = new List<int> { i, i + 1 }, RuntimeCache = root
+            }).ToArray();
+            fixture.Polymorphic = new ReferenceDerivedTraversalEntry(renderer);
             using var serialized = new SerializedObject(fixture);
             var expected = new Dictionary<string, UnityEngine.Object>();
             using (var iterator = serialized.GetIterator())
@@ -54,6 +76,25 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(actual.Values, Does.Contain(root)); Assert.That(actual.Values, Does.Contain(renderer));
             Assert.That(actual.Keys.Any(k => k.StartsWith("Managed.", StringComparison.Ordinal)), Is.True);
             Assert.That(actual.Keys.Any(k => k.StartsWith("Exposed.", StringComparison.Ordinal)), Is.True);
+            Assert.That(actual.Keys.Any(k => k.StartsWith("Polymorphic.", StringComparison.Ordinal)), Is.True);
+            Assert.That(SerializedReferenceSchema.ReferenceFreeFields(typeof(ReferenceTraversalFixture)), Does.Contain("ScalarEntries"));
+            Assert.That(SerializedReferenceSchema.ReferenceFreeFields(typeof(ReferenceTraversalFixture)), Does.Not.Contain("Polymorphic"));
+        }
+
+        [Test]
+        public void ReferenceTraversalSchemaDoesNotCacheInstanceContentsOrEmptyArrays()
+        {
+            var fixture = Track(ScriptableObject.CreateInstance<ReferenceTraversalFixture>());
+            fixture.Entries = Array.Empty<ReferenceTraversalEntry>();
+            using var serialized = new SerializedObject(fixture);
+            var before = SerializedReferences.Properties(serialized).Select(p => p.objectReferenceValue).ToArray();
+            Assert.That(before, Has.No.Member(root));
+            fixture.Entries = new[] { new ReferenceTraversalEntry { Target = root } };
+            fixture.Polymorphic = new ReferenceDerivedTraversalEntry(renderer);
+            serialized.Update();
+            var after = SerializedReferences.Properties(serialized).Select(p => p.objectReferenceValue).ToArray();
+            Assert.That(after, Does.Contain(root));
+            Assert.That(after, Does.Contain(renderer));
         }
 
         [Test]
@@ -100,6 +141,28 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(facts.Shaders, Is.Not.SameAs(first));
             var second = facts.Shaders; facts.Invalidate(AnalysisDomain.All);
             Assert.That(facts.Shaders, Is.Not.SameAs(second));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void DependencyTraversalRestoresSharedInputsBetweenNestedAndSiblingBranches(bool normalized)
+        {
+            var a = Clip(); a.name = "Traversal A";
+            var b = Clip(); b.name = "Traversal B";
+            var c = Clip(); c.name = "Traversal C";
+            var innerController = TreeController(("SharedWeight", a), ("InnerOnly", b));
+            var inner = innerController.layers[0].stateMachine.defaultState.motion;
+            using (var serialized = new SerializedObject(inner))
+            { serialized.FindProperty("m_NormalizedBlendValues").boolValue = normalized; serialized.ApplyModifiedPropertiesWithoutUndo(); }
+            var source = TreeController(("SharedWeight", inner), ("SiblingOnly", c), ("Second", inner));
+            source.AddParameter("InnerOnly", AnimatorControllerParameterType.Float);
+            var controller = new CloneContext(GenericPlatformAnimatorBindings.Instance).Clone(source);
+            var graph = AnimatorParameterDependencies.Collect(root, new[] { controller });
+            var names = new HashSet<string> { "SharedWeight", "InnerOnly", "SiblingOnly", "Second" };
+            string[] Inputs(string name) => graph.MotionInputs(graph.Clips.Single(clip => clip.Name == name)).Where(names.Contains).ToArray();
+            Assert.That(Inputs(a.name), Is.EquivalentTo(normalized
+                ? new[] { "SharedWeight", "InnerOnly", "Second" } : new[] { "SharedWeight", "Second" }));
+            Assert.That(Inputs(b.name), Is.EquivalentTo(new[] { "SharedWeight", "InnerOnly", "Second" }));
+            Assert.That(Inputs(c.name), Is.EquivalentTo(new[] { "SiblingOnly" }), "Scratch state from a prior branch must not become a sibling dependency.");
         }
     }
 }

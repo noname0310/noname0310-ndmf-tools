@@ -119,7 +119,7 @@ namespace Noname.AvatarTools.Build
             return changes.Count;
         }
 
-        private static bool TrySlot(string property, out int slot)
+        internal static bool TrySlot(string property, out int slot)
         {
             slot = -1;
             return property.StartsWith(SlotPrefix, StringComparison.Ordinal) && property.EndsWith("]", StringComparison.Ordinal) &&

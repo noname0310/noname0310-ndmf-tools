@@ -9,13 +9,14 @@ namespace Noname.AvatarTools.ObjectOptimization
     [InitializeOnLoad]
     internal static class ExternalParameterIntegration
     {
+        private static readonly AssetSearchSnapshot Descriptions = new("t:AssetDescription");
         static ExternalParameterIntegration() => ExternalParameterAccess.Register("Avatar Optimizer Asset Description", Collect);
 
         private static void Collect(ExternalParameterAccess result)
         {
             // Asset Description has no public query API. Read its serialized schema without invoking
             // internal optimizer code; an unknown schema disables pruning rather than losing OSC inputs.
-            foreach (var guid in AssetDatabase.FindAssets("t:AssetDescription"))
+            foreach (var guid in Descriptions.Guids)
             {
                 var asset = AssetDatabase.LoadAssetAtPath<ScriptableObject>(AssetDatabase.GUIDToAssetPath(guid));
                 if (asset == null || asset.GetType().FullName != "Anatawa12.AvatarOptimizer.AssetDescription") continue;

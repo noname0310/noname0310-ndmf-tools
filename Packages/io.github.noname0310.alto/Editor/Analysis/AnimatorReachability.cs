@@ -20,6 +20,8 @@ namespace Noname.AvatarTools.Analysis
         {
             internal readonly HashSet<AnimatorControllerParameterType> Types = new();
             internal ParameterValues Values;
+            internal ParameterValues Universe;
+            internal bool Saturated;
             internal int Changes;
             internal readonly List<Action> Readers = new();
         }
@@ -52,6 +54,9 @@ namespace Noname.AvatarTools.Analysis
         private readonly Dictionary<string, Cell> parameters = new(StringComparer.Ordinal);
         private readonly Dictionary<VirtualAnimatorController, HashSet<VirtualClip>> live = new();
         private readonly Dictionary<VirtualMotion, VirtualClip[]> motionClips = new();
+        // Conditions are immutable NDMF lists. Key the list rather than the
+        // transition: later condition rewrites must not reuse the old predicate.
+        private readonly Dictionary<object, (string Name, AnimatorCondition[] Tests)[]> conditionGroups = new();
         private readonly Queue<Action> pending = new();
         private readonly HashSet<Action> scheduled = new();
         private readonly List<Node> entries = new();
@@ -59,6 +64,8 @@ namespace Noname.AvatarTools.Analysis
         private readonly HashSet<VirtualStateMachine> reachableMachines = new();
         internal bool? LocalInstance { get; private set; }
         private bool fallback;
+        private readonly bool reuseFixedInputs;
+        private bool valueFlowComplete;
         internal int StateCount { get; private set; }
         internal int ReachableStateCount { get; private set; }
         internal string FallbackReason { get; private set; }
@@ -66,12 +73,29 @@ namespace Noname.AvatarTools.Analysis
         internal bool IsReachable(VirtualState state) => fallback || reachableStates.Contains(state);
         internal bool IsReachable(VirtualStateMachine machine) => fallback || reachableMachines.Contains(machine);
         internal ParameterValues Values(string name) => fallback ? ParameterValues.Unknown : Get(name);
-        internal bool CanTake(VirtualTransitionBase transition) => fallback || transition.Conditions
-            .GroupBy(c => c.parameter).All(g => Get(g.Key).CanSatisfy(g));
+        internal bool CanTake(VirtualTransitionBase transition) => fallback || ConditionsHold(Groups(transition));
+
+        private (string Name, AnimatorCondition[] Tests)[] Groups(VirtualTransitionBase transition)
+        {
+            var conditions = transition.Conditions;
+            if (!conditionGroups.TryGetValue(conditions, out var groups))
+            {
+                groups = conditions.GroupBy(c => c.parameter).Select(g => (g.Key, g.ToArray())).ToArray();
+                conditionGroups.Add(conditions, groups);
+            }
+            return groups;
+        }
+
+        private bool ConditionsHold((string Name, AnimatorCondition[] Tests)[] groups)
+        {
+            foreach (var group in groups)
+                if (!Get(group.Name).CanSatisfy(group.Tests)) return false;
+            return true;
+        }
 
         internal static AnimatorReachability Analyze(GameObject avatar, IEnumerable<VirtualAnimatorController> source,
-            IEnumerable<string> preservedParameters = null)
-            => AnalyzeCore(avatar, source, preservedParameters, null);
+            IEnumerable<string> preservedParameters = null, bool reuseFixedInputs = true)
+            => AnalyzeCore(avatar, source, preservedParameters, null, reuseFixedInputs: reuseFixedInputs);
 
         // An explicit caller-owned input model. Ordinary reachability continues
         // to treat every expression input as unknown; no global assumption changes.
@@ -83,21 +107,31 @@ namespace Noname.AvatarTools.Analysis
         // other values stay unknown, including private parameters explicitly preserved
         // by a caller whose input selection has not been resolved yet.
         internal static AnimatorReachability AnalyzeInstance(GameObject avatar,
-            VirtualAnimatorController[] source, bool local)
-            => AnalyzeCore(avatar, source, source.SelectMany(c => c.Parameters.Keys), local);
+            VirtualAnimatorController[] source, bool local, bool reuseFixedInputs = true)
+            => AnalyzeCore(avatar, source, source.SelectMany(c => c.Parameters.Keys), local, reuseFixedInputs: reuseFixedInputs);
 
         private static AnimatorReachability AnalyzeCore(GameObject avatar, IEnumerable<VirtualAnimatorController> source,
-            IEnumerable<string> preservedParameters, bool? local, IReadOnlyDictionary<string, ParameterValues> expressionInputs = null)
+            IEnumerable<string> preservedParameters, bool? local, IReadOnlyDictionary<string, ParameterValues> expressionInputs = null,
+            bool reuseFixedInputs = true)
         {
-            var result = new AnimatorReachability(source.Distinct().ToArray()) { LocalInstance = local };
-            result.InitializeInputs(avatar, expressionInputs);
-            if (preservedParameters != null)
-                foreach (string name in preservedParameters) result.AddValue(name, ParameterValues.Unknown);
-            foreach (var controller in result.controllers) result.BuildController(controller);
-            foreach (var entry in result.entries) result.Reach(entry);
-            while (result.pending.Count > 0 && !result.fallback)
+            using var cost = AnalysisCost.Measure("Animator reachability");
+            var result = new AnimatorReachability(source.Distinct().ToArray(), reuseFixedInputs) { LocalInstance = local };
+            using (AnalysisCost.Measure("Reachability inputs"))
             {
-                var action = result.pending.Dequeue(); result.scheduled.Remove(action); action();
+                result.InitializeInputs(avatar, expressionInputs);
+                if (preservedParameters != null)
+                    foreach (string name in preservedParameters) result.AddValue(name, ParameterValues.Unknown);
+            }
+            result.valueFlowComplete = reuseFixedInputs && result.parameters.Keys.All(result.FixedInput);
+            using (AnalysisCost.Measure("Reachability construction"))
+                foreach (var controller in result.controllers) result.BuildController(controller);
+            using (AnalysisCost.Measure("Reachability propagation"))
+            {
+                foreach (var entry in result.entries) result.Reach(entry);
+                while (result.pending.Count > 0 && !result.fallback)
+                {
+                    var action = result.pending.Dequeue(); result.scheduled.Remove(action); action();
+                }
             }
             if (result.fallback)
             {
@@ -108,8 +142,9 @@ namespace Noname.AvatarTools.Analysis
             return result;
         }
 
-        private AnimatorReachability(VirtualAnimatorController[] source)
+        private AnimatorReachability(VirtualAnimatorController[] source, bool reuseFixedInputs)
         {
+            this.reuseFixedInputs = reuseFixedInputs;
             controllers = source;
             foreach (var controller in controllers)
             {
@@ -125,6 +160,16 @@ namespace Noname.AvatarTools.Analysis
                     cell.Types.Add(parameter.type);
                 }
             }
+            if (reuseFixedInputs)
+                foreach (var cell in parameters.Values)
+                {
+                    foreach (var type in cell.Types)
+                    {
+                        var universe = ParameterValues.Unknown.ConvertTo(type);
+                        cell.Universe = cell.Universe == null ? universe : cell.Universe.Union(universe);
+                    }
+                    cell.Saturated = cell.Values.Union(cell.Universe).Same(cell.Values);
+                }
         }
 
         private void InitializeInputs(GameObject avatar, IReadOnlyDictionary<string, ParameterValues> expressionInputs)
@@ -147,6 +192,11 @@ namespace Noname.AvatarTools.Analysis
         {
             if (string.IsNullOrEmpty(name) || !parameters.TryGetValue(name, out var cell)) return;
             if (LocalInstance.HasValue && name == "IsLocal") return;
+            // Every write is converted to all declared types before joining.
+            // Once their complete value universe is included, no later write
+            // can enlarge this cell. Bool/Trigger universes remain {0,1}; a
+            // shared Float/Int declaration retains its full unbounded universe.
+            if (cell.Saturated) return;
             var union = cell.Values;
             // A shared name can be Bool in one playable controller and Float in another.
             // Union every typed interpretation; identical read-only defaults remain constants.
@@ -155,12 +205,17 @@ namespace Noname.AvatarTools.Analysis
             if (cell.Values.Same(value)) return;
             if (++cell.Changes > 16) value = ParameterValues.Unknown; // Widen cyclic dependencies.
             cell.Values = value;
+            if (reuseFixedInputs) cell.Saturated = value.Union(cell.Universe).Same(value);
             foreach (var reader in cell.Readers) Enqueue(reader);
         }
 
+        private bool FixedInput(string name) => reuseFixedInputs && (LocalInstance.HasValue && name == "IsLocal" ||
+            name == null || !parameters.TryGetValue(name, out var cell) || cell.Saturated);
+
         private void Watch(string name, Action reader)
         {
-            if (name != null && parameters.TryGetValue(name, out var cell)) cell.Readers.Add(reader);
+            if (name != null && parameters.TryGetValue(name, out var cell) &&
+                !(reuseFixedInputs && (cell.Saturated || LocalInstance.HasValue && name == "IsLocal"))) cell.Readers.Add(reader);
         }
 
         private void Enqueue(Action action) { if (scheduled.Add(action)) pending.Enqueue(action); }
@@ -263,12 +318,17 @@ namespace Noname.AvatarTools.Analysis
                 else if (transition.DestinationState != null && states.TryGetValue(transition.DestinationState, out var state)) target = state;
                 else if (transition.DestinationStateMachine != null && machines.TryGetValue(transition.DestinationStateMachine, out var machine)) target = machine.Entry;
                 else { PreserveAll("A transition has an unsupported destination."); continue; }
-                var groups = transition.Conditions.GroupBy(c => c.parameter).Select(g => (name: g.Key, tests: g.ToArray())).ToArray();
+                var groups = Groups(transition);
+                bool fixedConditions = reuseFixedInputs;
+                if (fixedConditions)
+                    foreach (var group in groups)
+                        if (!FixedInput(group.Name)) { fixedConditions = false; break; }
+                if (fixedConditions && !ConditionsHold(groups)) continue;
                 Action evaluate = () => {
-                    if (source.Reached && groups.All(g => Get(g.name).CanSatisfy(g.tests))) Reach(target);
+                    if (source.Reached && (fixedConditions || ConditionsHold(groups))) Reach(target);
                 };
                 source.Work.Add(evaluate);
-                foreach (var group in groups) Watch(group.name, evaluate);
+                foreach (var group in groups) Watch(group.Name, evaluate);
             }
         }
 
@@ -278,6 +338,10 @@ namespace Noname.AvatarTools.Analysis
             {
                 if (behaviour is VRC_AvatarParameterDriver driver)
                 {
+                    // In fully external instance contexts every destination is
+                    // already saturated. Driver effects are identity transfers;
+                    // other behaviours still run their ordinary safety checks.
+                    if (valueFlowComplete) continue;
                     if (driver.localOnly && LocalInstance == false) continue;
                     if (driver.parameters == null) continue;
                     // Include both local and remote execution. Ordered assignments are over-approximated by union.
@@ -325,6 +389,7 @@ namespace Noname.AvatarTools.Analysis
             foreach (var clip in clips)
             {
                 if (!live[controller].Add(clip)) continue;
+                if (valueFlowComplete) continue;
                 // Include every Blend Tree child. Animated parameters can be blended or extrapolated, so
                 // endpoint/keyframe ranges alone are insufficient to prove a constant or a bound.
                 foreach (var binding in clip.GetFloatCurveBindings())

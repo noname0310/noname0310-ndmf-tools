@@ -10,12 +10,15 @@ namespace Noname.AvatarTools.Analysis
         // managed and exposed-reference containers, including unknown future types.
         internal static IEnumerable<SerializedProperty> Properties(SerializedObject serialized)
         {
+            var target = serialized.targetObject;
+            var empty = target == null ? null : SerializedReferenceSchema.ReferenceFreeFields(target.GetType());
             using var property = serialized.GetIterator();
             bool enter = true;
             while (property.Next(enter))
             {
                 var type = property.propertyType;
                 enter = MayContainReferences(type);
+                if (enter && property.depth == 0 && empty != null && empty.Contains(property.name)) enter = false;
                 if (enter && property.isArray && property.arraySize > 0)
                 {
                     using var element = property.GetArrayElementAtIndex(0);

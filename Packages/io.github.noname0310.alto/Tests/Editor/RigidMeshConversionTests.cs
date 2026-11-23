@@ -114,7 +114,10 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             part.sortingOrder = 7; part.renderingLayerMask = 123; part.rendererPriority = 5; part.allowOcclusionWhenDynamic = false;
             var animations = RigidAnimations(clip); var curve = animations.Bindings.Single().Curve;
             var graph = AvatarDependencyGraph.Create(root, animations, new ObjectOptimizationState { Scope = new OptimizationBuildScope { Root = root.transform } }, false);
-            Assert.That(RigidMeshConversion.ValidateExplicitConversion(part, animations, graph, new ShaderPropertyUsage()), Is.Null);
+            // Engine headers contain interfaces for other platforms and variants.
+            // Retargeting is validated with the same explicit target as a PC build.
+            Assert.That(RigidMeshConversion.ValidateExplicitConversion(part, animations, graph, new ShaderPropertyUsage(),
+                target: BuildTarget.StandaloneWindows64), Is.Null);
             var converted = RigidMeshConversion.Convert(part, animations, mesh => Track(mesh));
             var virtualClip = animations.Bindings.Single().Clip;
             Assert.That(virtualClip.GetFloatCurve(binding), Is.Null); binding.type = typeof(SkinnedMeshRenderer);

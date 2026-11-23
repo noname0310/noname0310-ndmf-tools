@@ -15,8 +15,10 @@ namespace Noname.AvatarTools.Analysis
         internal readonly struct Input
         {
             internal readonly string Semantic;
+            internal readonly uint SemanticIndex;
             internal readonly byte ReadMask;
-            internal Input(string semantic, byte readMask) { Semantic = semantic; ReadMask = readMask; }
+            internal Input(string semantic, byte readMask, uint semanticIndex = 0)
+            { Semantic = semantic; ReadMask = readMask; SemanticIndex = semanticIndex; }
         }
 
         [DllImport("d3dcompiler_47.dll", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
@@ -69,6 +71,14 @@ namespace Noname.AvatarTools.Analysis
         {
             inputs = null; error = null;
             if (Application.platform != RuntimePlatform.WindowsEditor) { error = "D3D reflection is unavailable on this editor platform"; return false; }
+            return CompileNative(source, entry, stage, out inputs, out error);
+        }
+
+        // The caller checks the editor platform before scheduling. Every native
+        // blob/reflection handle belongs to this invocation; no Unity API is used.
+        internal static bool CompileNative(string source, string entry, ShaderType stage, out Input[] inputs, out string error)
+        {
+            inputs = null; error = null;
             string target = stage switch { ShaderType.Vertex => "vs_5_0", ShaderType.Fragment => "ps_5_0", ShaderType.Geometry => "gs_5_0",
                 ShaderType.Hull => "hs_5_0", ShaderType.Domain => "ds_5_0", _ => null };
             if (target == null) { error = "unsupported shader stage"; return false; }
@@ -80,7 +90,12 @@ namespace Noname.AvatarTools.Analysis
                 // the input-independence proof. Compatibility matches Unity's Cg globals.
                 int hr = D3DCompile(bytes, (UIntPtr)bytes.Length, "ALTO Shader Input Analysis", IntPtr.Zero, IntPtr.Zero,
                     entry, target, (1u << 15) | (1u << 13) | (1u << 12), 0, out code, out errors);
-                if (hr < 0) { error = "analysis program did not compile"; return false; }
+                if (hr < 0)
+                {
+                    string diagnostic = Encoding.UTF8.GetString(ReadBlob(errors)).TrimEnd('\0').Trim();
+                    error = "analysis program did not compile" + (diagnostic.Length == 0 ? "" : ": " + diagnostic.Substring(0, Math.Min(1024, diagnostic.Length)));
+                    return false;
+                }
                 return Reflect(ReadBlob(code), stage, out inputs, out error);
             }
             catch (Exception exception) { error = "D3D input analysis failed: " + exception.GetType().Name; return false; }
@@ -114,7 +129,8 @@ namespace Noname.AvatarTools.Analysis
                 {
                     if (parameter(reflection, i, out var signature) < 0 || signature.SemanticName == IntPtr.Zero)
                     { error = "incomplete shader input signature"; return false; }
-                    result.Add(new Input(Marshal.PtrToStringAnsi(signature.SemanticName), (byte)(signature.Mask & signature.ReadWriteMask)));
+                    result.Add(new Input(Marshal.PtrToStringAnsi(signature.SemanticName),
+                        (byte)(signature.Mask & signature.ReadWriteMask), signature.SemanticIndex));
                 }
                 inputs = result.ToArray(); return true;
             }

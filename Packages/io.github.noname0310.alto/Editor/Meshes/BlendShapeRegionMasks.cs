@@ -72,7 +72,9 @@ namespace Noname.AvatarTools.Meshes
                     int count = SubMeshTriangleCounts[subMesh]; var kept = new List<int>();
                     for (int triangle = offset; triangle < offset + count; triangle++)
                         if (!triangles[triangle]) { kept.Add(Indices[triangle * 3]); kept.Add(Indices[triangle * 3 + 1]); kept.Add(Indices[triangle * 3 + 2]); }
-                    result.SetIndices(kept, MeshTopology.Triangles, subMesh, calculateBounds: false, baseVertex: 0); offset += count;
+                    int baseVertex = checked((int)source.GetBaseVertex(subMesh));
+                    if (baseVertex != 0) for (int i = 0; i < kept.Count; i++) kept[i] -= baseVertex;
+                    result.SetIndices(kept, MeshTopology.Triangles, subMesh, calculateBounds: false, baseVertex: baseVertex); offset += count;
                 }
                 return result;
             }

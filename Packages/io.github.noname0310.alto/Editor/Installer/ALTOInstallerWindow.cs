@@ -433,7 +433,6 @@ namespace Noname.AvatarTools.Installer
         {
             bool coordinates = mobile ? draft.AllowCoordinateSpaceChanges : draft.CommonAllowCoordinateSpaceChanges;
             bool transparency = mobile ? draft.AllowTransparentSortingChanges : draft.CommonAllowTransparentSortingChanges;
-            bool shaderIndices = mobile ? draft.AllowShaderIndexChanges : draft.CommonAllowShaderIndexChanges;
             bool materialDefaults = mobile ? draft.AllowAnimatedMaterialDefaultChanges : draft.CommonAllowAnimatedMaterialDefaultChanges;
             coordinates = EditorGUILayout.ToggleLeft(new GUIContent("Combine meshes across attachment points",
                 "Allow meshes with different local coordinate systems to share a renderer, including rigid meshes. Outlines and effects aligned to a mesh's local axes can change."), coordinates);
@@ -443,22 +442,18 @@ namespace Noname.AvatarTools.Installer
                 "Allow transparent parts to share a renderer. They will no longer be sorted independently by distance from the camera."), transparency);
             Text("Overlapping hair, glass and other transparent surfaces may appear in a different order as the camera moves.");
             EditorGUILayout.Space(6);
-            shaderIndices = EditorGUILayout.ToggleLeft(new GUIContent("Combine meshes even if index-based shader effects change",
-                "Skip the proof that shaders are independent of mesh IDs and skinning inputs. This also allows shaders the analyzer cannot verify. Material animation and other compatibility checks still apply."), shaderIndices);
-            Text("Masks, deformation or patterns tied to individual vertices or primitives may change. Off by default on every platform.");
-            EditorGUILayout.Space(6);
             materialDefaults = EditorGUILayout.ToggleLeft(new GUIContent("Combine meshes with different animated starting values",
                 "Allow Animated Material Default Changes: matching material animation can share one renderer even when its starting values differ. The retained renderer supplies those values. Independent animation and different unanimated channels still prevent merging."), materialDefaults);
             Text("Lighting, color and other animated material effects may look different when animation is off, partially blended or restoring defaults. On by default for mobile only.");
             if (mobile)
             {
                 draft.AllowCoordinateSpaceChanges = coordinates; draft.AllowTransparentSortingChanges = transparency;
-                draft.AllowShaderIndexChanges = shaderIndices; draft.AllowAnimatedMaterialDefaultChanges = materialDefaults;
+                draft.AllowAnimatedMaterialDefaultChanges = materialDefaults;
             }
             else
             {
                 draft.CommonAllowCoordinateSpaceChanges = coordinates; draft.CommonAllowTransparentSortingChanges = transparency;
-                draft.CommonAllowShaderIndexChanges = shaderIndices; draft.CommonAllowAnimatedMaterialDefaultChanges = materialDefaults;
+                draft.CommonAllowAnimatedMaterialDefaultChanges = materialDefaults;
             }
         }
 
@@ -546,7 +541,6 @@ namespace Noname.AvatarTools.Installer
                     Text("Mesh combination (" + CommonMeshPlatforms + "):");
                     Text("Combine meshes across attachment points: " + YesNo(draft.CommonAllowCoordinateSpaceChanges));
                     Text("Combine transparent meshes: " + YesNo(draft.CommonAllowTransparentSortingChanges));
-                    Text("Allow index-based shader effects to change: " + YesNo(draft.CommonAllowShaderIndexChanges));
                     Text("Allow animated material starting values to change: " + YesNo(draft.CommonAllowAnimatedMaterialDefaultChanges));
                 }
                 Text("Keep expressions used by MMD worlds: " + YesNo(draft.PreserveMmdBlendShapes));
@@ -572,7 +566,6 @@ namespace Noname.AvatarTools.Installer
                 Text(draft.ReduceMeshes ? "Target " + draft.TriangleBudget.ToString("N0") + " total triangles, including meshes kept at full detail." : "Triangle reduction: disabled.");
                 Text("Combine meshes across attachment points: " + YesNo(draft.AllowCoordinateSpaceChanges));
                 Text("Combine transparent meshes: " + YesNo(draft.AllowTransparentSortingChanges));
-                Text("Allow index-based shader effects to change: " + YesNo(draft.AllowShaderIndexChanges));
                 Text("Allow animated material starting values to change: " + YesNo(draft.AllowAnimatedMaterialDefaultChanges));
             });
             Frame("Cross-platform", "Parameter synchronization summary",

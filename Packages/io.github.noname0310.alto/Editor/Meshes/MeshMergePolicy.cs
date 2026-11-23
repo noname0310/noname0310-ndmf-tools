@@ -12,6 +12,8 @@ namespace Noname.AvatarTools.Meshes
     {
         internal bool ExpandBounds, AllowCoordinateSpaceChanges, ConvertRigidMeshes, AllowMaterialSlotReordering, AllowTransparentSortingChanges, AllowShaderIndexChanges, AllowAnimatedMaterialDefaultChanges;
         internal BuildTarget? Target;
+        internal bool PreserveVertexIds;
+        internal bool PreserveParticleRandomSequence;
         internal TransformMutationAnalysis Mutations;
         internal Func<Renderer, MeshOptimizationPermissions> PermissionsFor;
 
@@ -30,6 +32,38 @@ namespace Noname.AvatarTools.Meshes
             ? (PermissionsFor(renderer) & MeshOptimizationPermissions.AnimatedMaterialDefaultChanges) != 0 : AllowAnimatedMaterialDefaultChanges;
 
         internal static Transform CoordinateRoot(SkinnedMeshRenderer renderer) => renderer.rootBone != null ? renderer.rootBone : renderer.transform;
+
+        internal static Transform DestinationCoordinateRoot(IReadOnlyList<MeshMergeCandidate> group) =>
+            CoordinateRoot((group.FirstOrDefault(c => c.ParticleBindings.Count != 0) ?? group[0]).Renderer);
+
+        internal bool ExactCoordinatesMatch(SkinnedMeshRenderer first, SkinnedMeshRenderer second)
+        {
+            var x = CoordinateRoot(first); var y = CoordinateRoot(second);
+            if (x == y) return true;
+            if (Mutations == null || Mutations.Uncertain != null) return false;
+            var a = Canonical(x); var b = Canonical(y);
+            return a.Root == b.Root && a.Offset.Equals(b.Offset);
+        }
+
+        internal bool ParticleDistributionsMatch(SkinnedMeshRenderer first, SkinnedMeshRenderer second)
+        {
+            if (ExactCoordinatesMatch(first, second)) return true;
+            if (Mutations == null || Mutations.Uncertain != null) return false;
+            var a = CoordinateRoot(first); var b = CoordinateRoot(second);
+            var ancestors = new HashSet<Transform>();
+            for (var current = a; current != null; current = current.parent) ancestors.Add(current);
+            var common = b;
+            while (common != null && !ancestors.Contains(common)) common = common.parent;
+            if (common == null) return false;
+            // Rotating an isotropic random direction changes its realization,
+            // not its distribution. Fixed positive uniform scales cancel during
+            // direction normalization. Retain uncertain/nonuniform scale paths;
+            // common ancestor transforms act on the same distribution on both sides.
+            foreach (var start in new[] { a, b })
+                for (var current = start; current != common; current = current.parent)
+                    if (Mutations.MayChangeScale(current) || !SpatialFrameProof.UniformPositiveScale(current.localScale)) return false;
+            return true;
+        }
 
         internal static bool UsesProbeAnchor(Renderer renderer) =>
             renderer.lightProbeUsage != LightProbeUsage.Off || renderer.reflectionProbeUsage != ReflectionProbeUsage.Off;
@@ -74,6 +108,21 @@ namespace Noname.AvatarTools.Meshes
             return (root, offset);
         }
 
+        internal bool RendererFramesMatch(Renderer first, Renderer second)
+        {
+            if (first.transform == second.transform) return true;
+            if (Mutations == null || Mutations.Uncertain != null) return false;
+            var a = Canonical(first.transform); var b = Canonical(second.transform);
+            if (a.Root != b.Root) return false;
+            if (a.Offset.Equals(b.Offset)) return true;
+            // Import/parenting roundoff can produce distinct encodings of the
+            // same frame. Compare relative transforms so very small scales or
+            // large translations cannot hide a meaningful relative difference.
+            return Invertible(a.Offset) && Invertible(b.Offset) &&
+                StaticTransformProof.Near(a.Offset.inverse * b.Offset, Matrix4x4.identity) &&
+                StaticTransformProof.Near(b.Offset.inverse * a.Offset, Matrix4x4.identity);
+        }
+
         private HashSet<Transform> CoordinateScaleWriters(SkinnedMeshRenderer renderer)
         {
             var writers = new HashSet<Transform>();
@@ -99,17 +148,21 @@ namespace Noname.AvatarTools.Meshes
             return true;
         }
 
-        internal static HashSet<SkinnedMeshRenderer> ReversedInputs(IReadOnlyList<MeshMergeCandidate> group)
+        internal static HashSet<SkinnedMeshRenderer> ReversedInputs(IReadOnlyList<MeshMergeCandidate> group, Transform destinationRoot = null)
         {
-            bool destination = CoordinateRoot(group[0].Renderer).localToWorldMatrix.determinant < 0;
+            bool destination = (destinationRoot != null ? destinationRoot : CoordinateRoot(group[0].Renderer)).localToWorldMatrix.determinant < 0;
             return group.Where(c => (CoordinateRoot(c.Renderer).localToWorldMatrix.determinant < 0) != destination)
                 .Select(c => c.Renderer).ToHashSet();
         }
 
-        internal static Bounds UnionBounds(IReadOnlyList<MeshMergeCandidate> group)
+        internal static Bounds UnionBounds(IReadOnlyList<MeshMergeCandidate> group, Transform destinationRoot = null)
         {
-            var root = CoordinateRoot(group[0].Renderer); var result = group[0].Bounds;
-            foreach (var candidate in group.Skip(1))
+            var root = destinationRoot != null ? destinationRoot : CoordinateRoot(group[0].Renderer);
+            // A native surface reader may require another input's root bone,
+            // independently of the pinned destination object and morph interface.
+            var initial = group.First(c => CoordinateRoot(c.Renderer) == root);
+            var result = initial.Bounds;
+            foreach (var candidate in group.Where(c => c != initial))
             {
                 var source = CoordinateRoot(candidate.Renderer);
                 if (source == root) { result.Encapsulate(candidate.Bounds); continue; }

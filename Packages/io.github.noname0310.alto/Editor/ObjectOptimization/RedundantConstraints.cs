@@ -17,18 +17,35 @@ namespace Noname.AvatarTools.ObjectOptimization
     {
         internal static int Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
-            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null)
+            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null,
+            ObjectAnalysisSnapshot snapshot = null)
         {
-            var index = AvatarAnimationIndex.Create(avatar, controllers, paths, preservedParameters);
-            var mutation = TransformMutationAnalysis.Create(avatar, index, settings.AssumeFixedHumanoidBoneScale);
+            snapshot ??= new ObjectAnalysisSnapshot(avatar, controllers, paths, settings, preservedParameters, shaders);
+            return snapshot.Rewrite(() => ApplyCore(avatar, controllers, paths, settings, preservedParameters, messages, shaders, snapshot));
+        }
+
+        private static int ApplyCore(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
+            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders,
+            ObjectAnalysisSnapshot snapshot)
+        {
+            var candidates = new List<VRCScaleConstraint>();
+            foreach (var constraint in avatar.GetComponentsInChildren<VRCScaleConstraint>(true))
+                if (constraint.GetType() == typeof(VRCScaleConstraint) && constraint.SolveInLocalSpace &&
+                    !constraint.FreezeToWorld && constraint.Locked && constraint.GlobalWeight == 1 &&
+                    constraint.Sources.Count == 1 && constraint.Sources[0].Weight == 1 &&
+                    constraint.Sources[0].SourceTransform != null) candidates.Add(constraint);
+            if (candidates.Count == 0) return 0;
+            var index = snapshot.Index;
+            var mutation = snapshot.Mutations;
             string unsafeReason = ObjectOptimizationSafety.UnsupportedRuntime(avatar) ?? index.UnsafeReason ?? mutation.Uncertain;
             if (unsafeReason != null)
             { messages.Add("Redundant constraint analysis skipped: " + unsafeReason); return 0; }
-            var graph = AvatarDependencyGraph.Create(avatar, index, settings, collectObjects: false, shaders: shaders);
+            var graph = snapshot.Dependencies(false);
             var objectKeys = new HashSet<UnityEngine.Object>(index.Bindings.SelectMany(use =>
                 use.ObjectKeys ?? Array.Empty<ObjectReferenceKeyframe>()).Select(key => key.value));
             int removed = 0;
-            foreach (var constraint in avatar.GetComponentsInChildren<VRCScaleConstraint>(true))
+            foreach (var constraint in candidates)
             {
                 if (constraint.GetType() != typeof(VRCScaleConstraint) || !settings.Scope.Contains(constraint.transform) ||
                     settings.Protected(constraint) || index.ForObject(constraint).Count != 0 || objectKeys.Contains(constraint) ||

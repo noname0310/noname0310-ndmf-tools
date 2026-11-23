@@ -12,10 +12,11 @@ namespace Noname.AvatarTools.Analysis
         internal readonly TransformMutationAnalysis Mutations;
         private readonly Transform avatar;
         private readonly ObjectOptimizationState objects;
-        internal StaticTransformProof(GameObject avatar, AvatarAnimationIndex animations, ObjectOptimizationState objects)
+        internal StaticTransformProof(GameObject avatar, AvatarAnimationIndex animations, ObjectOptimizationState objects,
+            SerializedReferenceSnapshot references = null)
         {
             this.avatar = avatar.transform; this.objects = objects;
-            Mutations = TransformMutationAnalysis.Create(avatar, animations, objects.AssumeFixedHumanoidBoneScale);
+            Mutations = TransformMutationAnalysis.Create(avatar, animations, objects.AssumeFixedHumanoidBoneScale, references);
         }
 
         internal bool CanSubstitute(Transform target, OptimizationBuildScope scope) =>

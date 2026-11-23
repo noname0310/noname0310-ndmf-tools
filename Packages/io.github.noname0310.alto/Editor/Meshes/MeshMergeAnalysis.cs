@@ -21,6 +21,14 @@ namespace Noname.AvatarTools.Meshes
         internal GameObject Avatar;
         internal ShaderPropertyUsage Shaders;
         internal AvatarAnimationIndex Animations;
+        internal readonly HashSet<Material> VertexIdMaterials = new();
+        internal readonly Dictionary<Shader, ShaderVertexIdRewriter> VertexIdAdapters = new();
+        internal string VertexIdAdapterIssue;
+        internal readonly List<ParticleMeshBinding> ParticleBindings = new();
+        internal readonly Dictionary<AvatarAnimationIndex.BindingUse, int> MaterialSwaps = new();
+        internal IEnumerable<Material> PossibleMaterials => Renderer.sharedMaterials.Concat(MaterialSwaps.Keys
+            .SelectMany(u => u.ObjectKeys).Select(k => k.value).OfType<Material>()).Distinct();
+        internal HashSet<int> IsolatedMaterialSlots => MaterialSwaps.Values.Concat(ParticleBindings.Select(b => b.MaterialSlot)).ToHashSet();
         internal readonly HashSet<VRCContactReceiver> MaterialContacts = new();
         internal bool NativeFaceInterface;
         internal readonly HashSet<string> NativeFaceShapes = new(StringComparer.Ordinal);
@@ -102,8 +110,14 @@ namespace Noname.AvatarTools.Meshes
                 if (renderer.lightmapIndex >= 0 || renderer.realtimeLightmapIndex >= 0) return "lightmapped renderer";
                 if (references.ReferenceOwners.TryGetValue(renderer, out var readers))
                 {
-                    if (readers.Any(r => !(r is VRCAvatarDescriptor) && !(r is VRCContactReceiver))) return "renderer readers: " + string.Join(", ",
-                        readers.Where(r => !(r is VRCAvatarDescriptor) && !(r is VRCContactReceiver)).Select(r => r.GetType().Name + " on '" + r.name + "'"));
+                    var supportedParticles = new HashSet<ParticleSystem>();
+                    foreach (var particles in readers.OfType<ParticleSystem>())
+                        if (ParticleMeshBinding.TryCapture(particles, renderer, animations, out var binding))
+                        { result.ParticleBindings.Add(binding); supportedParticles.Add(particles); }
+                    var unsupportedReaders = readers.Where(r => !(r is VRCAvatarDescriptor) && !(r is VRCContactReceiver) &&
+                        (!(r is ParticleSystem particles) || !supportedParticles.Contains(particles))).ToArray();
+                    if (unsupportedReaders.Length != 0) return "renderer readers: " + string.Join(", ",
+                        unsupportedReaders.Select(r => r.GetType().Name + " on '" + r.name + "'"));
                     if (readers.OfType<VRCAvatarDescriptor>().Any(d => !result.NativeFaceInterface ||
                         d.VisemeSkinnedMesh == renderer || d.customEyeLookSettings.eyelidsSkinnedMesh == renderer)) result.Pin("Descriptor renderer reference");
                     foreach (var descriptor in readers.OfType<VRCAvatarDescriptor>())
@@ -121,12 +135,6 @@ namespace Noname.AvatarTools.Meshes
                 var mesh = renderer.sharedMesh;
                 var externalNames = Enumerable.Range(0, mesh.blendShapeCount).Select(mesh.GetBlendShapeName).Where(MmdMorphNames.All.Contains).ToArray();
                 if (externalNames.Length > 0) result.Pin("MMD names: " + string.Join(", ", externalNames.Take(5)));
-                string shaderIssue = ShaderIssue(renderer.sharedMaterials, shaders, addSkinning: makeRigid,
-                    allowCoordinateSpaceChanges: policy?.AllowsCoordinates(renderer) == true,
-                    allowTransparentSortingChanges: policy?.AllowsTransparentSorting(renderer) == true, target: policy?.Target,
-                    renderer: renderer, animations: animations,
-                    allowShaderIndexChanges: policy?.AllowsShaderIndexChanges(renderer) == true);
-                if (shaderIssue != null) return shaderIssue;
                 result.Bindings = animations.ForObject(renderer).ToArray();
                 foreach (var use in result.Bindings)
                 {
@@ -137,8 +145,14 @@ namespace Noname.AvatarTools.Meshes
                         if (!shape) return "immutable renderer animation";
                         result.Pin("immutable animation: " + use.Clip.Name + " / " + use.Binding.propertyName);
                     }
-                    if (use.Binding.isPPtrCurve) return "unsupported renderer animation: " + use.Binding.propertyName;
-                    if (!shape && use.Binding.propertyName != "m_Enabled" &&
+                    if (use.Binding.isPPtrCurve)
+                    {
+                        if (!Build.MaterialFilterPass.TrySlot(use.Binding.propertyName, out int slot) || slot >= renderer.sharedMaterials.Length ||
+                            use.ObjectKeys == null || use.ObjectKeys.Length == 0 || use.ObjectKeys.Any(k => !MotionAnalysis.Finite(k.time) || k.value != null && !(k.value is Material)))
+                            return "unverified material-slot animation: " + use.Binding.propertyName;
+                        result.MaterialSwaps.Add(use, slot);
+                    }
+                    if (!use.Binding.isPPtrCurve && !shape && use.Binding.propertyName != "m_Enabled" &&
                         use.Binding.propertyName != UpdateWhenOffscreenProperty &&
                         !use.Binding.propertyName.StartsWith("material.", StringComparison.Ordinal))
                     {
@@ -162,12 +176,22 @@ namespace Noname.AvatarTools.Meshes
                         result.ReservedShapeNames.Add(use.Binding.propertyName.Substring("blendShape.".Length));
                     }
                 }
+                string shaderIssue = ShaderIssue(result.PossibleMaterials, shaders, addSkinning: makeRigid,
+                    allowCoordinateSpaceChanges: policy?.AllowsCoordinates(renderer) == true,
+                    allowTransparentSortingChanges: policy?.AllowsTransparentSorting(renderer) == true, target: policy?.Target,
+                    renderer: renderer, animations: animations,
+                    allowShaderIndexChanges: policy?.AllowsShaderIndexChanges(renderer) == true,
+                    preserveVertexIds: policy?.PreserveVertexIds == true, vertexIdMaterials: result.VertexIdMaterials);
+                if (shaderIssue != null) return shaderIssue;
+                foreach (var shader in result.VertexIdMaterials.Select(m => m.shader).Distinct())
+                    if (ShaderVertexIdRewriter.TryCreate(shader, out var adapter, out string adapterIssue)) result.VertexIdAdapters.Add(shader, adapter);
+                    else result.VertexIdAdapterIssue = adapterIssue;
                 var offscreenWriters = result.Bindings.Where(u => u.Binding.propertyName == UpdateWhenOffscreenProperty).ToArray();
                 if (offscreenWriters.Any(u => u.Curve == null)) return "unverified offscreen-update animation";
                 if (offscreenWriters.Length > 0)
                 {
                     invariants ??= new InvariantComponentSettings(animations,
-                        AnimatorReachability.Analyze(avatar, animations.Controllers, animations.PreservedParameters), animations.ControllerEntries);
+                        animations.Reachability, animations.ControllerEntries);
                     // A default-valued curve is only redundant when its entire evaluation
                     // context preserves that value, including Blend Tree weights and layers.
                     if (invariants.IsConstantProperty(renderer, UpdateWhenOffscreenProperty))
@@ -195,7 +219,8 @@ namespace Noname.AvatarTools.Meshes
 
         internal static string ShaderIssue(IEnumerable<Material> materials, ShaderPropertyUsage shaders, bool addSkinning = false,
             bool allowCoordinateSpaceChanges = false, bool allowTransparentSortingChanges = false, BuildTarget? target = null,
-            Renderer renderer = null, AvatarAnimationIndex animations = null, bool allowShaderIndexChanges = false)
+            Renderer renderer = null, AvatarAnimationIndex animations = null, bool allowShaderIndexChanges = false,
+            bool preserveVertexIds = false, ISet<Material> vertexIdMaterials = null)
         {
             foreach (var material in materials.Distinct())
             {
@@ -204,6 +229,13 @@ namespace Noname.AvatarTools.Meshes
                 if (!allowCoordinateSpaceChanges && !string.Equals(material.GetTag("DisableBatching", false, "False"), "False", StringComparison.OrdinalIgnoreCase))
                     return "shader disables batching";
                 string issue = allowShaderIndexChanges ? null : shaders.MeshInputs.Issue(material, renderer, animations, addSkinning, target);
+                if (issue != null && preserveVertexIds && !addSkinning && renderer is SkinnedMeshRenderer skinned &&
+                    shaders.MeshInputs.Issue(material, renderer, animations, ShaderInputQuery.OtherMeshIndices, target) == null)
+                {
+                    if (Enumerable.Range(0, skinned.sharedMesh.subMeshCount).Any(s => skinned.sharedMesh.GetBaseVertex(s) != 0))
+                        return "vertex-ID preservation requires a verified submesh base-vertex contract";
+                    vertexIdMaterials?.Add(material); issue = null;
+                }
                 if (issue != null) return issue;
             }
             return null;
@@ -229,9 +261,27 @@ namespace Noname.AvatarTools.Meshes
         internal static bool Compatible(MeshMergeCandidate a, MeshMergeCandidate b, MeshMergePolicy policy = null)
             => Incompatibility(a, b, policy) == null;
 
-        internal static string Incompatibility(MeshMergeCandidate a, MeshMergeCandidate b, MeshMergePolicy policy = null)
+        internal static string Incompatibility(MeshMergeCandidate a, MeshMergeCandidate b, MeshMergePolicy policy = null,
+            bool compareMaterialAnimations = true)
         {
             var x = a.Renderer; var y = b.Renderer;
+            if ((a.ParticleBindings.Count != 0 || b.ParticleBindings.Count != 0) &&
+                (policy?.RendererFramesMatch(x, y) != true ||
+                 Math.Sign(MeshMergePolicy.CoordinateRoot(x).localToWorldMatrix.determinant) != Math.Sign(MeshMergePolicy.CoordinateRoot(y).localToWorldMatrix.determinant)))
+                return "particle surface readers require identical renderer frames and triangle winding";
+            if (a.ParticleBindings.Count != 0 && b.ParticleBindings.Count != 0)
+            {
+                if (policy?.PreserveParticleRandomSequence == true)
+                {
+                    if (!policy.ExactCoordinatesMatch(x, y))
+                        return "preserving particle random sequences requires independent root-bone frames";
+                }
+                else if (policy?.ParticleDistributionsMatch(x, y) != true)
+                    return "particle emission distributions have unverified relative scale";
+            }
+            if (a.VertexIdMaterials.Count != 0 && b.VertexIdMaterials.Count != 0 &&
+                a.VertexIdAdapterIssue != null && b.VertexIdAdapterIssue != null)
+                return "multiple vertex-ID inputs require an unsupported shader source adapter";
             foreach (var contact in a.MaterialContacts.Union(b.MaterialContacts))
                 if (a.MaterialContacts.Contains(contact) != b.MaterialContacts.Contains(contact) &&
                     (ContactOutputs.MaterialReads(contact, x, a.Shaders ?? new ShaderPropertyUsage(), a.Animations) ||
@@ -258,12 +308,9 @@ namespace Noname.AvatarTools.Meshes
             if (a.MaskCoverage != b.MaskCoverage) return "different Animator mask coverage";
             if (!SameVisibility(a, b)) return "different activation or enabled signals";
             if (!a.UpdateWhenOffscreen.Equals(b.UpdateWhenOffscreen)) return "different offscreen-update animation signals";
-            if (a.Properties.Count != b.Properties.Count || !a.Properties.All(p => b.Properties.TryGetValue(p.Key, out var signal) && p.Value.Equals(signal)))
-                return "different material-property animation signals";
-            if (a.Properties.Count != 0)
+            if (compareMaterialAnimations)
             {
-                string materialIssue = a.Animations.MaterialInputs.Incompatibility(x, y,
-                    policy?.AllowsAnimatedMaterialDefaultChanges(x) == true && policy.AllowsAnimatedMaterialDefaultChanges(y));
+                string materialIssue = MeshMaterialAnimationPlan.Create(new[] { a, b }, policy).Issue;
                 if (materialIssue != null) return materialIssue;
             }
             if (!(policy?.CoordinatesMatch(a, b) ?? MeshMergePolicy.CoordinateRoot(x) == MeshMergePolicy.CoordinateRoot(y)))
@@ -284,6 +331,24 @@ namespace Noname.AvatarTools.Meshes
             if (x.skinnedMotionVectors != y.skinnedMotionVectors || x.motionVectorGenerationMode != y.motionVectorGenerationMode) return "different motion-vector settings";
             if (x.sortingLayerID != y.sortingLayerID || x.sortingOrder != y.sortingOrder || x.rendererPriority != y.rendererPriority) return "different sorting settings";
             return null;
+        }
+
+        internal static bool HasMergeableMaterialSlots(IEnumerable<MeshMergeCandidate> group, bool reorder)
+        {
+            var seen = new HashSet<Material>(); Material previous = null;
+            foreach (var candidate in group)
+            {
+                var isolated = candidate.IsolatedMaterialSlots;
+                var materials = candidate.Renderer.sharedMaterials;
+                for (int slot = 0; slot < materials.Length; slot++)
+                {
+                    var material = materials[slot];
+                    if (isolated.Contains(slot) || material == null) { previous = null; continue; }
+                    if (reorder ? !seen.Add(material) : previous == material) return true;
+                    previous = material;
+                }
+            }
+            return false;
         }
 
         internal static (float Previous, float Last) FaceMorphExtrapolation(Mesh mesh, int shape)
@@ -351,7 +416,12 @@ namespace Noname.AvatarTools.Meshes
             // Pin the external interface first. Its morph names, indices and object remain.
             foreach (var candidate in candidates.OrderByDescending(c => c.Pinned))
             {
-                var group = mergeRenderers ? groups.FirstOrDefault(g => g.All(c => Compatible(c, candidate, policy))) : null;
+                // Property defaults belong to the retained renderer, not each
+                // arbitrary pair of sources. Validate one complete output contract
+                // after checking the pairwise structural/visibility constraints.
+                var group = mergeRenderers ? groups.FirstOrDefault(g =>
+                    g.All(c => Incompatibility(c, candidate, policy, compareMaterialAnimations: false) == null) &&
+                    MeshMaterialAnimationPlan.Create(g.Append(candidate).ToArray(), policy).Issue == null) : null;
                 if (group == null) groups.Add(group = new());
                 group.Add(candidate);
             }

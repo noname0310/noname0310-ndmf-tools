@@ -54,9 +54,11 @@ namespace Noname.AvatarTools.Analysis
               property.StartsWith("m_LocalRotation", StringComparison.Ordinal) || property.StartsWith("localRotation", StringComparison.Ordinal) ||
               property.StartsWith("localEulerAngles", StringComparison.Ordinal));
 
-        internal static TransformMutationAnalysis Create(GameObject avatar, AvatarAnimationIndex animations, bool assumeFixedHumanoidBoneScale = false)
+        internal static TransformMutationAnalysis Create(GameObject avatar, AvatarAnimationIndex animations,
+            bool assumeFixedHumanoidBoneScale = false, SerializedReferenceSnapshot references = null)
         {
-            var result = NativeWriterIndex(avatar, animations, assumeFixedHumanoidBoneScale); result.Uncertain = animations.UnsafeReason;
+            using var cost = AnalysisCost.Measure("Transform mutation analysis");
+            var result = NativeWriterIndex(avatar, animations, assumeFixedHumanoidBoneScale, references); result.Uncertain = animations.UnsafeReason;
             foreach (var use in animations.Bindings)
             {
                 var source = MotionAnalysis.Source(use.Clip);
@@ -73,7 +75,7 @@ namespace Noname.AvatarTools.Analysis
                     !(behaviour is VRC_AnimatorLocomotionControl) && !(behaviour is VRC_AnimatorTemporaryPoseSpace) &&
                     !(behaviour is VRC_AnimatorPlayAudio) && !(behaviour is VRC_AnimatorFaceTrackingBlendshapesSet))
                     result.Uncertain ??= "unverified StateMachineBehaviour: " + behaviour.GetType().FullName;
-                ReadReferences(behaviour, t => result.Add(t, behaviour), new HashSet<Object>());
+                ReadReferences(behaviour, result, behaviour, null, references);
             }
             if (result.Uncertain == null)
                 result.nonReversingScaleWriters.UnionWith(TransformScaleSignAnalysis.NonReversingNativeWriters(avatar, animations));
@@ -82,7 +84,8 @@ namespace Noname.AvatarTools.Analysis
 
         internal static HashSet<Transform> NativeWriters(GameObject avatar) => NativeWriterIndex(avatar).Mutable;
 
-        private static TransformMutationAnalysis NativeWriterIndex(GameObject avatar, AvatarAnimationIndex animations = null, bool assumeFixedHumanoidBoneScale = false)
+        private static TransformMutationAnalysis NativeWriterIndex(GameObject avatar, AvatarAnimationIndex animations = null,
+            bool assumeFixedHumanoidBoneScale = false, SerializedReferenceSnapshot references = null)
         {
             var result = new TransformMutationAnalysis();
             result.Add(avatar.transform, avatar, false);
@@ -96,7 +99,10 @@ namespace Noname.AvatarTools.Analysis
                             // External humanoid clips are absent from the build graph.
                             // An explicit opt-in may exclude their scale channel only;
                             // local clips, constraints and simulations add their own writers.
-                            result.Add(target, animator, !assumeFixedHumanoidBoneScale);
+                            {
+                                if (result.writers.TryGetValue(target, out var known) && known.Contains(animator)) break;
+                                result.Add(target, animator, !assumeFixedHumanoidBoneScale);
+                            }
                 if (animator.applyRootMotion && !animator.isHuman)
                     foreach (var target in animator.GetComponentsInChildren<Transform>(true)) result.Add(target, animator);
             }
@@ -140,11 +146,11 @@ namespace Noname.AvatarTools.Analysis
                     continue;
                 }
                 if (component is IConstraint || component is Rigidbody || component is ArticulationBody ||
-                    component.GetType().Assembly.GetName().Name == "VRC.SDK3.Dynamics.Constraint") result.Add(component.transform, component);
+                    ObjectOptimization.ObjectOptimizationSafety.AssemblyName(type) == "VRC.SDK3.Dynamics.Constraint") result.Add(component.transform, component);
                 // Keep separate traversals per writer so shared assets retain every
                 // reader's provenance, including an overlapping PhysBone.
                 // Custom subclasses retain the conservative unknown-writer rule.
-                ReadReferences(component, t => result.Add(t, component), new HashSet<Object>());
+                ReadReferences(component, result, component, null, references);
             }
             return result;
         }
@@ -167,16 +173,29 @@ namespace Noname.AvatarTools.Analysis
 
         private static Transform AsTransform(Object value) => value is GameObject obj ? obj.transform : (value as Component)?.transform;
 
-        private static void ReadReferences(Object owner, Action<Transform> add, ISet<Object> inspected)
+        private static void ReadReferences(Object owner, TransformMutationAnalysis result, Object writer,
+            ISet<Object> inspected, SerializedReferenceSnapshot references)
         {
-            if (owner == null || !inspected.Add(owner)) return;
-            using var serialized = new SerializedObject(owner);
-            foreach (var property in SerializedReferences.Properties(serialized))
+            if (owner == null || inspected != null && !inspected.Add(owner)) return;
+            using var cost = AnalysisCost.Measure("Mutation references by type", owner.GetType());
+            foreach (var property in references == null ? SerializedReferenceSnapshot.Read(owner) : references.Get(owner))
             {
-                if (property.propertyPath == "m_GameObject" || property.propertyPath == "m_Script") continue;
-                var reference = property.objectReferenceValue;
-                if (AsTransform(reference) is Transform target) add(target);
-                else if (reference is ScriptableObject) ReadReferences(reference, add, inspected);
+                var reference = property.Value;
+                // Native shape sampling reads renderer geometry; it does not move
+                // the renderer's Transform. Keep the dependency graph's reader
+                // edge, but do not turn it into a transform/scale writer here.
+                if (owner.GetType() == typeof(ParticleSystem) && reference is Renderer &&
+                    (property.Path == "ShapeModule.m_MeshRenderer" ||
+                     property.Path == "ShapeModule.m_SkinnedMeshRenderer" ||
+                     property.Path == "ShapeModule.m_SpriteRenderer")) continue;
+                if (AsTransform(reference) is Transform target) result.Add(target, writer);
+                else if (reference is ScriptableObject)
+                {
+                    // Leaf references need neither a closure nor a recursion set.
+                    // Keep separate visited sets once a writer enters an asset graph.
+                    inspected ??= new HashSet<Object> { owner };
+                    ReadReferences(reference, result, writer, inspected, references);
+                }
             }
         }
     }

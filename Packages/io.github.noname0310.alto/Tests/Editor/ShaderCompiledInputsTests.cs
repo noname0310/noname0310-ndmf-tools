@@ -140,6 +140,82 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             }
         }
 
+        [Test]
+        public void CompletedShaderUnitsRemainReusableAfterALaterPassReadsTheInput()
+        {
+            RequireD3DAnalysis();
+            var material = Track(new Material(MeshInputShader("PartialProof")));
+            renderer.sharedMaterial = material;
+            var sources = new ShaderPropertyUsage();
+            var inputs = sources.MeshInputs;
+            Assert.That(inputs.Issue(material, renderer, FrameIndex(), false, BuildTarget.StandaloneWindows64), Does.Contain("may depend"));
+            int calls = inputs.CompileCalls;
+            Assert.That(inputs.UnitCertificateHits, Is.Zero);
+            material.SetFloat("_Unrelated", .5f);
+            Assert.That(inputs.Issue(material, renderer, FrameIndex(), false, BuildTarget.StandaloneWindows64), Does.Contain("may depend"));
+            Assert.That(inputs.UnitCertificateHits, Is.GreaterThan(0), "Completed earlier passes survive a later live-input result.");
+            Assert.That(inputs.CompileCalls - calls, Is.LessThan(calls), "Only the unfinished unit needs a new native probe.");
+
+            int hits = inputs.UnitCertificateHits;
+            material.SetFloat("_FirstGate", 1);
+            Assert.That(inputs.Issue(material, renderer, FrameIndex(), false, BuildTarget.StandaloneWindows64), Does.Contain("may depend"));
+            Assert.That(inputs.UnitCertificateHits, Is.EqualTo(hits), "Changing an observed uniform invalidates the first unit's proof.");
+            material.SetFloat("_FirstGate", 0);
+            material.SetFloat("_LastGate", 0);
+            Assert.That(inputs.Issue(material, renderer, FrameIndex(), false, BuildTarget.StandaloneWindows64), Is.Null);
+            material.SetFloat("_LastGate", 1);
+            material.SetFloat("_Unrelated", .75f);
+            Assert.That(inputs.Issue(material, renderer, FrameIndex(), false, BuildTarget.StandaloneWindows64), Does.Contain("may depend"),
+                "A completed whole-shader proof must retain the earlier unit's constant requirements.");
+        }
+
+        [TestCase("Constant", 0f)] [TestCase("Constant", 1f)]
+        [TestCase("PartialProof", 0f)] [TestCase("PartialProof", 1f)]
+        [TestCase("Sliced", 0f)] [TestCase("LocalKeyword", 0f)]
+        public void ShaderUnitPipelineKeepsSerialProofsAndLogicalBudgets(string fixture, float value)
+        {
+            RequireD3DAnalysis();
+            var material = Track(new Material(MeshInputShader(fixture)));
+            if (material.HasProperty("_IndexEffect")) material.SetFloat("_IndexEffect", value);
+            if (material.HasProperty("_LastGate")) material.SetFloat("_LastGate", value);
+            renderer.sharedMaterial = material;
+            var index = FrameIndex();
+            var serial = new ShaderPropertyUsage().MeshInputs;
+            serial.PrepareUnitsAhead = false;
+            var pipeline = new ShaderPropertyUsage().MeshInputs;
+            string expected = serial.Issue(material, renderer, index, false, BuildTarget.StandaloneWindows64);
+            Assert.That(pipeline.Issue(material, renderer, index, false, BuildTarget.StandaloneWindows64), Is.EqualTo(expected));
+            Assert.That(pipeline.PreprocessCalls, Is.EqualTo(serial.PreprocessCalls));
+            Assert.That(pipeline.CompileCalls, Is.EqualTo(serial.CompileCalls));
+            Assert.That(pipeline.UnitDiagnostics, Is.EqualTo(serial.UnitDiagnostics));
+        }
+
+        [TestCase(127, 0)] [TestCase(128, 0)]
+        [TestCase(0, 2047)] [TestCase(0, 2048)]
+        public void ShaderUnitPipelineKeepsTheSameBudgetExhaustionBoundary(int compiles, int preprocessing)
+        {
+            RequireD3DAnalysis();
+            var material = Track(new Material(MeshInputShader("PartialProof")));
+            material.SetFloat("_LastGate", 0);
+            renderer.sharedMaterial = material;
+            var index = FrameIndex();
+            var serial = new ShaderPropertyUsage().MeshInputs;
+            serial.PrepareUnitsAhead = false;
+            var pipeline = new ShaderPropertyUsage().MeshInputs;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            foreach (var inputs in new[] { serial, pipeline })
+            {
+                typeof(ShaderMeshInputs).GetProperty("CompileCalls", flags).SetValue(inputs, compiles);
+                typeof(ShaderMeshInputs).GetProperty("PreprocessCalls", flags).SetValue(inputs, preprocessing);
+            }
+            string expected = serial.Issue(material, renderer, index, false, BuildTarget.StandaloneWindows64);
+            Assert.That(expected, Does.StartWith("unverified shader inputs:"));
+            Assert.That(pipeline.Issue(material, renderer, index, false, BuildTarget.StandaloneWindows64), Is.EqualTo(expected));
+            Assert.That(pipeline.PreprocessCalls, Is.EqualTo(serial.PreprocessCalls));
+            Assert.That(pipeline.CompileCalls, Is.EqualTo(serial.CompileCalls));
+            Assert.That(pipeline.UnitDiagnostics, Is.EqualTo(serial.UnitDiagnostics));
+        }
+
         [TestCase("float _Flag;", true)] [TestCase("uniform float _Flag;", true)]
         [TestCase("cbuffer Params { float _Flag; };", false)]
         [TestCase("float _Flag : register(c0);", false)]
@@ -158,6 +234,36 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             const string code = "float _Flag; float helper(float _Flag) { return _Flag; }";
             string result = ShaderConstantInputs.Specialize(code, new Dictionary<string, float> { ["_Flag"] = 0 }, out int count);
             Assert.That(count, Is.EqualTo(1)); Assert.That(result, Does.Contain("helper(float _Flag)"));
+        }
+
+        [Test]
+        public void ShaderConstantPlanReusesSourceWithoutRetainingMaterialValues()
+        {
+            const string source = "#pragma vertex vert\nfloat _A; uniform half _B; uint _C; float _Written; void f() { _Written = 1; }";
+            var plan = ShaderConstantInputs.Prepare(source);
+            var first = new Dictionary<string, float> { ["_A"] = 1, ["_B"] = 2, ["_C"] = 0, ["_Written"] = 0 };
+            var second = new Dictionary<string, float> { ["_B"] = -3, ["_C"] = 2, ["_Absent"] = 5 };
+            Assert.That(plan.Apply(first, out int a), Is.EqualTo("#pragma vertex vert\nstatic const float _A = 1.0f; static const half _B = 2.0f; static const uint _C = 0u; float _Written; void f() { _Written = 1; }"));
+            Assert.That(a, Is.EqualTo(3));
+            Assert.That(plan.Apply(second, out int b), Is.EqualTo("#pragma vertex vert\nfloat _A; static const half _B = -3.0f; uint _C; float _Written; void f() { _Written = 1; }"));
+            Assert.That(b, Is.EqualTo(1));
+            Assert.That(plan.Apply(null, out int none), Is.EqualTo(source)); Assert.That(none, Is.Zero);
+        }
+
+        [Test]
+        public void ShaderAnalysisCacheKeepsRecentFactsAfterSaturation()
+        {
+            var cache = new BoundedAnalysisCache<string, string>(3, 10, StringComparer.Ordinal);
+            cache.Add("A", "first", 3); cache.Add("B", "second", 3); cache.Add("C", "third", 3);
+            Assert.That(cache.TryGetValue("A", out var a), Is.True); Assert.That(a, Is.EqualTo("first"));
+            cache.Add("D", "fourth", 3);
+            Assert.That(cache.TryGetValue("B", out _), Is.False); Assert.That(cache.TryGetValue("D", out _), Is.True);
+            cache.Add("large", "uncached", 11);
+            Assert.That(cache.TryGetValue("large", out _), Is.False); Assert.That(cache.TryGetValue("A", out _), Is.True);
+            cache.Add("D", "updated", 4);
+            Assert.That(cache.TryGetValue("D", out var d), Is.True); Assert.That(d, Is.EqualTo("updated"));
+            cache.Add("E", "fifth", 9);
+            Assert.That(cache.TryGetValue("E", out _), Is.True); Assert.That(cache.TryGetValue("D", out _), Is.False);
         }
 
         [TestCase(0f, true)] [TestCase(1f, false)] [TestCase(-1f, false)]

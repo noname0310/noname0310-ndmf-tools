@@ -52,6 +52,8 @@ namespace Noname.AvatarTools.Analysis
         internal BooleanAnimationEquivalence BooleanSignals => booleanSignals ??= new BooleanAnimationEquivalence(this);
         private MaterialAnimationInputs materialInputs;
         internal MaterialAnimationInputs MaterialInputs => materialInputs ??= new MaterialAnimationInputs(this);
+        private AnimatorReachability reachability;
+        internal AnimatorReachability Reachability => reachability ??= AnimatorReachability.Analyze(Avatar, Controllers, PreservedParameters);
 
         internal bool Writes(UnityEngine.Object target, string property) => writes.Contains((target, property));
         internal IReadOnlyList<BindingUse> ForObject(UnityEngine.Object target) =>
@@ -64,6 +66,7 @@ namespace Noname.AvatarTools.Analysis
             IDictionary<object, VirtualAnimatorController> controllers, IReadOnlyDictionary<string, string> paths,
             IEnumerable<string> preservedParameters = null)
         {
+            using var cost = AnalysisCost.Measure("Animation index");
             var result = new AvatarAnimationIndex { Avatar = avatar, Controllers = controllers.Values.Distinct().ToArray(), ControllerEntries = controllers, Paths = paths };
             var owners = new Dictionary<VirtualClip, HashSet<Transform>>();
             var clipControllers = new Dictionary<VirtualClip, HashSet<VirtualAnimatorController>>();

@@ -13,6 +13,9 @@ namespace Noname.AvatarTools.Analysis
         internal readonly double Min, Max;
         private readonly double[] values;
         internal static readonly ParameterValues Unknown = new(double.NegativeInfinity, double.PositiveInfinity);
+        private static readonly ParameterValues Zero = new(0, 0, new double[] { 0 });
+        private static readonly ParameterValues One = new(1, 1, new double[] { 1 });
+        private static readonly ParameterValues Boolean = new(0, 1, new double[] { 0, 1 });
         internal bool TryGetConstant(out float value)
         {
             value = (float)Min;
@@ -23,7 +26,8 @@ namespace Noname.AvatarTools.Analysis
         { Min = min; Max = max; values = finite; }
 
         internal static ParameterValues Constant(double value)
-            => double.IsNaN(value) || double.IsInfinity(value) ? Unknown : new(value, value, new[] { value });
+            => double.IsNaN(value) || double.IsInfinity(value) ? Unknown : value == 1 ? One :
+                value == 0 && !double.IsNegativeInfinity(1 / value) ? Zero : new(value, value, new[] { value });
 
         internal static ParameterValues Range(double min, double max)
             => double.IsNaN(min) || double.IsNaN(max) || min > max ? Unknown :
@@ -32,25 +36,49 @@ namespace Noname.AvatarTools.Analysis
         internal ParameterValues Union(ParameterValues other)
         {
             if (Same(other)) return this;
+            if (values == null && Min <= other.Min && Max >= other.Max) return this;
+            if (other.values == null && other.Min <= Min && other.Max >= Max) return other;
             if (values != null && other.values != null)
             {
-                var set = values.Concat(other.values).Distinct().OrderBy(v => v).ToArray();
-                if (set.Length <= 8) return new(set[0], set[set.Length - 1], set);
+                // Finite domains are sorted, unique and bounded to eight values.
+                // Merge them directly; neither a hash set nor a sort is needed.
+                Span<double> merged = stackalloc double[8];
+                int left = 0, right = 0, count = 0;
+                while (left < values.Length || right < other.values.Length)
+                {
+                    double next;
+                    if (right == other.values.Length || left < values.Length && values[left] <= other.values[right])
+                    {
+                        next = values[left++];
+                        if (right < other.values.Length && other.values[right] == next) right++;
+                    }
+                    else next = other.values[right++];
+                    if (count == merged.Length) return Range(Math.Min(Min, other.Min), Math.Max(Max, other.Max));
+                    merged[count++] = next;
+                }
+                var set = new double[count]; merged.Slice(0, count).CopyTo(set);
+                return new(set[0], set[set.Length - 1], set);
             }
             return Range(Math.Min(Min, other.Min), Math.Max(Max, other.Max));
         }
 
         internal bool Same(ParameterValues other)
-            => Min == other.Min && Max == other.Max && (values == null ? other.values == null :
-                other.values != null && values.SequenceEqual(other.values));
+        {
+            if (ReferenceEquals(this, other)) return true;
+            if (Min != other.Min || Max != other.Max) return false;
+            if (values == null) return other.values == null;
+            if (other.values == null || values.Length != other.values.Length) return false;
+            for (int i = 0; i < values.Length; i++) if (values[i] != other.values[i]) return false;
+            return true;
+        }
 
         internal ParameterValues ConvertTo(AnimatorControllerParameterType type)
         {
             if (type == AnimatorControllerParameterType.Bool || type == AnimatorControllerParameterType.Trigger)
             {
-                if (Min == 0 && Max == 0) return Constant(0);
-                if (Min > 0 || Max < 0) return Constant(1);
-                return Constant(0).Union(Constant(1));
+                if (Min == 0 && Max == 0) return Zero;
+                if (Min > 0 || Max < 0) return One;
+                return Boolean;
             }
             if (type != AnimatorControllerParameterType.Int) return this;
             if (Min < int.MinValue || Max > int.MaxValue) return Unknown;
@@ -59,7 +87,11 @@ namespace Noname.AvatarTools.Analysis
             {
                 double first = Math.Floor(Min), last = Math.Ceiling(Max);
                 if (last - first < 8)
-                    return new(first, last, Enumerable.Range(0, (int)(last - first) + 1).Select(i => first + i).ToArray());
+                {
+                    var set = new double[(int)(last - first) + 1];
+                    for (int i = 0; i < set.Length; i++) set[i] = first + i;
+                    return new(first, last, set);
+                }
                 return Range(first, last);
             }
             ParameterValues result = null;
@@ -73,24 +105,36 @@ namespace Noname.AvatarTools.Analysis
 
         internal bool CanSatisfy(IEnumerable<AnimatorCondition> conditions)
         {
-            var tests = conditions.ToArray();
-            if (tests.Any(c => float.IsNaN(c.threshold) || float.IsInfinity(c.threshold))) return true;
-            if (values != null) return values.Any(v => tests.All(c => Matches(v, c)));
+            var tests = conditions as IReadOnlyList<AnimatorCondition> ?? conditions.ToArray();
+            for (int i = 0; i < tests.Count; i++)
+                if (float.IsNaN(tests[i].threshold) || float.IsInfinity(tests[i].threshold)) return true;
+            if (values != null)
+            {
+                foreach (double value in values)
+                {
+                    bool matches = true;
+                    for (int i = 0; i < tests.Count; i++)
+                        if (!Matches(value, tests[i])) { matches = false; break; }
+                    if (matches) return true;
+                }
+                return false;
+            }
             double low = Min, high = Max;
             bool lowOpen = false, highOpen = false;
-            var forbidden = new HashSet<double>();
-            foreach (var condition in tests)
+            HashSet<double> forbidden = null;
+            for (int i = 0; i < tests.Count; i++)
             {
+                var condition = tests[i];
                 double threshold = condition.threshold;
                 switch (condition.mode)
                 {
-                    case AnimatorConditionMode.If: forbidden.Add(0); break;
+                    case AnimatorConditionMode.If: (forbidden ??= new()).Add(0); break;
                     case AnimatorConditionMode.IfNot: threshold = 0; goto case AnimatorConditionMode.Equals;
                     case AnimatorConditionMode.Equals:
                         if (threshold < low || threshold > high || threshold == low && lowOpen || threshold == high && highOpen)
                             return false;
                         low = high = threshold; lowOpen = highOpen = false; break;
-                    case AnimatorConditionMode.NotEqual: forbidden.Add(threshold); break;
+                    case AnimatorConditionMode.NotEqual: (forbidden ??= new()).Add(threshold); break;
                     case AnimatorConditionMode.Greater:
                         if (threshold >= low) { low = threshold; lowOpen = true; }
                         break;
@@ -99,7 +143,7 @@ namespace Noname.AvatarTools.Analysis
                         break;
                 }
             }
-            return low < high || low == high && !lowOpen && !highOpen && !forbidden.Contains(low);
+            return low < high || low == high && !lowOpen && !highOpen && (forbidden == null || !forbidden.Contains(low));
         }
 
         private static bool Matches(double value, AnimatorCondition condition)

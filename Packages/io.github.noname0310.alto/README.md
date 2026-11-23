@@ -75,11 +75,8 @@ Mobile frames. **Combine meshes across attachment points** can change outlines
 and effects that use a mesh's local axes. **Combine transparent meshes** can
 change the order of overlapping transparent surfaces. Common starts with both
 choices off; Mobile starts with both on. The choices remain independent.
-**Combine meshes even if index-based shader effects change** is a separate
-choice, off by default in both sections. It allows merging without proving that
-mesh IDs and skinning inputs are irrelevant to the shader, including when the
-analyzer cannot inspect every variant. Vertex masks and other indexed effects
-may change. Material-animation defaults and other merge conditions still apply.
+The Installer keeps shader input-use checks enabled on both platforms. Indexed
+effects remain separate unless their inputs are proven irrelevant.
 When mobile simplification is included, `Common/Policies` configures PC and
 `Mobile/Policies` configures Android and iOS. Without mobile simplification,
 Common follows the general optimization platforms selected in Setup. The bundled
@@ -881,6 +878,48 @@ processors.
 - **Remove Unused Mesh Data** removes vertices referenced by no submesh and
   unused or duplicate bone-palette entries. Retained vertices keep their full
   skinning influences and every morph frame. It can also run without merging.
+- **Preserve Vertex IDs**, enabled by default, extends final mesh assembly to
+  shaders that read `SV_VertexID`. Vertex storage order is independent of the
+  destination renderer, its original morph indices and material draw order.
+  An index-sensitive input is placed first and retains its original numbering
+  when keeping unused vertices is inexpensive. Larger savings can use an unused,
+  shader-verified UV channel to carry the original vertex ID; selection compares
+  vertex-buffer and nonzero morph-delta storage against the extra merged stream.
+  This is a deterministic storage estimate, not a hardware-specific GPU timer.
+  Remaining inputs use generated vertex-entry adapters with literal offsets.
+  **Vertex ID Uniform Threshold** defaults to three distinct offsets for the same
+  original shader; at that point its adapters share one shader and use a hidden
+  per-material integer offset. Different offsets retain separate material draws.
+  Shader dependencies, generated or ambiguous entry interfaces, unavailable
+  source and nonzero source submesh base vertices can prevent an adapter. Such
+  inputs keep their original layout or remain separate. Original shader and
+  material assets are never edited. Primitive and bone-index checks remain
+  independent; preserving VertexID does not relax them.
+  Particle systems that sample triangles from one fixed material slot can follow
+  a merged renderer when their coordinate frames and winding agree. Their source
+  submesh stays isolated and the material-slot reference is relocated; whole-mesh
+  readers, vertex/edge sampling and animated shape settings retain the source.
+  ALTO's lossless semantics preserve random-output distributions, rather than
+  individual pseudorandom samples. **Preserve Particle Random Sequence** is off
+  by default. Without it, proven similarity transforms can change individual
+  emission directions while preserving their distribution and speed; uncertain
+  or nonuniform relative scales remain protected. Enabling it retains the source
+  root-bone frame for deterministic replay. This frame is independent of the
+  destination object, and incompatible surface-reader roots prevent merging.
+  Animated material replacement is checked across both initial materials and
+  every keyed replacement. Independently animated slots remain separate, their
+  paths and slot indices are relocated, and keys select adapted materials when
+  an input needs shader correction. Null keys, timing and clip duration survive.
+  Immutable/ambiguous bindings, mesh swaps and invalid slots remain protected.
+  Independent float/color/vector animations can share a renderer when the other
+  materials provably do not read those uniforms, including every animated material
+  replacement and shader pass. Each whole color/vector property keeps one original
+  writer profile; competing writers with no observable output are removed before
+  relocation. The retained renderer's native binding defaults and encoding must
+  preserve the producer's output, including partial weights and Write Defaults.
+  Different animations of a uniform read by both inputs still prevent merging.
+  A changing first material combined with renderer-wide float/color animation
+  retains separate renderers until its changing default-value interface is proven.
 - **Rebind Static Bones** absorbs fixed local bone transforms into bind poses.
   It runs independently of renderer merging, including meshes whose shaders or
   sorting prevent batching. Vertex streams, indices, weights and morphs remain
@@ -901,7 +940,7 @@ coordinate systems alive across AAO's automatic bone merging, using its public
 dependency API. Our later substitution and collection passes then process them.
 This temporary dependency does not change AAO settings or authored Merge Bone
 instructions, and is unnecessary when all scoped skinning inputs are invertible.
-Unknown shader inputs or vertex/primitive/bone indices without an explicit policy,
+Unknown shader inputs, unpreservable vertex indices or primitive/bone indices without an explicit policy,
 transparent sorting without an explicit policy, Cloth,
 material property blocks, animated object references, relative/shared animation
 roots and other renderer readers can prevent merging. The build report records
@@ -918,8 +957,30 @@ not assumed constant. In Linear color space, Gamma properties remain unknown
 because their getters cannot recover exact GPU uploads. Other constants and
 compiled dead-code proofs remain available. Both source and compiled checks
 include numeric semantic suffixes and macro-generated input names.
-Pass/stage/API keyword metadata narrows the complete
-variant coverage; the current editor keyword state alone is never sufficient.
+Pass/stage/API keyword metadata and unconditional keyword alternative groups
+narrow variant coverage. Stable material-local keywords are fixed to the
+material's values; animating a Float property does not run its editor keyword
+drawer. Material swaps and incomplete animation analysis retain all choices.
+Global and engine-controlled keyword states remain variable, so the current
+editor lighting or VR mode cannot prove safety for another world.
+Token-based preprocessing tracks ordered macro definitions, expansion/rescanning,
+conditional branches and includes. Joined definitions retain their dependencies;
+unused or overwritten definitions do not keep unrelated keyword choices alive.
+A source absence proof can skip native preprocessing. Input-use queries also
+follow member reads, local copies and pure function calls. A native compiler can
+prove that a call's result does not depend on a queried argument, with other
+arguments left unknown unless their values are proven. Only the preprocessing
+choices affecting that use path need separate representatives. Discovering a new
+alias, consumer or relevant source region expands the query until all choices
+are covered. This does not require unrelated lighting/output code to be identical.
+The query accepts semantic families or individual semantic indices; mesh merging
+supplies its required inputs without embedding those names in the dependency
+engine. Identical input-use summaries are shared across native programs, and a
+material proof can be reused when every constant it depends on remains proven
+and equal. UsePass references select their named passes. In the built-in render
+pipeline, custom LightMode passes outside the ordinary renderer schedule are
+excluded from input-use checks; custom pipelines retain all passes. Source and
+material-property discovery still inspect every source.
 Unsupported backends, incomplete coverage, compilation errors and exhausted
 analysis budgets keep the renderer separate. Shader assets remain unchanged.
 
@@ -1024,17 +1085,45 @@ removed. Move previously configured coordinate, rigid-conversion and slot-order
 permissions to this component when upgrading; there is no automatic compatibility
 fallback. Common optimization settings remain on Trace And Optimize Meshes.
 
-Shader input checks first use the existing source-wide absence proof. When that
-cannot decide and the build target is known, ALTO can use Unity's preprocessor
-to resolve inactive includes and compile-time branches. Passing this check
+Shader input checks first use the existing source-wide absence proof and a bounded
+preprocessor interpreter. Its initial environment includes imported keyword
+metadata and Unity's compiler/platform definitions. Stage and graphics-tier
+contexts are evaluated separately. Standard macro semantics and Unity caching
+preprocessor differences are both considered; ambiguous integer arithmetic,
+unsupported directives and unmodeled token-serialization behavior remain unknown.
+When a source proof cannot decide, ALTO uses Unity's preprocessor and, where
+supported, compiled input reflection. Input queries accept arbitrary semantic
+families or individual semantic indices; mesh optimization supplies the inputs
+that its transformation can change. Passing this check
 requires coverage of every inspectable pass/stage, configured graphics backend,
-graphics tier and subset of the shader's keywords, including fallback/UsePass
-dependencies. A sample of the current material keywords never proves absence.
-Six keywords per pass/stage/API and 1,024 preprocessing calls per shader are the
-current limits, with shared budgets of 2,048 preprocessing calls and 128 compiler
+graphics tier and reachable keyword combination, including fallback/UsePass
+dependencies. Conditional or overlapping keyword declarations retain independent
+choices. Material keyword changes and shader replacements have separate cache
+entries, and SDK finalization creates a fresh source snapshot after shader
+generators run. No shader generator's private API is required.
+Native preprocessing refinement is enabled for D3D and Metal. Unity 2022's
+combined-stage GLES/OpenGL/Vulkan inspection does not reliably expose a complete
+stage program; those backends require the source proof. Empty or malformed native
+output never proves that inputs are unused.
+The limits are 256 combinations per pass/stage/API/tier and 1,024 preprocessing calls
+per shader, with shared budgets of 2,048 preprocessing calls and 128 compiler
 calls per source snapshot. Larger, failed, unavailable
 or incomplete programs retain their meshes with a diagnostic. Results are
-reused within the build boundary and invalidated with shader sources.
+reused within the build boundary and invalidated with shader sources. Parsed
+include documents are shared within that snapshot. Macro environments share
+unchanged definitions between branches and join only changed entries. Input-use
+projection avoids expanding unrelated macro combinations. Unknown side effects,
+aggregate escapes and unsupported HLSL facts require the conservative fallback.
+Independent native compilations use bounded worker threads; Unity API calls stay
+on the main thread. Results are consumed in the original order under the same
+proof budgets. Structural parsing and a bounded lookahead of later shader units
+overlap compiler work; unused jobs are joined before the analysis returns.
+Equivalent preprocessor executions share their result only when
+no observed dialect difference can affect the input query.
+Macro alternatives, token
+counts, include depth and total interpreter work have separate limits, and a
+failed proof stops further work for that material. This reduces ALTO's analysis
+work; it does not strip or rewrite the shader variants shipped by Unity.
 Input declarations trigger the compiled refinement described above when supported;
 ALTO does not implement its own HLSL control-flow analyzer. Tessellation input
 interfaces, unsupported uniform layouts and unproved runtime values remain

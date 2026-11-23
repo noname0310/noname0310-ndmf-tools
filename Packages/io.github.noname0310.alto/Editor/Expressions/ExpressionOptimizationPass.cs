@@ -164,10 +164,11 @@ namespace Noname.AvatarTools.Expressions
                                 (localCandidates == null || localCandidates.Contains(p.name))).Select(p => p.name), StringComparer.Ordinal);
                         changes += SensorParameterPruning.Apply(avatar, controllers, objects, policy.Preserved, external,
                             buildReport.Messages, locals, frozen);
+                        var snapshot = new ObjectAnalysisSnapshot(avatar, entries, paths, objects, policy.Preserved, shaders);
                         if (objects.RemoveUnusedTransforms)
-                            changes += UnusedTransformOutputs.Apply(avatar, entries, paths, objects, policy.Preserved, buildReport.Messages, shaders);
+                            changes += UnusedTransformOutputs.Apply(avatar, entries, paths, objects, policy.Preserved, buildReport.Messages, shaders, snapshot);
                         if (objects.RemoveUnusedObjects)
-                            changes += UnusedObjectCollection.Apply(avatar, entries, paths, objects, policy.Preserved, buildReport.Messages, shaders);
+                            changes += UnusedObjectCollection.Apply(avatar, entries, paths, objects, policy.Preserved, buildReport.Messages, shaders, snapshot);
                         if (animator?.Enabled == true)
                         {
                             var additive = new HashSet<VirtualAnimatorController>(entries.Where(e =>

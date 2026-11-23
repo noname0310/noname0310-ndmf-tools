@@ -15,13 +15,23 @@ namespace Noname.AvatarTools.ObjectOptimization
     {
         internal static int Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
-            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null)
+            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null,
+            ObjectAnalysisSnapshot snapshot = null)
         {
-            var index = AvatarAnimationIndex.Create(avatar, controllers, paths, preservedParameters);
+            snapshot ??= new ObjectAnalysisSnapshot(avatar, controllers, paths, settings, preservedParameters, shaders);
+            return snapshot.Rewrite(() => ApplyCore(avatar, controllers, paths, settings, preservedParameters, messages, shaders, snapshot));
+        }
+
+        private static int ApplyCore(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
+            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders,
+            ObjectAnalysisSnapshot snapshot)
+        {
+            var index = snapshot.Index;
             string unsupported = ObjectOptimizationSafety.UnsupportedRuntime(avatar) ?? index.UnsafeReason;
             if (unsupported != null)
             { messages.Add("Unused object collection skipped: " + unsupported); return 0; }
-            var graph = AvatarDependencyGraph.Create(avatar, index, settings, collectObjects: true, shaders: shaders);
+            var graph = snapshot.Dependencies(true);
             var components = new HashSet<Component>(graph.Components.Where(c => !(c is Transform) &&
                 (settings.RuntimeDependenciesOnly || !(c is INDMFEditorOnly) && !(c is VRC.SDKBase.IEditorOnly)) && !graph.IsLive(c) &&
                 settings.Scope.Contains(c.transform) && !settings.Protected(c)));

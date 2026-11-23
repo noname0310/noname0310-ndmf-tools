@@ -96,15 +96,16 @@ namespace Noname.AvatarTools.Build
                 if (objects.PruneUnusedSensorParameters && !expressionOwnsSensorProofs)
                     changes += SensorParameterPruning.Apply(avatar, controllers, objects, policy.Preserved, external,
                         report.Messages, frozenInputs: frozen);
+                var snapshot = new ObjectAnalysisSnapshot(avatar, entries, null, objects, policy.Preserved, shaders);
                 if (objects.RemoveUnusedTransforms)
-                    changes += UnusedTransformOutputs.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages, shaders);
+                    changes += UnusedTransformOutputs.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages, shaders, snapshot);
                 if (objects.RemoveRedundantConstraints)
                 {
-                    changes += ConstraintSourcePruning.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages, shaders);
-                    changes += RedundantConstraints.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages, shaders);
+                    changes += ConstraintSourcePruning.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages, shaders, snapshot);
+                    changes += RedundantConstraints.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages, shaders, snapshot);
                 }
                 if (objects.RemoveUnusedObjects)
-                    changes += UnusedObjectCollection.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages, shaders);
+                    changes += UnusedObjectCollection.Apply(avatar, entries, null, objects, policy.Preserved, report.Messages, shaders, snapshot);
             }
             if (animator?.Enabled == true)
             {

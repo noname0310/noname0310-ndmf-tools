@@ -19,7 +19,7 @@ namespace Noname.AvatarTools.Analysis
     {
         private static readonly Regex Property = new(@"^material\.([_A-Za-z][_A-Za-z0-9]*)(?:\.([rgbaxyzw]))?$", RegexOptions.CultureInvariant);
         private readonly AvatarAnimationIndex index;
-        private readonly Dictionary<Renderer, Defaults> defaults = new();
+        private readonly Dictionary<(Renderer, string), Defaults> defaults = new();
         private readonly Dictionary<(Renderer, Material, ColorSpace), IReadOnlyDictionary<string, float>> uniforms = new();
         private readonly Dictionary<(Renderer, string), bool> fullOutputs = new();
         private AnimatorReachability reachability;
@@ -40,10 +40,15 @@ namespace Noname.AvatarTools.Analysis
             return match.Success ? match.Groups[1].Value : null;
         }
 
-        private Defaults Read(Renderer renderer)
+        private Defaults Read(Renderer renderer) => Read(renderer, index.ForObject(renderer)
+            .Where(u => u.Binding.propertyName.StartsWith("material.", StringComparison.Ordinal)).Select(u => u.Binding.propertyName));
+
+        private Defaults Read(Renderer renderer, IEnumerable<string> bindings)
         {
-            if (defaults.TryGetValue(renderer, out var cached)) return cached;
-            var result = new Defaults(); defaults.Add(renderer, result);
+            var requested = bindings.Distinct().OrderBy(n => n, StringComparer.Ordinal).ToArray();
+            var key = (renderer, string.Join(";", requested));
+            if (defaults.TryGetValue(key, out var cached)) return cached;
+            var result = new Defaults(); defaults.Add(key, result);
             var material = renderer.sharedMaterial;
             if (material == null || material.shader == null || renderer.HasPropertyBlock())
             { result.Uncertain = "unverified material defaults"; return result; }
@@ -54,8 +59,7 @@ namespace Noname.AvatarTools.Analysis
                 string propertyName = material.shader.GetPropertyName(i);
                 if (!declared.Add(propertyName)) ambiguous.Add(propertyName);
             }
-            var groups = index.ForObject(renderer).Where(u => u.Binding.propertyName.StartsWith("material.", StringComparison.Ordinal))
-                .GroupBy(u => PropertyName(u.Binding.propertyName));
+            var groups = requested.GroupBy(PropertyName);
             foreach (var group in groups)
             {
                 if (group.Key == null) { result.Uncertain = "unsupported material animation binding"; return result; }
@@ -64,9 +68,15 @@ namespace Noname.AvatarTools.Analysis
                 int property = material.shader.FindPropertyIndex(name);
                 string kind = property < 0 ? "undeclared" : material.shader.GetPropertyType(property) + ":" +
                     (material.shader.GetPropertyFlags(property) & (ShaderPropertyFlags.Gamma | ShaderPropertyFlags.HDR));
-                result.Types[name] = kind;
-                var channels = group.Select(u => u.Binding.propertyName).Distinct().OrderBy(n => n, StringComparer.Ordinal).ToArray();
+                var channels = group.ToArray();
                 bool scalar = channels.Any(n => n == "material." + name);
+                // Undeclared scalar bindings and ordinary Float/Range bindings
+                // use the same native float encoding. Their defaults are still
+                // read and compared; color, gamma and integer contracts stay distinct.
+                if (scalar && (property < 0 ||
+                    (material.shader.GetPropertyType(property) == ShaderPropertyType.Float || material.shader.GetPropertyType(property) == ShaderPropertyType.Range) &&
+                    (material.shader.GetPropertyFlags(property) & (ShaderPropertyFlags.Gamma | ShaderPropertyFlags.HDR)) == 0)) kind = "float";
+                result.Types[name] = kind;
                 var suffixes = channels.Where(n => n.Length == "material.".Length + name.Length + 2).Select(n => n[n.Length - 1]).ToArray();
                 if (scalar && suffixes.Length != 0 || suffixes.Any("rgba".Contains) && suffixes.Any("xyzw".Contains))
                 { result.Uncertain = "aliased material animation channels: " + name; return result; }
@@ -110,6 +120,34 @@ namespace Noname.AvatarTools.Analysis
             return null;
         }
 
+        internal string RelocationIncompatibility(Renderer destination, Renderer source, string property, string[] channels,
+            bool matchingDestinationWriters, bool allowAnimatedDefaults)
+        {
+            var a = Read(destination, channels); var b = Read(source, channels);
+            if (a.Uncertain != null || b.Uncertain != null) return a.Uncertain ?? b.Uncertain;
+            if (a.Types[property] != b.Types[property]) return "different material animation interfaces: " + property;
+            var changed = b.Values.Keys.Where(n => a.Values[n] != b.Values[n]).ToArray();
+            if (changed.Length == 0) return null;
+            // The chosen producer retains its original controller/layer/state
+            // coverage after path relocation. An unused destination writer is
+            // removed, so it cannot supply coverage for this proof.
+            if (FullyDriven(source, property, channels) &&
+                (!matchingDestinationWriters || FullyDriven(destination, property, channels))) return null;
+            if (allowAnimatedDefaults && changed.All(channels.Contains)) return null;
+            return "different observable animated material defaults: " + property;
+        }
+
+        internal IEnumerable<(string Property, float Previous, float Retained)> RelocationDefaultChanges(
+            Renderer destination, Renderer source, string property, string[] channels, bool matchingDestinationWriters)
+        {
+            var a = Read(destination, channels); var b = Read(source, channels);
+            if (a.Uncertain != null || b.Uncertain != null) yield break;
+            if (FullyDriven(source, property, channels) &&
+                (!matchingDestinationWriters || FullyDriven(destination, property, channels))) yield break;
+            foreach (string binding in channels)
+                if (a.Values[binding] != b.Values[binding]) yield return (binding, b.Values[binding], a.Values[binding]);
+        }
+
         internal IEnumerable<(string Property, float Previous, float Retained)> DefaultChanges(Renderer destination, Renderer source)
         {
             var a = Read(destination); var b = Read(source);
@@ -148,7 +186,7 @@ namespace Noname.AvatarTools.Analysis
                 var writer = layers.LastOrDefault(l => l.AllReachableNodes().OfType<VirtualClip>().Any(clips.Contains));
                 if (writer == null || layers[0].AvatarMask != null || writer.AvatarMask != null || writer.SyncedLayerIndex != -1 ||
                     writer.BlendingMode != AnimatorLayerBlendingMode.Override || writer != layers[0] && writer.DefaultWeight != 1) return false;
-                reachability ??= AnimatorReachability.Analyze(index.Avatar, index.Controllers, index.PreservedParameters);
+                reachability ??= index.Reachability;
                 if (reachability.FallbackReason != null || FxPropertyOutput.WeightCanChange(index.ControllerEntries, controller, writer, reachability)) return false;
                 // A later Write Defaults layer may expose the original value even
                 // without a matching explicit curve. Do not infer global coverage.

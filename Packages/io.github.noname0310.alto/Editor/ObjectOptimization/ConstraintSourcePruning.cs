@@ -19,18 +19,48 @@ namespace Noname.AvatarTools.ObjectOptimization
 
         internal static int Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
-            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null)
+            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null,
+            ObjectAnalysisSnapshot snapshot = null)
         {
-            var index = AvatarAnimationIndex.Create(avatar, controllers, paths, preservedParameters);
-            var analysis = AnimatorReachability.Analyze(avatar, index.Controllers, preservedParameters);
+            snapshot ??= new ObjectAnalysisSnapshot(avatar, controllers, paths, settings, preservedParameters, shaders);
+            return snapshot.Rewrite(() => ApplyCore(avatar, controllers, paths, settings, preservedParameters, messages, shaders, snapshot));
+        }
+
+        private static int ApplyCore(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
+            IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders,
+            ObjectAnalysisSnapshot snapshot)
+        {
+            // These authored prerequisites also guard every rewrite below. Do
+            // not construct whole-avatar proofs when no source can be removed.
+            var candidates = new List<VRCConstraintBase>();
+            foreach (var constraint in avatar.GetComponentsInChildren<VRCConstraintBase>(true))
+            {
+                var type = constraint.GetType();
+                if (type != typeof(VRCParentConstraint) && type != typeof(VRCPositionConstraint) &&
+                    type != typeof(VRCRotationConstraint) && type != typeof(VRCScaleConstraint) &&
+                    type != typeof(VRCAimConstraint) && type != typeof(VRCLookAtConstraint)) continue;
+                if (constraint.FreezeToWorld || !constraint.Locked) continue;
+                bool zero = false, positive = false, invalid = false;
+                foreach (var source in constraint.Sources)
+                {
+                    zero |= source.Weight == 0;
+                    positive |= source.Weight > 0 && source.SourceTransform != null;
+                    invalid |= !MotionAnalysis.Finite(source.Weight) || source.Weight < 0;
+                }
+                if (zero && positive && !invalid) candidates.Add(constraint);
+            }
+            if (candidates.Count == 0) return 0;
+            var index = snapshot.Index;
+            var analysis = index.Reachability;
             string reason = ObjectOptimizationSafety.UnsupportedRuntime(avatar) ?? index.UnsafeReason ?? analysis.FallbackReason;
             if (reason != null) { messages.Add("Constraint source pruning skipped: " + reason); return 0; }
-            var graph = AvatarDependencyGraph.Create(avatar, index, settings, collectObjects: false, shaders: shaders);
+            var graph = snapshot.Dependencies(false);
             var proof = new InvariantComponentSettings(index, analysis, controllers);
             var objectKeys = index.Bindings.SelectMany(u => u.ObjectKeys ?? Array.Empty<ObjectReferenceKeyframe>())
                 .Select(k => k.value).ToHashSet();
             int removed = 0;
-            foreach (var constraint in avatar.GetComponentsInChildren<VRCConstraintBase>(true))
+            foreach (var constraint in candidates)
             {
                 var type = constraint.GetType();
                 if (type != typeof(VRCParentConstraint) && type != typeof(VRCPositionConstraint) &&

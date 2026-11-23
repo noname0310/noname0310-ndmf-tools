@@ -30,6 +30,8 @@ namespace Noname.AvatarTools.Meshes
         {
             internal SkinnedMeshRenderer Renderer;
             internal int[] Vertices, Remap;
+            internal int VertexOffset;
+            internal Material[] Materials;
             internal Mesh Mesh => Renderer.sharedMesh;
             private readonly Dictionary<int, int[]> indices = new();
             internal int[] Indices(int submesh)
@@ -41,6 +43,7 @@ namespace Noname.AvatarTools.Meshes
             internal Input(SkinnedMeshRenderer renderer, bool trim)
             {
                 Renderer = renderer;
+                Materials = renderer.sharedMaterials;
                 var used = new bool[Mesh.vertexCount];
                 if (trim)
                     for (int slot = 0; slot < Mesh.subMeshCount; slot++)
@@ -132,12 +135,12 @@ namespace Noname.AvatarTools.Meshes
             }
         }
 
-        internal static bool HasUnusedData(SkinnedMeshRenderer renderer)
+        internal static bool HasUnusedData(SkinnedMeshRenderer renderer, bool includeVertices = true)
         {
-            var input = new Input(renderer, true);
-            if (input.Vertices.Length < input.Mesh.vertexCount) return true;
-            using var weights = input.Mesh.GetAllBoneWeights();
-            var poses = input.Mesh.bindposes; var bones = renderer.bones;
+            var mesh = renderer.sharedMesh;
+            if (includeVertices && new Input(renderer, true).Vertices.Length < mesh.vertexCount) return true;
+            using var weights = mesh.GetAllBoneWeights();
+            var poses = mesh.bindposes; var bones = renderer.bones;
             var used = new HashSet<(Transform, Matrix4x4)>();
             foreach (var weight in weights) used.Add((bones[weight.boneIndex], poses[weight.boneIndex]));
             return used.Count < poses.Length || used.Count < bones.Length;
@@ -181,7 +184,8 @@ namespace Noname.AvatarTools.Meshes
             IEnumerable<string> reservedShapeNames = null, bool removeUnusedData = false,
             IReadOnlyDictionary<SkinnedMeshRenderer, StaticSkinningPlan> skinning = null,
             ISet<SkinnedMeshRenderer> reverseWinding = null, bool reorderMaterialSlots = false,
-            IReadOnlyDictionary<SkinnedMeshRenderer, HashSet<string>> nativeFaceShapes = null)
+            IReadOnlyDictionary<SkinnedMeshRenderer, HashSet<string>> nativeFaceShapes = null, VertexIdMergePlan vertexIds = null,
+            IReadOnlyDictionary<SkinnedMeshRenderer, HashSet<int>> isolatedMaterialSlots = null)
         {
             if (sources == null || sources.Count == 0 || sources.Distinct().Count() != sources.Count)
                 throw new ArgumentException("Mesh assembly requires unique source renderers.");
@@ -190,15 +194,24 @@ namespace Noname.AvatarTools.Meshes
             bool normals = sources[0].sharedMesh.HasVertexAttribute(VertexAttribute.Normal);
             if (sources.Any(r => r.sharedMesh.HasVertexAttribute(VertexAttribute.Normal) != normals))
                 throw new ArgumentException("Mesh assembly requires consistent normal attribute presence.");
-            var inputs = sources.Select(r => new Input(r, removeUnusedData)).ToArray();
+            var inputs = sources.Select(r => new Input(r, removeUnusedData && vertexIds?.KeepVertices.Contains(r) != true)).ToArray();
+            var vertexInputs = vertexIds == null ? inputs : vertexIds.VertexOrder.Select(r => inputs.First(i => i.Renderer == r)).ToArray();
+            int vertexOffset = 0;
+            foreach (var input in vertexInputs)
+            {
+                input.VertexOffset = vertexOffset; vertexOffset += input.Vertices.Length;
+                if (vertexIds != null && vertexIds.Materials.TryGetValue(input.Renderer, out var replacements)) input.Materials = replacements;
+            }
             int vertexCount = checked(inputs.Sum(i => i.Vertices.Length));
             var result = new SkinnedMeshAssembly { Mesh = new Mesh { name = sources[0].sharedMesh.name + " (Merged)",
                 indexFormat = vertexCount > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16 } };
             try
             {
-                CopyAttributes(inputs, result.Mesh, vertexCount, normals, reverseWinding);
-                CopySkinning(inputs, result, vertexCount, skinning);
-                CopyTopology(inputs, result, mergeMaterialSlots, reverseWinding, reorderMaterialSlots);
+                CopyAttributes(vertexInputs, result.Mesh, vertexCount, normals, reverseWinding);
+                if (vertexIds?.AttributeChannel >= 0)
+                    result.Mesh.SetUVs(vertexIds.AttributeChannel, vertexInputs.SelectMany(i => i.Vertices.Select(v => new Vector2(v, 0))).ToList());
+                CopySkinning(vertexInputs, result, vertexCount, skinning);
+                CopyTopology(inputs, result, mergeMaterialSlots, reverseWinding, reorderMaterialSlots, isolatedMaterialSlots);
                 CopyShapes(inputs, result, vertexCount, reservedShapeNames, nativeFaceShapes);
                 result.Mesh.RecalculateBounds();
                 return result;
@@ -316,41 +329,42 @@ namespace Noname.AvatarTools.Meshes
         }
 
         private static void CopyTopology(IReadOnlyList<Input> sources, SkinnedMeshAssembly output, bool merge,
-            ISet<SkinnedMeshRenderer> reverseWinding, bool reorder)
+            ISet<SkinnedMeshRenderer> reverseWinding, bool reorder, IReadOnlyDictionary<SkinnedMeshRenderer, HashSet<int>> isolatedMaterialSlots)
         {
             var materials = new List<Material>(); var draws = new List<List<IndexRange>>();
             var firstSlot = new Dictionary<Material, int>();
-            int offset = 0;
+            var isolatedSlots = new HashSet<int>();
             foreach (var input in sources)
             {
                 var renderer = input.Renderer;
-                var mesh = renderer.sharedMesh; var sourceMaterials = renderer.sharedMaterials;
+                var mesh = renderer.sharedMesh; var sourceMaterials = input.Materials;
                 var slots = new int[sourceMaterials.Length]; output.MaterialSlots.Add(renderer, slots);
                 var ranges = new IndexRange[mesh.subMeshCount];
                 for (int materialSlot = 0; materialSlot < slots.Length; materialSlot++)
                 {
                     var material = sourceMaterials[materialSlot];
+                    int submesh = Math.Min(materialSlot, mesh.subMeshCount - 1);
+                    bool isolated = isolatedMaterialSlots != null && isolatedMaterialSlots.TryGetValue(renderer, out var observed) && observed.Contains(materialSlot);
                     // Default merging keeps material order. The explicit reorder policy
                     // groups by first occurrence, retaining the first material interface.
                     // Behavior reference: AAO 1.9.20 MergeMaterialSlots; see CREDITS.md.
                     int slot = -1;
-                    if (merge && material != null)
+                    if (merge && material != null && !isolated)
                     {
                         if (reorder) { if (!firstSlot.TryGetValue(material, out slot)) slot = -1; }
-                        else if (materials.Count > 0 && materials[materials.Count - 1] == material) slot = materials.Count - 1;
+                        else if (materials.Count > 0 && !isolatedSlots.Contains(materials.Count - 1) && materials[materials.Count - 1] == material) slot = materials.Count - 1;
                     }
                     if (slot < 0)
                     {
                         slot = materials.Count; materials.Add(material); draws.Add(new());
-                        if (material != null && !firstSlot.ContainsKey(material)) firstSlot.Add(material, slot);
+                        if (isolated) isolatedSlots.Add(slot);
+                        else if (material != null && !firstSlot.ContainsKey(material)) firstSlot.Add(material, slot);
                     }
                     slots[materialSlot] = slot;
-                    int submesh = Math.Min(materialSlot, mesh.subMeshCount - 1);
                     var range = ranges[submesh] ??= new IndexRange { Input = input, Submesh = submesh,
-                        Count = checked((int)mesh.GetIndexCount(submesh)), VertexOffset = offset, Reverse = reverseWinding?.Contains(renderer) == true };
+                        Count = checked((int)mesh.GetIndexCount(submesh)), VertexOffset = input.VertexOffset, Reverse = reverseWinding?.Contains(renderer) == true };
                     draws[slot].Add(range);
                 }
-                offset += input.Vertices.Length;
             }
             output.Materials = materials.ToArray();
             // Unity repeats the final submesh for surplus material slots. Preserve
@@ -405,7 +419,6 @@ namespace Noname.AvatarTools.Meshes
             var groups = new Dictionary<string, List<(Input Source, int Shape, int Offset)>>(StringComparer.Ordinal);
             var weights = new List<float>();
             var vertices = new Vector3[count]; var normals = new Vector3[count]; var tangents = new Vector3[count];
-            int offset = 0;
             for (int input = 0; input < sources.Count; input++)
             {
                 var source = sources[input]; var renderer = source.Renderer; var mesh = renderer.sharedMesh;
@@ -418,9 +431,8 @@ namespace Noname.AvatarTools.Meshes
                     if (!shared) while (!names.Add(name)) name = "_" + name;
                     mapping.Add(sourceName, name);
                     if (!groups.TryGetValue(name, out var group)) groups.Add(name, group = new());
-                    group.Add((source, shape, offset));
+                    group.Add((source, shape, source.VertexOffset));
                 }
-                offset += source.Vertices.Length;
             }
             var samples = sources.ToDictionary(s => s, s => new ShapeDelta(s.Mesh.vertexCount));
             var buffers = sources.ToDictionary(s => s, s => new ShapeDelta(s.Mesh.vertexCount));

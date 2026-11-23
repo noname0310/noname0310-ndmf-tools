@@ -18,6 +18,24 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
 {
     public sealed partial class BlendShapeOptimizationTests
     {
+        [Test]
+        public void ReachabilityConditionCacheTracksImmutableConditionReplacement()
+        {
+            var fixture = ReachabilityFixture();
+            Edge(fixture.idle, fixture.face, "Mode", 1);
+            var (analysis, controller) = Analyze(fixture.controller);
+            var transition = controller.Layers.First().StateMachine.DefaultState.Transitions.Single();
+            Assert.That(analysis.CanTake(transition), Is.False);
+            transition.Conditions = transition.Conditions.Clear();
+            Assert.That(analysis.CanTake(transition), Is.True);
+            transition.Conditions = transition.Conditions.Add(new AnimatorCondition {
+                parameter = "Mode", mode = AnimatorConditionMode.Equals, threshold = 0 });
+            Assert.That(analysis.CanTake(transition), Is.True);
+            transition.Conditions = transition.Conditions.Add(new AnimatorCondition {
+                parameter = "Mode", mode = AnimatorConditionMode.NotEqual, threshold = 0 });
+            Assert.That(analysis.CanTake(transition), Is.False);
+        }
+
         private (AnimatorController controller, AnimatorState idle, AnimatorState face) ReachabilityFixture(string parameter = "Mode")
         {
             var idleClip = Clip(); idleClip.name = "Idle";

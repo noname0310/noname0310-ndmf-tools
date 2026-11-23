@@ -64,8 +64,9 @@ namespace Noname.AvatarTools.Build
             referenceSettings.ProtectedSubtrees.AddRange(objects.ProtectedSubtrees);
             referenceSettings.ProtectedComponents.UnionWith(objects.ProtectedComponents);
             var shaders = context.GetState<OptimizationAnalysis>().Shaders;
-            var references = AvatarDependencyGraph.Create(avatar, animations, referenceSettings, false, shaders);
-            var proof = new StaticTransformProof(avatar, animations, objects);
+            var records = new SerializedReferenceSnapshot();
+            var references = AvatarDependencyGraph.Create(avatar, animations, referenceSettings, false, shaders, records);
+            var proof = new StaticTransformProof(avatar, animations, objects, records);
             int changes = StaticSkinningOptimization.Apply(avatar, context.GetState<MeshOptimizationState>(), objects,
                 animations, references, proof, save);
             if (changes > 0) report.Messages.Add("Independently rebound " + changes + " static skin-bone entries; renderer batching eligibility was not required.");
@@ -78,8 +79,9 @@ namespace Noname.AvatarTools.Build
             if (hoisted > 0)
             {
                 animations = AvatarAnimationIndex.Create(avatar, entries, paths, policy.Preserved);
-                references = AvatarDependencyGraph.Create(avatar, animations, referenceSettings, false, shaders);
-                proof = new StaticTransformProof(avatar, animations, objects);
+                records = new SerializedReferenceSnapshot();
+                references = AvatarDependencyGraph.Create(avatar, animations, referenceSettings, false, shaders, records);
+                proof = new StaticTransformProof(avatar, animations, objects, records);
                 changes += hoisted;
             }
             changes += StaticObjectMerging.Apply(avatar, objects, animations, references, proof, report.Messages);

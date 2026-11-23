@@ -252,7 +252,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(MeshMergeAnalysis.Group(candidates, true).Count, Is.EqualTo(different ? 2 : 1));
         }
 
-        [TestCase("PropertyBlock")] [TestCase("Reader")] [TestCase("PPtr")] [TestCase("RelativeController")] [TestCase("DynamicBounds")]
+        [TestCase("PropertyBlock")] [TestCase("Reader")] [TestCase("MeshSwap")] [TestCase("RelativeController")] [TestCase("DynamicBounds")]
         public void MeshMergeRetainsUnverifiedRendererConsumers(string reason)
         {
             var pair = MergePair(); var clip = Clip(); Dictionary<object, VirtualAnimatorController> entries = null;
@@ -262,9 +262,9 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 var block = new MaterialPropertyBlock(); block.SetFloat("_Any", 1); pair.Second.SetPropertyBlock(block);
             }
             if (reason == "Reader") PolicyChild("Reader").AddComponent<DependencyAuthoringFixture>().Target = pair.Second;
-            if (reason == "PPtr") AnimationUtility.SetObjectReferenceCurve(clip,
-                EditorCurveBinding.PPtrCurve("Second", typeof(SkinnedMeshRenderer), "m_Materials.Array.data[0]"),
-                new[] { new ObjectReferenceKeyframe { value = pair.Second.sharedMaterial } });
+            if (reason == "MeshSwap") AnimationUtility.SetObjectReferenceCurve(clip,
+                EditorCurveBinding.PPtrCurve("Second", typeof(SkinnedMeshRenderer), "m_Mesh"),
+                new[] { new ObjectReferenceKeyframe { value = pair.Second.sharedMesh } });
             if (reason == "RelativeController")
             {
                 Frame(pair.Second.sharedMesh, "Shape", 100, Vector3.up);

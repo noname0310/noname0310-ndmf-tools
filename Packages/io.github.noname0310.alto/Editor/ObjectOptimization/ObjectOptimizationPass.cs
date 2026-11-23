@@ -33,11 +33,13 @@ namespace Noname.AvatarTools.ObjectOptimization
         // Set only while the SDK finalizer analyzes completed generator output.
         internal bool RuntimeDependenciesOnly;
         internal Action<UnityEngine.Object> DestroyObject = target => UnityEngine.Object.DestroyImmediate(target);
+        internal int DestructionVersion { get; private set; }
         internal bool TryDestroy(UnityEngine.Object target)
         {
             if (target == null) return false;
             // Editor integrations can decline destruction without throwing. Only an
             // observed removal is progress for the dependency fixed point.
+            DestructionVersion++;
             DestroyObject(target);
             return target == null;
         }
@@ -156,26 +158,25 @@ namespace Noname.AvatarTools.ObjectOptimization
                 var shaders = context.GetState<OptimizationAnalysis>().Shaders;
                 if (finalHierarchy ? state.PruneUnusedSensorParameters : settings.PruneUnusedSensorParameters)
                     changes += SensorParameterPruning.Apply(avatar, controllers, state, policy.Preserved, external, report.Messages);
+                var paths = services.ObjectPathRemapper.GetVirtualToRealPathMap();
+                var snapshot = new ObjectAnalysisSnapshot(avatar, entries, paths, state, policy.Preserved, shaders);
                 if (finalHierarchy ? state.RemoveUnusedTransforms : settings.RemoveUnusedTransformOutputs)
-                    changes += UnusedTransformOutputs.Apply(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
-                        state, policy.Preserved, report.Messages, shaders);
+                    changes += UnusedTransformOutputs.Apply(avatar, entries, paths, state, policy.Preserved, report.Messages, shaders, snapshot);
                 if (!finalHierarchy && (settings.BakeConstantTransforms || settings.BakeConstantVisibility))
-                    InvariantObjectCurves.Apply(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
-                        state, analysis, report.Messages);
+                {
+                    InvariantObjectCurves.Apply(avatar, entries, paths, state, analysis, report.Messages);
+                    snapshot.Invalidate();
+                }
                 if (finalHierarchy && state.RemoveRedundantConstraints)
                 {
-                    changes += ConstraintSourcePruning.Apply(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
-                        state, policy.Preserved, report.Messages, shaders);
-                    changes += RedundantConstraints.Apply(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
-                        state, policy.Preserved, report.Messages, shaders);
-                    changes += ParentConstraintOptimization.Apply(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
-                        state, policy.Preserved, report.Messages, shaders);
+                    changes += ConstraintSourcePruning.Apply(avatar, entries, paths, state, policy.Preserved, report.Messages, shaders, snapshot);
+                    changes += RedundantConstraints.Apply(avatar, entries, paths, state, policy.Preserved, report.Messages, shaders, snapshot);
+                    changes += ParentConstraintOptimization.Apply(avatar, entries, paths, state, policy.Preserved, report.Messages, shaders, snapshot);
                 }
                 // Defer collection until external generators and optimizers have consumed
                 // their authoring components. Their explicit renderer/bone references stay valid.
                 if (finalHierarchy && state.RemoveUnusedObjects)
-                    changes += UnusedObjectCollection.Apply(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
-                        state, policy.Preserved, report.Messages, shaders);
+                    changes += UnusedObjectCollection.Apply(avatar, entries, paths, state, policy.Preserved, report.Messages, shaders, snapshot);
                 report.Messages.Add("Object output simplification completed in " + watch.ElapsedMilliseconds +
                     " ms. Runtime dependencies, scope boundaries and explicit preservation were respected.");
                 return changes;

@@ -43,6 +43,7 @@ namespace Noname.AvatarTools.AnimatorOptimization
             Func<VirtualClip, EditorCurveBinding, bool> observableBinding = null, IEnumerable<string> dependencyRoots = null,
             IDictionary<object, VirtualAnimatorController> controllerEntries = null, bool finalParameterDeclarations = false)
         {
+            using var cost = AnalysisCost.Measure("Animator optimization");
             analysis ??= AnimatorReachability.Analyze(avatar, controllers, preservedParameters);
             var report = new AnimatorOptimizationReport { Fallback = analysis.FallbackReason };
             if (analysis.FallbackReason != null) return report;
@@ -129,6 +130,24 @@ namespace Noname.AvatarTools.AnimatorOptimization
             AnimatorOptimizationSettings settings, AnimatorOptimizationReport report, ISet<VirtualAnimatorController> additive,
             Func<VirtualClip, EditorCurveBinding, bool> observableBinding)
         {
+            using var cost = AnalysisCost.Measure("Animator tree rewrites");
+            // Existing clips are not mutated by this rewrite. Merging builds a
+            // fresh clip before publishing it to the tree. Keep native curve
+            // queries once per clip, including clips shared by several trees.
+            var constantClips = new Dictionary<VirtualClip, bool>();
+            var staticClips = new Dictionary<VirtualClip, bool>();
+            bool ConstantPose(VirtualClip clip)
+            {
+                if (!constantClips.TryGetValue(clip, out bool result))
+                    constantClips.Add(clip, result = MotionAnalysis.ConstantPoseClip(clip));
+                return result;
+            }
+            bool StaticClip(VirtualClip clip)
+            {
+                if (!staticClips.TryGetValue(clip, out bool result))
+                    staticClips.Add(clip, result = ConstantPose(clip) && clip.Settings.stopTime == 0 && MotionAnalysis.EndTime(clip) == 0);
+                return result;
+            }
             var blocked = new HashSet<VirtualMotion>();
             foreach (var controller in controllers)
             foreach (var layer in controller.Layers)
@@ -140,7 +159,7 @@ namespace Noname.AvatarTools.AnimatorOptimization
             var replacements = new Dictionary<VirtualMotion, VirtualMotion>();
             var visiting = new HashSet<VirtualMotion>();
             var outputs = new StaticMotionOutputs(settings.StateLogic ? observableBinding : null);
-            var timeIndependentOutputs = new StaticMotionOutputs(settings.StateLogic ? observableBinding : null, MotionAnalysis.ConstantPoseClip);
+            var timeIndependentOutputs = new StaticMotionOutputs(settings.StateLogic ? observableBinding : null, ConstantPose);
             var timing = new MotionTimeAnalysis(controllers);
             VirtualMotion Rewrite(VirtualMotion motion)
             {
@@ -150,7 +169,7 @@ namespace Noname.AvatarTools.AnimatorOptimization
                 var children = tree.Children.Select(child => Copy(child, Rewrite(child.Motion))).ToList();
                 tree.Children = children.ToImmutableList();
                 bool timeIndependent = timing.CanChangeDuration(tree);
-                Func<VirtualClip, bool> safeClip = timeIndependent ? MotionAnalysis.ConstantPoseClip : MotionAnalysis.StaticClip;
+                Func<VirtualClip, bool> safeClip = timeIndependent ? ConstantPose : StaticClip;
                 var safeOutputs = timeIndependent ? timeIndependentOutputs : outputs;
                 if (tree.BlendType == BlendTreeType.Direct && !tree.NormalizedBlendValues &&
                     MotionAnalysis.Clips(tree).All(safeClip))

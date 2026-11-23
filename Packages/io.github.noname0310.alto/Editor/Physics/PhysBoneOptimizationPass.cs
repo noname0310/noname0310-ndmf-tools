@@ -120,11 +120,12 @@ namespace Noname.AvatarTools.Physics
             if (policy.Uncertain || issue != null)
             { report.Messages.Add("PhysBone optimization retained inputs: " + (issue ?? "unverified Preserve mapping")); return 0; }
             var objects = context.GetState<ObjectOptimizationState>();
+            var records = new SerializedReferenceSnapshot();
             var references = AvatarDependencyGraph.Create(avatar, animations, new ObjectOptimizationState
             { Scope = new OptimizationBuildScope { Root = avatar.transform }, RuntimeDependenciesOnly = objects.RuntimeDependenciesOnly }, false,
-                context.GetState<OptimizationAnalysis>().Shaders);
+                context.GetState<OptimizationAnalysis>().Shaders, records);
             var mutations = settings.OptimizeIsAnimated || settings.ReplaceEndBones || settings.MergeSimulations ?
-                TransformMutationAnalysis.Create(avatar, animations, objects.AssumeFixedHumanoidBoneScale) : null;
+                TransformMutationAnalysis.Create(avatar, animations, objects.AssumeFixedHumanoidBoneScale, records) : null;
             int animatedFlags = 0;
             if (settings.OptimizeIsAnimated)
             {

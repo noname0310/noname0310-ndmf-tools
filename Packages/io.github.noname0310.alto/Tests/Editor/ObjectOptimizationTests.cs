@@ -181,6 +181,20 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(ObjectOptimizationSafety.UnsupportedRuntime(root), Does.Contain(nameof(ParameterPolicySourceFixture)));
         }
 
+        [Test]
+        public void RuntimeComponentTypeCacheDoesNotCacheHierarchyOrDiagnosticPriority()
+        {
+            Assert.That(ObjectOptimizationSafety.UnsupportedRuntime(root), Is.Null);
+            var animation = PolicyChild("Legacy animation").AddComponent<Animation>();
+            Assert.That(ObjectOptimizationSafety.UnsupportedRuntime(root), Does.Contain("legacy Animation"));
+            var script = PolicyChild("Unknown runtime script").AddComponent<ParameterPolicySourceFixture>();
+            Assert.That(ObjectOptimizationSafety.UnsupportedRuntime(root), Does.Contain(nameof(ParameterPolicySourceFixture)));
+            UnityEngine.Object.DestroyImmediate(script);
+            Assert.That(ObjectOptimizationSafety.UnsupportedRuntime(root), Does.Contain("legacy Animation"));
+            UnityEngine.Object.DestroyImmediate(animation);
+            Assert.That(ObjectOptimizationSafety.UnsupportedRuntime(root), Is.Null);
+        }
+
         [TestCase(false)] [TestCase(true)]
         public void SdkParentChangeListenerFollowsPhysBoneLifetime(bool keepSimulation)
         {

@@ -35,7 +35,6 @@ namespace Noname.AvatarTools.Installer
         public bool BakeLilToonMainTextures;
         public bool CommonAllowCoordinateSpaceChanges;
         public bool CommonAllowTransparentSortingChanges;
-        public bool CommonAllowShaderIndexChanges;
         public bool CommonAllowAnimatedMaterialDefaultChanges;
 
         public bool ParameterLayout = true;
@@ -72,7 +71,6 @@ namespace Noname.AvatarTools.Installer
         public bool NormalizeRendererSettings = true;
         public bool AllowCoordinateSpaceChanges = true;
         public bool AllowTransparentSortingChanges = true;
-        public bool AllowShaderIndexChanges;
         public bool AllowAnimatedMaterialDefaultChanges = true;
         public bool AllowMaterialSlotReordering = true;
 

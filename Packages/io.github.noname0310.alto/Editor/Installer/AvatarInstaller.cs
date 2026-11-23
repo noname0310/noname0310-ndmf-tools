@@ -204,11 +204,11 @@ namespace Noname.AvatarTools.Installer
             var commonMeshes = settings.transform.Find("Common/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
             commonMeshes.AllowCoordinateSpaceChanges = draft.CommonAllowCoordinateSpaceChanges;
             commonMeshes.AllowTransparentSortingChanges = draft.CommonAllowTransparentSortingChanges;
-            commonMeshes.AllowShaderIndexChanges = draft.CommonAllowShaderIndexChanges;
+            commonMeshes.AllowShaderIndexChanges = false;
             commonMeshes.AllowAnimatedMaterialDefaultChanges = draft.CommonAllowAnimatedMaterialDefaultChanges;
             commonMeshes.ConvertRigidMeshes = true;
             commonMeshes.enabled = draft.CommonAllowCoordinateSpaceChanges || draft.CommonAllowTransparentSortingChanges ||
-                draft.CommonAllowShaderIndexChanges || draft.CommonAllowAnimatedMaterialDefaultChanges;
+                draft.CommonAllowAnimatedMaterialDefaultChanges;
             // The mobile policy also contains mobile-only slot reordering. Keep
             // the two policies disjoint, since same-scope policies must agree.
             commonMeshes.ApplyOnPlatforms = draft.IncludeMobile ? OptimizationPlatforms.PC : OptimizationPlatforms.All;
@@ -275,7 +275,7 @@ namespace Noname.AvatarTools.Installer
             var meshes = settings.transform.Find("Mobile/Policies").GetComponent<ALTOMeshOptimizationPolicy>();
             meshes.AllowCoordinateSpaceChanges = draft.AllowCoordinateSpaceChanges;
             meshes.AllowTransparentSortingChanges = draft.AllowTransparentSortingChanges;
-            meshes.AllowShaderIndexChanges = draft.AllowShaderIndexChanges;
+            meshes.AllowShaderIndexChanges = false;
             meshes.AllowAnimatedMaterialDefaultChanges = draft.AllowAnimatedMaterialDefaultChanges;
             meshes.ConvertRigidMeshes = true;
             meshes.AllowMaterialSlotReordering = draft.AllowMaterialSlotReordering;
