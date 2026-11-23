@@ -918,6 +918,12 @@ processors.
   relocation. The retained renderer's native binding defaults and encoding must
   preserve the producer's output, including partial weights and Write Defaults.
   Different animations of a uniform read by both inputs still prevent merging.
+  On Windows/D3D, immutable scalar material values can also prove a uniform
+  unread after compiler optimization. Every property the proposed merge may
+  animate stays dynamic in these proofs, including properties other than the
+  current query. This prevents newly combined writers from invalidating each
+  other's constant assumptions. ShaderLab render states remain observable
+  independently of compiled HLSL usage.
   A changing first material combined with renderer-wide float/color animation
   retains separate renderers until its changing default-value interface is proven.
 - **Rebind Static Bones** absorbs fixed local bone transforms into bind poses.
@@ -973,7 +979,7 @@ arguments left unknown unless their values are proven. Only the preprocessing
 choices affecting that use path need separate representatives. Discovering a new
 alias, consumer or relevant source region expands the query until all choices
 are covered. This does not require unrelated lighting/output code to be identical.
-The query accepts semantic families or individual semantic indices; mesh merging
+The query accepts semantic families, individual semantic indices or named uniforms; mesh merging
 supplies its required inputs without embedding those names in the dependency
 engine. Identical input-use summaries are shared across native programs, and a
 material proof can be reused when every constant it depends on remains proven
@@ -1108,8 +1114,8 @@ output never proves that inputs are unused.
 The limits are 256 combinations per pass/stage/API/tier and 1,024 preprocessing calls
 per shader, with shared budgets of 2,048 preprocessing calls and 128 compiler
 calls per source snapshot. Larger, failed, unavailable
-or incomplete programs retain their meshes with a diagnostic. Results are
-reused within the build boundary and invalidated with shader sources. Parsed
+or incomplete programs retain their meshes with a diagnostic. Coverage and
+material-constant proofs belong to the current source snapshot. Parsed
 include documents are shared within that snapshot. Macro environments share
 unchanged definitions between branches and join only changed entries. Input-use
 projection avoids expanding unrelated macro combinations. Unknown side effects,
@@ -1124,11 +1130,25 @@ Macro alternatives, token
 counts, include depth and total interpreter work have separate limits, and a
 failed proof stops further work for that material. This reduces ALTO's analysis
 work; it does not strip or rewrite the shader variants shipped by Unity.
+Compiled input facts are also cached independently of avatars under
+`Library/ALTO/ShaderAnalysis`. Keys include the compiler input source (expanded
+includes and substituted constants), entry point, stage, compiler identity and
+settings, and analysis assembly revision. Unity compilation additionally records
+the shader dependency hash, target, graphics tier and keywords. Semantic read
+masks, uniform usage and resource bindings serve subsequent input queries without
+recompiling. Query results are added independently. Each build still checks that
+its constant assumptions and variant coverage are valid; cache hits consume the
+same logical proof budgets as fresh compilation.
+Only successful, complete reflection is persisted. Atomic writes, integrity checks
+and bounded storage protect the optional cache; absent, corrupt or inaccessible
+records trigger normal compilation. Use **Tools > Noname > ALTO > Clear Shader
+Analysis Cache** to discard it. The cache survives editor restarts, but updates to
+the analysis assembly invalidate its records.
 Input declarations trigger the compiled refinement described above when supported;
 ALTO does not implement its own HLSL control-flow analyzer. Tessellation input
 interfaces, unsupported uniform layouts and unproved runtime values remain
-conservative. This proof does not narrow the separate all-source
-material-property analysis.
+conservative. Material-animation interference can use the constant-aware uniform
+query; the separate Animator output-pruning pass retains its all-source proof.
 
 ## ALTO Trace And Optimize Materials
 
@@ -1708,8 +1728,8 @@ context. Removing a curve preserves the clip's duration. A binding used only by
 unreachable states can still be needed by Write Defaults; such a state is kept.
 Unsupported reachable state machine behaviours or synchronized layers disable
 the Animator graph optimizations. A Console report lists each pass's changes
-and any conservative fallback. No persistent analysis cache or editor preview
-is used.
+and any conservative fallback. Animator analysis does not use a persistent cache
+or editor preview; the independent shader compiler cache is described above.
 
 These optimizations preserve the current controller graph's behavior. World
 animations or external code that access arbitrary private Animator parameters

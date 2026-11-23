@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using UnityEditor.Rendering;
@@ -12,14 +13,36 @@ namespace Noname.AvatarTools.Analysis
     // Reflection follows Microsoft's D3D11_SHADER_DESC and signature contracts.
     internal static class D3DShaderInputs
     {
+        internal enum InputKind : byte { Semantic, Uniform, Resource }
         internal readonly struct Input
         {
             internal readonly string Semantic;
             internal readonly uint SemanticIndex;
             internal readonly byte ReadMask;
-            internal Input(string semantic, byte readMask, uint semanticIndex = 0)
-            { Semantic = semantic; ReadMask = readMask; SemanticIndex = semanticIndex; }
+            internal readonly InputKind Kind;
+            internal Input(string semantic, byte readMask, uint semanticIndex = 0, InputKind kind = InputKind.Semantic)
+            { Semantic = semantic; ReadMask = readMask; SemanticIndex = semanticIndex; Kind = kind; }
         }
+
+        private const uint CompilerFlags = (1u << 15) | (1u << 13) | (1u << 12);
+        private static readonly Lazy<string> CompilerIdentity = new(GetCompilerIdentity);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr LoadLibrary(string name);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern uint GetModuleFileName(IntPtr module, StringBuilder filename, int size);
+        private static string GetCompilerIdentity()
+        {
+            try
+            {
+                // Pin and fingerprint the same library resolved by D3DCompile.
+                // No Unity API is used: compiler workers may initialize this value.
+                IntPtr module = LoadLibrary("d3dcompiler_47.dll");
+                var path = new StringBuilder(32768);
+                if (module == IntPtr.Zero || GetModuleFileName(module, path, path.Capacity) == 0) return null;
+                return "D3D11/SM5/" + CompilerFlags + "/" + ShaderAnalysisCache.Digest(File.ReadAllBytes(path.ToString()));
+            }
+            catch (Exception) { return null; }
+        }
+        internal static string CacheKey(string source, string entry, ShaderType stage)
+            => ShaderAnalysisCache.Shared.Key(source, entry, stage, CompilerIdentity.Value);
 
         [DllImport("d3dcompiler_47.dll", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
         private static extern int D3DCompile(byte[] source, UIntPtr length, string name, IntPtr defines, IntPtr includes,
@@ -30,6 +53,23 @@ namespace Noname.AvatarTools.Analysis
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate UIntPtr BlobSize(IntPtr self);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int Description(IntPtr self, out ShaderDescription description);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int Parameter(IntPtr self, uint index, out Signature description);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate IntPtr Child(IntPtr self, uint index);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int BufferInfo(IntPtr self, out BufferDescription description);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int VariableInfo(IntPtr self, out VariableDescription description);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int ResourceInfo(IntPtr self, uint index, out ResourceDescription description);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BufferDescription
+        { internal IntPtr Name; internal uint Type, Variables, Size, Flags; }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct VariableDescription
+        {
+            internal IntPtr Name; internal uint StartOffset, Size, Flags; internal IntPtr DefaultValue;
+            internal uint StartTexture, TextureSize, StartSampler, SamplerSize;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ResourceDescription
+        { internal IntPtr Name; internal uint Type, BindPoint, BindCount, Flags, ReturnType, Dimension, Samples; }
 
         [StructLayout(LayoutKind.Sequential)]
         private struct ShaderDescription
@@ -78,6 +118,16 @@ namespace Noname.AvatarTools.Analysis
         // blob/reflection handle belongs to this invocation; no Unity API is used.
         internal static bool CompileNative(string source, string entry, ShaderType stage, out Input[] inputs, out string error)
         {
+            var result = ShaderAnalysisCache.Shared.Compile(CacheKey(source, entry, stage), () =>
+            {
+                CompileUncached(source, entry, stage, out var facts, out string issue);
+                return (facts, issue);
+            });
+            inputs = result.Inputs; error = result.Error; return inputs != null;
+        }
+
+        internal static bool CompileUncached(string source, string entry, ShaderType stage, out Input[] inputs, out string error)
+        {
             inputs = null; error = null;
             string target = stage switch { ShaderType.Vertex => "vs_5_0", ShaderType.Fragment => "ps_5_0", ShaderType.Geometry => "gs_5_0",
                 ShaderType.Hull => "hs_5_0", ShaderType.Domain => "ds_5_0", _ => null };
@@ -89,14 +139,14 @@ namespace Noname.AvatarTools.Analysis
                 // Strict IEEE semantics keep unsafe x*0/NaN assumptions out of
                 // the input-independence proof. Compatibility matches Unity's Cg globals.
                 int hr = D3DCompile(bytes, (UIntPtr)bytes.Length, "ALTO Shader Input Analysis", IntPtr.Zero, IntPtr.Zero,
-                    entry, target, (1u << 15) | (1u << 13) | (1u << 12), 0, out code, out errors);
+                    entry, target, CompilerFlags, 0, out code, out errors);
                 if (hr < 0)
                 {
                     string diagnostic = Encoding.UTF8.GetString(ReadBlob(errors)).TrimEnd('\0').Trim();
                     error = "analysis program did not compile" + (diagnostic.Length == 0 ? "" : ": " + diagnostic.Substring(0, Math.Min(1024, diagnostic.Length)));
                     return false;
                 }
-                return Reflect(ReadBlob(code), stage, out inputs, out error);
+                return Reflect(ReadBlob(code), stage, out inputs, out error, true);
             }
             catch (Exception exception) { error = "D3D input analysis failed: " + exception.GetType().Name; return false; }
             finally
@@ -106,7 +156,7 @@ namespace Noname.AvatarTools.Analysis
             }
         }
 
-        internal static bool Reflect(byte[] bytes, ShaderType stage, out Input[] inputs, out string error)
+        internal static bool Reflect(byte[] bytes, ShaderType stage, out Input[] inputs, out string error, bool requireUniforms = false)
         {
             inputs = null; error = null; IntPtr reflection = IntPtr.Zero;
             // Hull patch-constant functions have a separate interface. A regular
@@ -121,6 +171,12 @@ namespace Noname.AvatarTools.Analysis
                 if (hr < 0 || reflection == IntPtr.Zero) { error = "shader reflection is unavailable"; return false; }
                 if (Method<Description>(reflection, 3)(reflection, out var description) < 0 || description.InputParameters > 256)
                 { error = "unverified shader input signature"; return false; }
+                // Unity can strip the resource-definition metadata while leaving
+                // input signatures reflectable. Its empty buffer list is not an
+                // absence proof. Our unstripped D3DCompile result retains the
+                // compiler description, even for a program with no uniforms.
+                if (requireUniforms && description.Creator == IntPtr.Zero)
+                { error = "shader uniform reflection metadata is unavailable"; return false; }
                 uint expected = stage switch { ShaderType.Fragment => 0u, ShaderType.Vertex => 1u, ShaderType.Geometry => 2u,
                     ShaderType.Hull => 3u, ShaderType.Domain => 4u, _ => uint.MaxValue };
                 if ((description.Version >> 16) != expected) { error = "unexpected compiled shader stage"; return false; }
@@ -131,6 +187,29 @@ namespace Noname.AvatarTools.Analysis
                     { error = "incomplete shader input signature"; return false; }
                     result.Add(new Input(Marshal.PtrToStringAnsi(signature.SemanticName),
                         (byte)(signature.Mask & signature.ReadWriteMask), signature.SemanticIndex));
+                }
+                if (description.ConstantBuffers > 4096 || description.BoundResources > 4096)
+                { error = "unverified shader uniform coverage"; return false; }
+                for (uint i = 0; i < description.ConstantBuffers; i++)
+                {
+                    IntPtr buffer = Method<Child>(reflection, 4)(reflection, i);
+                    if (buffer == IntPtr.Zero || Method<BufferInfo>(buffer, 0)(buffer, out var info) < 0 || info.Variables > 16384)
+                    { error = "incomplete shader constant buffer"; return false; }
+                    for (uint j = 0; j < info.Variables; j++)
+                    {
+                        IntPtr variable = Method<Child>(buffer, 1)(buffer, j);
+                        if (variable == IntPtr.Zero || Method<VariableInfo>(variable, 0)(variable, out var data) < 0 || data.Name == IntPtr.Zero)
+                        { error = "incomplete shader uniform signature"; return false; }
+                        // D3D_SVF_USED is set after compiler optimization. The
+                        // constant buffer and variable interfaces borrow reflection's lifetime.
+                        result.Add(new Input(Marshal.PtrToStringAnsi(data.Name), (byte)((data.Flags & 2) != 0 ? 1 : 0), 0, InputKind.Uniform));
+                    }
+                }
+                for (uint i = 0; i < description.BoundResources; i++)
+                {
+                    if (Method<ResourceInfo>(reflection, 6)(reflection, i, out var resource) < 0 || resource.Name == IntPtr.Zero)
+                    { error = "incomplete shader resource signature"; return false; }
+                    result.Add(new Input(Marshal.PtrToStringAnsi(resource.Name), 1, 0, InputKind.Resource));
                 }
                 inputs = result.ToArray(); return true;
             }

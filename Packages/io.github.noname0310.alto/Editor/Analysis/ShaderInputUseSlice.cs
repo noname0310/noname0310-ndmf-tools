@@ -48,6 +48,7 @@ namespace Noname.AvatarTools.Analysis
         {
             if (program.Issue != null) throw new PpException(program.Issue);
             if (!program.Functions.TryGetValue(entry, out var roots) || roots.Count != 1) throw new PpException("Ambiguous shader input-query entry");
+            if (query.UniformQuery) { AnalyzeUniform(entry); return; }
             for (int i = 1; i + 1 < program.Tokens.Length; i++)
                 if (program.At(i) == ":" && query.MatchesToken(program.At(i + 1)))
                 {
@@ -97,6 +98,39 @@ namespace Noname.AvatarTools.Analysis
                 foreach (var function in program.Functions[name]) foreach (string call in calls[function]) pending.Push(call);
             }
             foreach (var function in functions.Where(f => reachable.Contains(f.Name))) AnalyzeFunction(function, function == roots[0]);
+        }
+
+        private void AnalyzeUniform(string entry)
+        {
+            // Reflection proves absence for a sampled program. Cover the complete
+            // entry call graph (including conditions and effects), then rediscover
+            // it in every projected variant. This is deliberately broader than
+            // the pure-function cuts used for vertex attributes.
+            var pending = new Queue<string>(); pending.Enqueue(entry);
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            var globals = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var functions in program.Functions.Values)
+                foreach (var function in functions)
+                    for (int i = function.Header; i <= function.End; i++)
+                        if (query.QueriesIdentifier(program.At(i))) { pending.Enqueue(function.Name); break; }
+            while (pending.Count != 0)
+            {
+                string name = pending.Dequeue();
+                if (!visited.Add(name)) continue;
+                Names.Add(name);
+                foreach (var function in program.Functions[name])
+                {
+                    AddRegion(function.Header, function.End + 1);
+                    for (int i = function.Header; i <= function.End; i++)
+                    {
+                        var token = program.Tokens[i];
+                        if (token.Kind != PpTokenKind.Identifier) continue;
+                        Names.Add(token.Text);
+                        if (program.Functions.ContainsKey(token.Text)) pending.Enqueue(token.Text);
+                        if (program.GlobalDeclarations.ContainsKey(token.Text)) AddGlobal(token.Text, globals);
+                    }
+                }
+            }
         }
 
         private void AnalyzeFunction(ShaderInputProgram.Function function, bool entry)

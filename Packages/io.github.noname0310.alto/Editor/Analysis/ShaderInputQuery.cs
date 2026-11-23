@@ -31,6 +31,7 @@ namespace Noname.AvatarTools.Analysis
 
         internal readonly Semantic[] Semantics;
         private readonly HashSet<string> identifiers;
+        internal readonly bool UniformQuery;
         internal readonly string Signature;
         internal ShaderInputQuery(params Semantic[] semantics)
         {
@@ -43,17 +44,24 @@ namespace Noname.AvatarTools.Analysis
 
         // Named uniforms use the same preprocessor absence proof as semantics,
         // but identifier spelling is case-sensitive and has no numeric suffix family.
-        private ShaderInputQuery(IEnumerable<string> names)
+        private ShaderInputQuery(IEnumerable<string> names, bool uniforms = false)
         {
+            UniformQuery = uniforms;
             identifiers = new HashSet<string>(names, StringComparer.Ordinal);
             if (identifiers.Count == 0 || identifiers.Any(identifier => string.IsNullOrEmpty(identifier) ||
                 !PpLexer.IdentifierStart(identifier[0]) || identifier.Any(c => !PpLexer.IdentifierPart(c))))
                 throw new ArgumentException("Invalid shader identifiers", nameof(names));
             Semantics = Array.Empty<Semantic>();
-            Signature = "identifiers:" + string.Join(";", identifiers.OrderBy(n => n, StringComparer.Ordinal));
+            Signature = (uniforms ? "uniforms:" : "identifiers:") + string.Join(";", identifiers.OrderBy(n => n, StringComparer.Ordinal));
         }
         internal static ShaderInputQuery Identifier(string name) => new(new[] { name });
         internal static ShaderInputQuery Identifiers(IEnumerable<string> names) => new(names);
+        internal static ShaderInputQuery Uniform(string name) => new(new[] { name }, true);
+        internal bool QueriesIdentifier(string name) => identifiers?.Contains(name) == true;
+        internal bool MayUseIdentifiers(ShaderPropertyUsage.Proof proof) => identifiers?.Any(proof.MayUse) == true;
+        internal bool MatchesCompiled(D3DShaderInputs.Input input) => UniformQuery
+            ? input.Kind != D3DShaderInputs.InputKind.Semantic && identifiers.Contains(input.Semantic)
+            : input.Kind == D3DShaderInputs.InputKind.Semantic && Matches(input.Semantic, input.SemanticIndex);
 
         internal bool Matches(string name, uint index)
         {

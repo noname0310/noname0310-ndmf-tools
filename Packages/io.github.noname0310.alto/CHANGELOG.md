@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.18
+
+- Extend material-animation interference checks with compiler-proven uniform usage after substituting immutable material constants. Keep every property the proposed merge can animate dynamic, retain ShaderLab render states and runtime keyword coverage, and preserve unknown inputs.
+- Cache compiled shader-input facts independently of avatar builds. Key records by source, substituted constants, compiler settings and analysis revision; reuse them across input queries and editor restarts. Recover from missing or corrupt records without changing proof coverage or limits, and provide a cache-clear menu.
+
 ## 0.0.17
 
 - Keep mobile control behavior settings in the Installer's Advanced mode. Simple mode explains which controls remain adjustable without requiring knowledge of parameter compression, and retains any custom Advanced settings.

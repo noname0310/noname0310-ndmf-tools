@@ -21,6 +21,8 @@ namespace Noname.AvatarTools.Analysis
             internal readonly HashSet<Shader> ShaderWideKeywordOwners = new();
             internal readonly HashSet<string> IncludeDirectories = new(StringComparer.Ordinal);
             internal readonly HashSet<string> ShaderLabIdentifiers = new(StringComparer.Ordinal);
+            internal readonly HashSet<string> ShaderLabStateIdentifiers = new(StringComparer.Ordinal);
+            internal bool ShaderLabStatesComplete = true;
             internal string Uncertain;
         }
 
@@ -102,6 +104,21 @@ namespace Noname.AvatarTools.Analysis
             return propertyReads[(shader, property, target)] = Inspect();
         }
 
+        internal bool MayRead(Material material, Renderer renderer, AvatarAnimationIndex animations, string property,
+            ISet<string> changingUniforms, BuildTarget? buildTarget = null)
+        {
+            if (material == null || material.shader == null || renderer == null || animations == null ||
+                string.IsNullOrEmpty(property) || !Identifier.IsMatch(property)) return true;
+            var shader = material.shader;
+            if (!MayRead(shader, property, buildTarget)) return false;
+            var program = GetPrograms(shader);
+            // A Properties declaration is authoring metadata, but render states,
+            // tags and other ShaderLab uses are outside compiled HLSL reflection.
+            if (program.Uncertain != null || !program.ShaderLabStatesComplete || program.ShaderLabStateIdentifiers.Contains(property)) return true;
+            return MeshInputs.Issue(material, renderer, animations, ShaderInputQuery.Uniform(property),
+                buildTarget ?? EditorUserBuildSettings.activeBuildTarget, changingUniforms) != null;
+        }
+
         internal void PrimePropertyReads(Shader shader, IEnumerable<string> properties, BuildTarget? buildTarget = null)
         {
             if (shader == null) return;
@@ -142,13 +159,23 @@ namespace Noname.AvatarTools.Analysis
             return false;
         }
 
-        private static void ReadShaderLabIdentifiers(string source, ISet<string> names)
+        private static void ReadShaderLabIdentifiers(string source, ISet<string> names, bool skipProperties = false)
         {
             var tokens = PpLexer.Lex(source);
             for (int i = 0; i < tokens.Count; i++)
             {
                 var token = tokens[i];
                 if (token.Kind != PpTokenKind.Identifier) continue;
+                int next = i + 1;
+                while (next < tokens.Count && tokens[next].Kind == PpTokenKind.Newline) next++;
+                if (skipProperties && token.Text == "Properties" && next < tokens.Count && tokens[next].Text == "{")
+                {
+                    int depth = 1; i = next + 1;
+                    for (; i < tokens.Count && depth != 0; i++)
+                    { if (tokens[i].Text == "{") depth++; else if (tokens[i].Text == "}") depth--; }
+                    if (depth != 0) throw new InvalidOperationException("unterminated ShaderLab properties");
+                    i--; continue;
+                }
                 if (token.Text == "CGPROGRAM" || token.Text == "CGINCLUDE" || token.Text == "HLSLPROGRAM" || token.Text == "HLSLINCLUDE")
                 {
                     string end = token.Text.StartsWith("CG", StringComparison.Ordinal) ? "ENDCG" : "ENDHLSL";
@@ -299,6 +326,7 @@ namespace Noname.AvatarTools.Analysis
                 string assetPath = AssetDatabase.GetAssetPath(current), physical = PhysicalPath(assetPath);
                 string directory = physical != null ? Path.GetDirectoryName(physical) : includeDirectory;
                 bool builtin = assetPath == "Resources/unity_builtin_extra" || assetPath == "Library/unity default resources";
+                if (builtin) sourcePrograms.ShaderLabStatesComplete = false;
                 if (builtin) sourcePrograms.ShaderWideKeywordOwners.Add(current);
                 if (!builtin && (physical == null || !File.Exists(physical) || Path.GetExtension(physical) != ".shader"))
                 { Uncertain("shader source is unavailable: " + current.name); return; }
@@ -307,6 +335,7 @@ namespace Noname.AvatarTools.Analysis
                     directories.Add(directory);
                     string source = Read(physical);
                     ReadShaderLabIdentifiers(source, sourcePrograms.ShaderLabIdentifiers);
+                    ReadShaderLabIdentifiers(source, sourcePrograms.ShaderLabStateIdentifiers, true);
                     passSources.Add((source, directory));
                     foreach (Match dependency in ShaderDependency.Matches(source))
                     {

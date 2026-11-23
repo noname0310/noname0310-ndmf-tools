@@ -86,7 +86,8 @@ namespace Noname.AvatarTools.Analysis
                     " o; o.position=float4(0,0,0,1); o.result=(" + outputType + ")" + expression + "; return o;\n}\n";
                 var proof = compile(probe, entry, ShaderType.Vertex);
                 if (proof.Inputs == null) { result.Issue = proof.Error ?? "Input-probe reflection unavailable"; return result; }
-                result.Independent = !proof.Inputs.Any(i => i.ReadMask != 0 && string.Equals(i.Semantic, "ALTOQUERY", StringComparison.OrdinalIgnoreCase));
+                result.Independent = !proof.Inputs.Any(i => i.Kind == D3DShaderInputs.InputKind.Semantic && i.ReadMask != 0 &&
+                    string.Equals(i.Semantic, "ALTOQUERY", StringComparison.OrdinalIgnoreCase));
             }
             catch (PpException exception) { result.Issue = exception.Message; }
             return result;

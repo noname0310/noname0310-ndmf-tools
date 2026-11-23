@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -15,7 +16,7 @@ namespace Noname.AvatarTools.Analysis
     // A bounded absence proof. Unity owns HLSL preprocessing. A native compiler
     // can refine declarations into actual reads, using proven constant scalar
     // material inputs and a complete set of reachable keyword combinations.
-    // Results belong to the same build/source snapshot as ShaderPropertyUsage.
+    // Snapshot proofs stay local; exact compiler programs can reuse durable facts.
     internal sealed class ShaderMeshInputs
     {
         internal const int MaximumVariantsPerUnit = 256;
@@ -37,6 +38,17 @@ namespace Noname.AvatarTools.Analysis
         private readonly Dictionary<(ShaderData.Pass, ShaderType, string, ShaderCompilerPlatform, BuildTarget, GraphicsTier), (bool Success, string Code)> preprocessed = new();
         private readonly Dictionary<(bool, string, string), string> inspectedPrograms = new();
         private readonly Dictionary<(ShaderData.Pass, ShaderType), string> entries = new();
+        private readonly Dictionary<ShaderData.Pass, string> passCompilerIdentities = new();
+        private static readonly Lazy<string> UnityCompilerIdentity = new(() =>
+        {
+            try
+            {
+                string compiler = Path.Combine(EditorApplication.applicationContentsPath, "Tools", "UnityShaderCompiler.exe");
+                return "Unity/" + Application.unityVersion + "/" + typeof(ShaderUtil).Module.ModuleVersionId + "/" +
+                    ShaderAnalysisCache.Digest(File.ReadAllBytes(compiler));
+            }
+            catch (Exception) { return null; }
+        });
         private readonly Dictionary<(ShaderData.Pass, ShaderType, ShaderCompilerPlatform, bool), ShaderKeywordPlan.DeclarationSet> keywordDeclarations = new();
         private readonly Dictionary<(ShaderData.Pass, ShaderType, ShaderCompilerPlatform, bool), LocalKeyword[]> passKeywords = new();
         private CompilePrefetch prefetch;
@@ -97,6 +109,10 @@ namespace Noname.AvatarTools.Analysis
             => Issue(material, renderer, animations, ShaderInputQuery.ForMeshChange(addSkinning), target);
 
         internal string Issue(Material material, Renderer renderer, AvatarAnimationIndex animations, ShaderInputQuery query, BuildTarget? target)
+            => Issue(material, renderer, animations, query, target, null);
+
+        internal string Issue(Material material, Renderer renderer, AvatarAnimationIndex animations, ShaderInputQuery query,
+            BuildTarget? target, ISet<string> changingUniforms)
         {
             if (material == null || renderer == null || animations == null || !target.HasValue)
                 return Issue(material != null ? material.shader : null, query, target);
@@ -104,6 +120,9 @@ namespace Noname.AvatarTools.Analysis
             string original = CachedSourceIssue(sources.Get(shader), query);
             if (original == null || shader == null) return original;
             var constants = animations.MaterialInputs.ConstantUniforms(renderer, material);
+            if (query.UniformQuery || changingUniforms?.Count > 0)
+                constants = constants.Where(p => !query.QueriesIdentifier(p.Key) && changingUniforms?.Contains(p.Key) != true)
+                    .ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
             bool stableKeywords = animations.UnsafeReason == null && animations.ForObject(renderer).All(u =>
                 u.Complete && !u.Binding.isPPtrCurve);
             string keywordSignature = stableKeywords ? "stable:" + ShaderKeywordPlan.MaterialSignature(material) : "dynamic";
@@ -135,7 +154,8 @@ namespace Noname.AvatarTools.Analysis
         internal static string SourceIssue(ShaderPropertyUsage.Proof proof, ShaderInputQuery query)
         {
             if (proof.Uncertain != null) return Unknown(proof.Uncertain);
-            if (proof.Tokens.Any(query.MatchesToken) || query.Semantics.Any(s => MayPasteInput(proof, s.Name))) return IndexIssue;
+            if (proof.Tokens.Any(query.MatchesToken) || query.MayUseIdentifiers(proof) ||
+                query.Semantics.Any(s => MayPasteInput(proof, s.Name))) return IndexIssue;
             return null;
         }
 
@@ -281,6 +301,12 @@ namespace Noname.AvatarTools.Analysis
             var units = programs.Passes.Where(p => ShaderPassSchedule.MayExecute(p.Pass)).SelectMany(p => Stages.Where(p.Pass.HasShaderStage)
                 .SelectMany(stage => backends.SelectMany(backend => Tiers.Select(tier => {
                     var id = p.Identifier;
+                    if (!passCompilerIdentities.ContainsKey(p.Pass))
+                    {
+                        string asset = AssetDatabase.GetAssetPath(p.Shader);
+                        passCompilerIdentities[p.Pass] = UnityCompilerIdentity.Value == null || string.IsNullOrEmpty(asset) ? null :
+                            UnityCompilerIdentity.Value + "/" + AssetDatabase.GetAssetDependencyHash(asset) + "/" + PassSource(p.Pass);
+                    }
                     // Unity 2022's pass-keyword API cannot address imported
                     // UsePass entries or built-in fallback pass indices reliably.
                     // Use their complete shader-wide universe without issuing
@@ -516,10 +542,18 @@ namespace Noname.AvatarTools.Analysis
             string program = specialized.Code; int count = specialized.Count;
             string entry = Entry(pass, stage);
             if (entry == null) return Unknown("shader entry point is not uniquely inspectable");
-            var key = (program, entry, stage, count != 0);
+            // Unity strips uniform reflection from some compiled variants. Use
+            // the unstripped analysis compiler for named-uniform queries even
+            // when no constants could be substituted.
+            bool native = count != 0 || query.UniformQuery;
+            var key = (program, entry, stage, native);
+            string programKey = native ? D3DShaderInputs.CacheKey(program, entry, stage) :
+                passCompilerIdentities.TryGetValue(pass, out string identity) && identity != null
+                    ? ShaderAnalysisCache.Shared.Key(program, entry, stage, identity + "/" + backend + "/" + target + "/" + tier + "/" + string.Join(";", keywords))
+                    : null;
             if (!compiled.TryGetValue(key, out var proof))
             {
-                if (count != 0)
+                if (native)
                 {
                     // Parsing does not consume compiler/proof budgets. Overlap it
                     // with the native call (or an already queued compile), then
@@ -534,16 +568,20 @@ namespace Noname.AvatarTools.Analysis
                     CompileCalls++;
                     var timer = Stopwatch.StartNew();
                     using var cost = AnalysisCost.Measure("Unity shader compiler");
-                    var result = pass.CompileVariant(stage, keywords, backend, target, tier, true);
+                    proof = ShaderAnalysisCache.Shared.Compile(programKey, () =>
+                    {
+                        var result = pass.CompileVariant(stage, keywords, backend, target, tier, true);
+                        if (!result.Success) return (null, "shader variant compilation failed");
+                        D3DShaderInputs.Reflect(result.ShaderData, stage, out var inputs, out string error);
+                        return (inputs, error);
+                    });
                     NativeCompileMilliseconds += timer.Elapsed.TotalMilliseconds;
                     NativeCompileWaitMilliseconds += timer.Elapsed.TotalMilliseconds;
-                    if (!result.Success) proof = (null, "shader variant compilation failed");
-                    else { D3DShaderInputs.Reflect(result.ShaderData, stage, out var inputs, out string error); proof = (inputs, error); }
                     compiled.Add(key, proof);
                 }
             }
             if (proof.Inputs == null) return Unknown(proof.Error ?? "shader input reflection was incomplete");
-            return proof.Inputs.Any(i => i.ReadMask != 0 && query.Matches(i.Semantic, i.SemanticIndex)) ? IndexIssue : null;
+            return ShaderAnalysisCache.Shared.Usage(programKey, query, proof.Inputs, native) ? IndexIssue : null;
         }
 
         private string PassSource(ShaderData.Pass pass)
@@ -654,7 +692,7 @@ namespace Noname.AvatarTools.Analysis
             }
             if (InspectProgram(value.Success, value.Code, query) != IndexIssue) return;
             var specialized = Specialize(value.Code, constants);
-            if (specialized.Count == 0 || compiled.ContainsKey((specialized.Code, entry, unit.Stage, true)) ||
+            if (specialized.Count == 0 && !query.UniformQuery || compiled.ContainsKey((specialized.Code, entry, unit.Stage, true)) ||
                 prefetch?.Native.Contains(specialized.Code, entry, unit.Stage) == true ||
                 batch.Native.Contains(specialized.Code, entry, unit.Stage)) return;
             batch.Native.Add(specialized.Code, entry, unit.Stage);
@@ -696,9 +734,9 @@ namespace Noname.AvatarTools.Analysis
                     }
                     if (InspectProgram(value.Success, value.Code, query) != IndexIssue) continue;
                     var specialized = Specialize(value.Code, constants);
-                    // An unspecialized program uses Unity's own compile API. That
-                    // path is not replaced with a different compiler invocation.
-                    if (specialized.Count == 0 || compiled.ContainsKey((specialized.Code, entry, stage, true)) ||
+                    // Unspecialized semantic queries retain Unity's compiler;
+                    // uniforms require the unstripped analysis compiler.
+                    if (specialized.Count == 0 && !query.UniformQuery || compiled.ContainsKey((specialized.Code, entry, stage, true)) ||
                         ahead?.Native.Contains(specialized.Code, entry, stage) == true) continue;
                     batch.Native.Add(specialized.Code, entry, stage);
                     // The first samples otherwise start parsing only after their

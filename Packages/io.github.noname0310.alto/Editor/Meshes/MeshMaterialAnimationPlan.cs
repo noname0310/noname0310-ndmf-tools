@@ -29,6 +29,10 @@ namespace Noname.AvatarTools.Meshes
             if (group.Count == 0) return result;
             var destination = group[0];
             var properties = group.SelectMany(c => c.Properties.Keys).Select(MaterialAnimationInputs.PropertyName).Distinct().ToArray();
+            // Every writer that may be introduced by this merge must stay dynamic
+            // in every reader proof. Freezing only the currently queried property
+            // would allow one newly introduced writer to invalidate another proof.
+            var changingUniforms = new HashSet<string>(properties.Where(p => p != null), StringComparer.Ordinal);
             var prepared = new HashSet<MeshMergeCandidate>();
             bool Reads(MeshMergeCandidate candidate, string property)
             {
@@ -37,7 +41,8 @@ namespace Noname.AvatarTools.Meshes
                 if (prepared.Add(candidate))
                     foreach (var shader in materials.Where(m => m != null).Select(m => m.shader).Distinct())
                         shaders.PrimePropertyReads(shader, properties, policy?.Target);
-                return materials.Any(m => m == null || m.shader == null || shaders.MayRead(m.shader, property, policy?.Target));
+                return materials.Any(m => m == null || m.shader == null ||
+                    shaders.MayRead(m, candidate.Renderer, candidate.Animations, property, changingUniforms, policy?.Target));
             }
             foreach (string property in properties)
             {
