@@ -185,39 +185,56 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(constraint == null, Is.EqualTo(enabled));
         }
 
-        // Unity may defer Start indefinitely in an unfocused EditMode runner. Drive
-        // the fixture lifecycle and the SDK's real scheduler explicitly; never
-        // substitute a hand-written constraint equation for the native evaluator.
-        private void EvaluateNativeConstraints(params VRCConstraintBase[] initialize)
+        private int nativeConstraintIsolationDepth;
+
+        private void WithIsolatedNativeConstraints(Action run)
         {
+            if (nativeConstraintIsolationDepth != 0) { run(); return; }
             // Diagnostic-only SDK reflection isolates the fixture from loaded user scenes.
-            // SendMessage would also call Start on unrelated components sharing an owner.
+            // Keep this scope around all sampled frames: re-registering every frame
+            // repeatedly rebuilds the SDK's dependency graph for unrelated avatars.
             const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Public |
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
             var manager = typeof(VRCDynamicsScheduler).Assembly.GetType("VRC.Dynamics.VRCConstraintManager");
             var registered = manager.GetMethod("IsConstraintRegistered", flags);
             var register = manager.GetMethod("RegisterConstraint", flags);
             var unregister = manager.GetMethod("UnregisterConstraint", flags);
-            var start = typeof(VRCConstraintBase).GetMethod("Start", System.Reflection.BindingFlags.Public |
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            Assert.That(registered != null && register != null && unregister != null && start != null, Is.True,
-                "The native test harness needs the installed SDK registration/lifecycle methods.");
+            Assert.That(registered != null && register != null && unregister != null, Is.True,
+                "The native test harness needs the installed SDK registration methods.");
             var foreign = Resources.FindObjectsOfTypeAll<VRCConstraintBase>()
                 .Where(c => !c.transform.IsChildOf(root.transform) && (bool)registered.Invoke(null, new object[] { c })).ToArray();
             try
             {
                 VRCDynamicsScheduler.CompleteDynamicsFrame();
                 foreach (var constraint in foreign) unregister.Invoke(null, new object[] { constraint });
-                foreach (var constraint in initialize) start.Invoke(constraint, null);
-                VRCDynamicsScheduler.UpdateConstraints(true);
-                VRCDynamicsScheduler.CompleteDynamicsFrame();
+                nativeConstraintIsolationDepth++;
+                try { run(); }
+                finally { nativeConstraintIsolationDepth--; }
             }
             finally
             {
-                foreach (var constraint in foreign)
-                    if (constraint != null) register.Invoke(null, new object[] { constraint });
+                try { VRCDynamicsScheduler.CompleteDynamicsFrame(); }
+                finally
+                {
+                    foreach (var constraint in foreign)
+                        if (constraint != null) register.Invoke(null, new object[] { constraint });
+                }
             }
         }
+
+        // Unity may defer Start indefinitely in an unfocused EditMode runner. Drive
+        // the fixture lifecycle and the SDK's real scheduler explicitly; never
+        // substitute a hand-written constraint equation for the native evaluator.
+        private void EvaluateNativeConstraints(params VRCConstraintBase[] initialize) => WithIsolatedNativeConstraints(() =>
+        {
+            // SendMessage would also call Start on unrelated components sharing an owner.
+            var start = typeof(VRCConstraintBase).GetMethod("Start", System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            Assert.That(start, Is.Not.Null, "The native test harness needs the installed SDK lifecycle method.");
+            foreach (var constraint in initialize) start.Invoke(constraint, null);
+            VRCDynamicsScheduler.UpdateConstraints(true);
+            VRCDynamicsScheduler.CompleteDynamicsFrame();
+        });
 
         [Test]
         public void NativeMissingSdkTargetPreservesSkinnedOutputAfterAssembly()
@@ -261,8 +278,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             }
         }
 
-        [Test]
-        public void NativeConstraintHarnessLeavesForeignSceneOutputsAndRegistrationIntact()
+        [TestCase(false)] [TestCase(true)]
+        public void NativeConstraintHarnessLeavesForeignSceneOutputsAndRegistrationIntact(bool throwInside)
         {
             var originalScene = SceneManager.GetActiveScene();
             var scenePath = AssetDatabase.GUIDToAssetPath("4e3531870ac74a99b7804047f9db1d96");
@@ -282,13 +299,28 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 other.GlobalWeight = 1; other.Locked = other.IsActive = true; other.ApplyConfigurationChanges();
                 typeof(VRCConstraintBase).GetMethod("Start", System.Reflection.BindingFlags.Public |
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).Invoke(other, null);
-                EvaluateNativeConstraints(own);
-                Assert.That(output.localScale, Is.EqualTo(input.localScale));
-                Assert.That(foreign.transform.localScale, Is.EqualTo(Vector3.one), "Do not evaluate unrelated loaded avatars.");
                 var manager = typeof(VRCDynamicsScheduler).Assembly.GetType("VRC.Dynamics.VRCConstraintManager");
                 var registered = manager.GetMethod("IsConstraintRegistered", System.Reflection.BindingFlags.Public |
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert.That((bool)registered.Invoke(null, new object[] { other }), Is.True);
+                void SampleFrames() => WithIsolatedNativeConstraints(() =>
+                {
+                    for (int frame = 0; frame < 6; frame++)
+                    {
+                        Assert.That((bool)registered.Invoke(null, new object[] { other }), Is.False);
+                        input.localScale = Vector3.one * (1.25f + frame * .125f);
+                        EvaluateNativeConstraints(frame == 0 ? new[] { own } : Array.Empty<VRCConstraintBase>());
+                        Assert.That(output.localScale, Is.EqualTo(input.localScale));
+                        Assert.That(foreign.transform.localScale, Is.EqualTo(Vector3.one), "Do not evaluate unrelated loaded avatars.");
+                        Assert.That((bool)registered.Invoke(null, new object[] { other }), Is.False,
+                            "Keep the original foreign registrations suspended across the full sampling scope.");
+                    }
+                    if (throwInside) throw new InvalidOperationException("Fixture exception after native evaluation");
+                });
+                if (throwInside) Assert.Throws<InvalidOperationException>(() => SampleFrames());
+                else SampleFrames();
                 Assert.That((bool)registered.Invoke(null, new object[] { other }), Is.True, "Restore the original registration.");
+                Assert.That(foreign.transform.localScale, Is.EqualTo(Vector3.one));
             }
             finally
             {

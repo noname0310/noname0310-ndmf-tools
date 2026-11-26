@@ -4,6 +4,7 @@ using System.Linq;
 using nadena.dev.ndmf.animator;
 using UnityEditor;
 using UnityEngine;
+using Noname.AvatarTools.Analysis;
 
 namespace Noname.AvatarTools.BlendShapeOptimization
 {
@@ -12,6 +13,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization
         internal int Index;
         internal string Name;
         internal float Weight;
+        internal bool ChangedInitialValue;
+        internal NumericalOptimization ConsumedNumericalPermission;
         internal IReadOnlyList<CurveUse> Uses;
         internal IReadOnlyList<CurveUse> IgnoredUses = Array.Empty<CurveUse>();
         internal IReadOnlyList<CurveUse> UnreachableUses = Array.Empty<CurveUse>();
@@ -38,9 +41,14 @@ namespace Noname.AvatarTools.BlendShapeOptimization
 
         internal static OptimizationPlan Create(SkinnedMeshRenderer renderer, AnimationUsage usage,
             bool zeroReset, ISet<string> preserve, Func<VirtualClip, bool> excludeAnimation = null,
-            bool ignoreUnreachableStates = false, bool removeIneffective = false, bool observeAllVertices = false)
+            bool ignoreUnreachableStates = false, bool removeIneffective = false, bool observeAllVertices = false,
+            ConstantPropertyAnalysis constants = null, bool allowInitialValueChanges = false, BlendShapeEffectAnalysis effects = null,
+            bool allowSmallNumericalDifferences = true, bool allowAnimationOutputRounding = false)
         {
-            var plan = new OptimizationPlan { Renderer = renderer, Source = renderer.sharedMesh };
+            using var cost = AnalysisCost.Measure("BlendShape output planning");
+            allowSmallNumericalDifferences &= !observeAllVertices;
+            allowAnimationOutputRounding &= !observeAllVertices;
+            var plan = new OptimizationPlan { Renderer = renderer, Source = renderer.sharedMesh, Effects = removeIneffective ? effects : null };
             if (plan.Source == null) return plan;
             if (renderer.GetComponent<Cloth>() != null || usage.MeshSwaps.Contains(renderer))
             {
@@ -91,8 +99,39 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 var shape = new ShapeInput { Index = i, Name = name, Weight = weight,
                     Uses = allUses.Except(ignored).Except(unreachable).ToArray(), IgnoredUses = ignored,
                     UnreachableUses = unreachable };
-                if (shape.Uses.Count == 0) { plan.Frozen.Add(shape); continue; }
+                if (shape.Uses.Count == 0)
+                {
+                    // CPU baking changes the order of vertex/morph arithmetic.
+                    // A zero-weight removal needs no such numerical permission.
+                    if (allowSmallNumericalDifferences || shape.Weight == 0)
+                    {
+                        if (shape.Weight != 0) shape.ConsumedNumericalPermission = NumericalOptimization.BlendShapes;
+                        plan.Frozen.Add(shape);
+                    }
+                    else plan.Skipped.Add(name + ": strict numerical policy retains nonzero morph accumulation.");
+                    continue;
+                }
+                if (constants != null && !allUses.Any(u => u.ReadOnly) &&
+                    constants.TryProve(renderer, "blendShape." + name, ConstantOutputValue.Scalar(weight), out var proof, out _,
+                        includeUnreachableOutputs: !ignoreUnreachableStates,
+                        allowSmallNumericalDifferences: allowAnimationOutputRounding) &&
+                    proof.Value.Number >= 0 && proof.Value.Number <= 100 &&
+                    (allowSmallNumericalDifferences || proof.Value.Number == 0) &&
+                    (!proof.ChangesInitialValue || allowInitialValueChanges && !observeAllVertices && !proof.Writers.Any(w => w.PreservedInput)))
+                {
+                    shape.Weight = proof.Value.Number; shape.ChangedInitialValue = proof.ChangesInitialValue;
+                    if (shape.Weight != 0) shape.ConsumedNumericalPermission |= NumericalOptimization.BlendShapes;
+                    if (constants.RequiresNumericalPermission(renderer, "blendShape." + name, ConstantOutputValue.Scalar(weight), proof,
+                        includeUnreachableOutputs: !ignoreUnreachableStates))
+                        shape.ConsumedNumericalPermission |= NumericalOptimization.AnimationOutputs;
+                    plan.Frozen.Add(shape); continue;
+                }
                 if (!zeroReset || shape.Uses.Any(u => !AnimationUsage.IsConstantZero(u.Curve))) continue;
+                if (!allowSmallNumericalDifferences && shape.Weight != 0)
+                {
+                    plan.Skipped.Add(name + ": strict numerical policy retains nonzero combined morph arithmetic.");
+                    continue;
+                }
                 if (shape.Uses.Any(u => u.ReadOnly || u.Additive))
                 {
                     plan.Skipped.Add(name + ": immutable/shared binding or additive animation context.");
@@ -122,6 +161,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                     }
                 });
                 if (!groups.TryGetValue(signature, out var group)) groups.Add(signature, group = new ShapeGroup());
+                if (shape.Weight != 0) shape.ConsumedNumericalPermission |= NumericalOptimization.BlendShapes;
                 group.Inputs.Add(shape);
             }
             foreach (var group in groups.Values.OrderBy(g => g.Inputs.Min(s => s.Index)))
@@ -137,6 +177,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
         internal void RewriteCurves()
         {
             foreach (var clipUses in Removed.SelectMany(s => s.IgnoredUses)
+                         .Concat(Frozen.SelectMany(s => s.Uses))
                          .Concat(Frozen.SelectMany(s => s.UnreachableUses))
                          .Concat(Ineffective.SelectMany(s => s.Uses.Concat(s.UnreachableUses))).GroupBy(u => u.Clip))
             {

@@ -13,17 +13,23 @@ namespace Noname.AvatarTools.Build
         {
             internal string Name;
             internal AnalysisDomain Reads, Writes;
-            internal Func<int> Run;
+            internal Func<OptimizationChanges> Run;
             internal Stage(string name, AnalysisDomain reads, AnalysisDomain writes, Func<int> run)
-            { Name = name; Reads = reads; Writes = writes; Run = run; }
+            { Name = name; Reads = reads; Writes = writes; Run = () => OptimizationChanges.From(run(), writes); }
+            private Stage() { }
+            internal static Stage WithChanges(string name, AnalysisDomain reads, AnalysisDomain writes, Func<OptimizationChanges> run)
+                => new() { Name = name, Reads = reads, Writes = writes, Run = run };
         }
 
         internal static int Run(IReadOnlyList<Stage> stages, Action<AnalysisDomain> invalidate = null,
-            Action<string, int> observe = null, int maximumRounds = 4096, OptimizationBuildReport report = null)
+            Action<string, int> observe = null, int maximumRounds = 4096, OptimizationBuildReport report = null,
+            Action<OptimizationChanges> invalidateChanges = null)
         {
-            var dirty = Enumerable.Repeat(true, stages.Count).ToArray();
+            var dirty = new bool[stages.Count];
+            for (int i = 0; i < dirty.Length; i++) dirty[i] = true;
             int rounds = 0;
-            while (dirty.Any(v => v))
+            bool pending = stages.Count != 0;
+            while (pending)
             {
                 if (++rounds > maximumRounds)
                     throw new InvalidOperationException("Optimization did not converge. Pending stages: " +
@@ -32,17 +38,29 @@ namespace Noname.AvatarTools.Build
                 {
                     if (!dirty[i]) continue;
                     dirty[i] = false;
-                    var stage = stages[i]; int changes;
+                    var stage = stages[i]; OptimizationChanges changes;
                     using var measurement = report == null ? null : OptimizationMeasurement.Begin(report, "worklist", stage.Name);
-                    try { changes = stage.Run(); measurement?.Complete(); }
-                    catch { invalidate?.Invoke(stage.Writes); throw; }
-                    if (changes < 0) throw new InvalidOperationException("Negative progress from " + stage.Name);
-                    observe?.Invoke(stage.Name, changes);
-                    if (changes == 0) continue;
-                    invalidate?.Invoke(stage.Writes);
+                    try
+                    {
+                        changes = stage.Run();
+                        if ((changes.Domains & ~stage.Writes) != 0)
+                        {
+                            invalidate?.Invoke(changes.Domains);
+                            invalidateChanges?.Invoke(new OptimizationChanges(0, changes.Domains));
+                            throw new InvalidOperationException("Undeclared mutation from " + stage.Name + ": " + changes.Domains);
+                        }
+                        measurement?.Complete();
+                    }
+                    catch { invalidate?.Invoke(stage.Writes); invalidateChanges?.Invoke(new OptimizationChanges(0, stage.Writes)); throw; }
+                    observe?.Invoke(stage.Name, changes.Count);
+                    if (changes.Domains == AnalysisDomain.None) continue;
+                    invalidate?.Invoke(changes.Domains);
+                    invalidateChanges?.Invoke(changes);
                     for (int next = 0; next < stages.Count; next++)
-                        if ((stages[next].Reads & stage.Writes) != 0) dirty[next] = true;
+                        if ((stages[next].Reads & changes.Domains) != 0) dirty[next] = true;
                 }
+                pending = false;
+                for (int i = 0; i < dirty.Length; i++) pending |= dirty[i];
             }
             return rounds;
         }

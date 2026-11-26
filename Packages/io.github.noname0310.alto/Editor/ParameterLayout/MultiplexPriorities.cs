@@ -93,7 +93,7 @@ namespace Noname.AvatarTools.ParameterLayout
             var externallyDriven = graph.AffectedBy(externalSeeds);
             var pulseDriven = graph.AffectedBy(momentary);
             string uncertain = external.Uncertain ? string.Join("; ", external.Diagnostics) : analysis.FallbackReason;
-            if (clips.Any(c => MotionAnalysis.Source(c) == null || MotionAnalysis.Source(c).events.Length != 0))
+            if (clips.Any(c => AnimationEventEffects.MayInvokeCallback(MotionAnalysis.Source(c))))
                 uncertain ??= "animation events or unknown clips may access inputs";
             foreach (var parameter in declared)
             {

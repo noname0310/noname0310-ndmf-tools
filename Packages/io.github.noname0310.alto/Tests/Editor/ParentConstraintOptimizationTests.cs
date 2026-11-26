@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using nadena.dev.ndmf;
 using nadena.dev.ndmf.animator;
+using Noname.AvatarTools.Analysis;
 using Noname.AvatarTools.Build;
 using Noname.AvatarTools.ObjectOptimization;
+using Noname.AvatarTools.ParameterPolicy;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.Animations;
@@ -15,6 +17,7 @@ using UnityEngine.TestTools;
 using VRC.Dynamics;
 using VRC.SDK3.Avatars.Components;
 using VRC.SDK3.Dynamics.Constraint.Components;
+using VRC.SDKBase;
 
 namespace Noname.AvatarTools.BlendShapeOptimization.Tests
 {
@@ -201,6 +204,112 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 if (originalScene.IsValid() && originalScene.isLoaded) SceneManager.SetActiveScene(originalScene);
                 EditorSceneManager.CloseScene(nativeScene, true);
             }
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void NativeSdkParentSubstitutionRelocatesAnimatedChildrenAfterConstantNormalization(bool changedWeight)
+        {
+            InNativeConstraintScene(() =>
+            {
+                Mesh("Shape"); var settings = ObjectSettings(); settings.RemoveRedundantConstraints = true;
+                var input = PolicyChild("Input").transform;
+                var output = PolicyChild("Output").transform; var control = PolicyChild("Control").transform;
+                var child = PolicyChild("Animated child", output).transform;
+                var referenceChild = PolicyChild("Reference child", control).transform;
+                var constraint = FollowingParent(input, output); var reference = FollowingParent(input, control, "Reference writer");
+                settings.ProtectedComponents.Add(ObjectRegistry.GetReference(reference));
+                if (changedWeight) constraint.GlobalWeight = .5f;
+                var clip = Clip();
+                foreach (var target in new[] { input, child, referenceChild })
+                    AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve(
+                        AnimationUtility.CalculateTransformPath(target, root.transform), typeof(Transform), "m_LocalPosition.x"),
+                        AnimationCurve.Linear(0, 0, .3f, .7f));
+                AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve(constraint.name, typeof(VRCParentConstraint), "GlobalWeight"),
+                    AnimationCurve.Constant(0, .3f, 1));
+                var source = Controller(clip);
+                EvaluateNativeConstraints(constraint, reference);
+                var before = new List<Vector3>();
+                SampleFrozen(source, (p, frame) => { }, 24, () =>
+                {
+                    constraint.ApplyConfigurationChanges(); EvaluateNativeConstraints();
+                    before.Add(child.position);
+                    Assert.That(Vector3.Distance(child.position, referenceChild.position), Is.LessThan(1e-5f));
+                    return 0;
+                });
+                Assert.That(before.Distinct().Count(), Is.GreaterThan(2), "Native animation and the solver must move the fixture");
+                input.localPosition = output.localPosition = control.localPosition = child.localPosition = referenceChild.localPosition = Vector3.zero;
+                constraint.GlobalWeight = changedWeight ? .5f : 1;
+                constraint.ApplyConfigurationChanges();
+                var index = ConstantOutputIndex(source, out var controller);
+                root.AddComponent<ALTOOptimizationPolicy>().AllowInitialValueChanges = true;
+                var context = new BuildContext(root, null); OptimizationPolicy.Capture(context);
+                var report = new OptimizationBuildReport();
+                void Apply() => FinalOutputOptimization.Apply(root, index.ControllerEntries, new ResolvedParameterPolicy(), new HashSet<string>(),
+                    settings, null, null, report, _ => { }, null, initialization: context.GetState<OptimizationPolicy>());
+                Apply();
+                Assert.That(constraint == null, Is.True); Assert.That(output.parent, Is.SameAs(input));
+                var built = CommitAnimator(controller, root);
+                Assert.That(built.animationClips.SelectMany(AnimationUtility.GetCurveBindings).Select(b => b.path),
+                    Does.Contain("Input/Output/Animated child").And.Not.Contain("Output/Animated child"));
+                var after = new List<Vector3>();
+                SampleFrozen(built, (p, frame) => { }, 24, () =>
+                {
+                    EvaluateNativeConstraints(); after.Add(child.position);
+                    Assert.That(Vector3.Distance(child.position, referenceChild.position), Is.LessThan(1e-5f));
+                    return 0;
+                });
+                for (int frame = 0; frame < before.Count; frame++) Assert.That(Vector3.Distance(before[frame], after[frame]), Is.LessThan(1e-5f));
+                Apply(); Assert.That(output.parent, Is.SameAs(input), "The completed native relocation is idempotent");
+                Assert.That(AnimationUtility.GetCurveBindings(clip).Select(b => b.path), Does.Contain("Output/Animated child"), "Source clips remain immutable");
+            });
+        }
+
+        [TestCase("UnresolvedDestination")] [TestCase("Mask")] [TestCase("NestedAnimator")]
+        [TestCase("DuplicateSource")] [TestCase("BehaviourDestination")]
+        public void SdkParentSubstitutionRetainsUnprovedPathInterfaces(string reason)
+        {
+            var settings = ObjectSettings(); var input = PolicyChild("Input").transform; var output = PolicyChild("Output").transform;
+            var child = PolicyChild("Child", output); var constraint = FollowingParent(input, output);
+            var clip = StaticCurve(EditorCurveBinding.FloatCurve("Output/Child", typeof(GameObject), "m_IsActive"), 1);
+            if (reason == "UnresolvedDestination") AnimationUtility.SetEditorCurve(clip,
+                EditorCurveBinding.FloatCurve("Input/Output/Child", typeof(GameObject), "m_IsActive"), AnimationCurve.Constant(0, .3f, 0));
+            if (reason == "NestedAnimator") child.AddComponent<Animator>();
+            if (reason == "DuplicateSource") PolicyChild("Child", output);
+            var source = Controller(clip);
+            if (reason == "Mask")
+            {
+                var mask = Track(new AvatarMask()); mask.transformCount = 1;
+                mask.SetTransformPath(0, "Output"); mask.SetTransformActive(0, false);
+                var layers = source.layers; layers[0].avatarMask = mask; source.layers = layers;
+            }
+            if (reason == "BehaviourDestination")
+            {
+                var audio = source.layers[0].stateMachine.defaultState.AddStateMachineBehaviour<VRCAnimatorPlayAudio>(); Track(audio);
+                audio.SourcePath = "Input/Output/Child";
+            }
+            var index = ConstantOutputIndex(source, out var controller);
+            Assert.That(ParentConstraintOptimization.Apply(root, index.ControllerEntries, null, settings, null,
+                new List<string>(), commitNativePaths: true), Is.Zero);
+            Assert.That(constraint != null, Is.True); Assert.That(output.parent, Is.SameAs(root.transform));
+            Assert.That(controller.AllReachableNodes().OfType<VirtualClip>().SelectMany(c => c.GetFloatCurveBindings()).Select(b => b.path),
+                Does.Contain("Output/Child"));
+        }
+
+        [Test]
+        public void SdkParentSubstitutionRelocatesSdkBehaviourPathsWithoutEditingSourceBehaviour()
+        {
+            var settings = ObjectSettings(); var input = PolicyChild("Input").transform; var output = PolicyChild("Output").transform;
+            PolicyChild("Audio", output).AddComponent<AudioSource>(); var constraint = FollowingParent(input, output);
+            var source = Controller(Clip());
+            var behaviour = source.layers[0].stateMachine.defaultState.AddStateMachineBehaviour<VRCAnimatorPlayAudio>(); Track(behaviour);
+            behaviour.SourcePath = "Output/Audio";
+            var index = ConstantOutputIndex(source, out var controller);
+            Assert.That(ParentConstraintOptimization.Apply(root, index.ControllerEntries, null, settings, null,
+                new List<string>(), commitNativePaths: true), Is.EqualTo(1));
+            Assert.That(constraint == null, Is.True); Assert.That(output.parent, Is.SameAs(input));
+            Assert.That(ParameterSpecialization.Behaviours(controller.AllReachableNodes()).OfType<VRC_AnimatorPlayAudio>().Single().SourcePath,
+                Is.EqualTo("Input/Output/Audio"));
+            Assert.That(behaviour.SourcePath, Is.EqualTo("Output/Audio"));
         }
     }
 }

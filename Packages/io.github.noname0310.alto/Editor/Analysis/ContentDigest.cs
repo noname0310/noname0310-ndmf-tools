@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using Unity.Collections.LowLevel.Unsafe;
 
 namespace Noname.AvatarTools.Analysis
 {
@@ -60,6 +61,34 @@ namespace Noname.AvatarTools.Analysis
         {
             if (!managed && TryHash(data, checked((uint)data.Length), out var digest)) return digest;
             using var hash = SHA256.Create(); return hash.ComputeHash(data);
+        }
+
+        // Hash the exact native representation without allocating a second
+        // frame-sized buffer. Unmanaged is required at compile time; the runtime
+        // check also rejects marshalled layouts such as bool-containing structs.
+        internal static byte[] BlittableArray<T>(T[] data, bool managed = false) where T : unmanaged
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            if (!UnsafeUtility.IsBlittable<T>()) throw new ArgumentException("The digest requires a blittable element layout.", nameof(data));
+            long bytes = checked(data.LongLength * UnsafeUtility.SizeOf<T>());
+            if (!managed && bytes <= uint.MaxValue && TryHash(data, (uint)bytes, out var digest)) return digest;
+            using var hash = SHA256.Create();
+            if (bytes == 0) return hash.ComputeHash(System.Array.Empty<byte>());
+            var pinned = GCHandle.Alloc(data, GCHandleType.Pinned);
+            try
+            {
+                var buffer = new byte[(int)Math.Min(bytes, 64 * 1024)];
+                long address = pinned.AddrOfPinnedObject().ToInt64();
+                for (long offset = 0; offset < bytes; offset += buffer.Length)
+                {
+                    int count = (int)Math.Min(buffer.Length, bytes - offset);
+                    Marshal.Copy(new IntPtr(address + offset), buffer, 0, count);
+                    hash.TransformBlock(buffer, 0, count, buffer, 0);
+                }
+                hash.TransformFinalBlock(System.Array.Empty<byte>(), 0, 0);
+                return hash.Hash;
+            }
+            finally { pinned.Free(); }
         }
     }
 }

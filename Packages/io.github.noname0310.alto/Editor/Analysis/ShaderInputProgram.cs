@@ -7,7 +7,7 @@ namespace Noname.AvatarTools.Analysis
 {
     // Structural facts used by input queries. HLSL parsing/type checking remains
     // the native compiler's responsibility. Unsupported facts never grant a proof.
-    internal sealed class ShaderInputProgram
+    internal sealed partial class ShaderInputProgram
     {
         internal sealed class Parameter
         {
@@ -30,6 +30,7 @@ namespace Noname.AvatarTools.Analysis
         internal readonly HashSet<string> GlobalIdentifiers = new(StringComparer.Ordinal);
         internal readonly Dictionary<string, string> ScalarConstants = new(StringComparer.Ordinal);
         internal readonly Dictionary<string, (int Begin, int End)> GlobalDeclarations = new(StringComparer.Ordinal);
+        internal readonly List<(int Begin, int End)> GlobalInitializers = new();
         internal string Issue;
         private static readonly HashSet<string> NumericTypes = NumericTypeNames();
         private static HashSet<string> NumericTypeNames()
@@ -55,7 +56,7 @@ namespace Noname.AvatarTools.Analysis
             try
             {
                 Tokens = LocatedTokens(source, defaultFile).ToArray(); Partner = Enumerable.Repeat(-1, Tokens.Length).ToArray();
-                MatchDelimiters(); ParseTopLevel();
+                MatchDelimiters(); ParseTopLevel(); ReadImmutableInitializers();
             }
             catch (PpException exception) { Issue = exception.Message; }
         }
@@ -63,7 +64,7 @@ namespace Noname.AvatarTools.Analysis
         internal ShaderInputProgram(IEnumerable<PpToken> tokens)
         {
             Tokens = tokens.ToArray(); Partner = Enumerable.Repeat(-1, Tokens.Length).ToArray();
-            try { MatchDelimiters(); ParseTopLevel(); }
+            try { MatchDelimiters(); ParseTopLevel(); ReadImmutableInitializers(); }
             catch (PpException exception) { Issue = exception.Message; }
         }
 
@@ -162,22 +163,28 @@ namespace Noname.AvatarTools.Analysis
                 if (stop == Tokens.Length) throw new PpException("Unterminated HLSL declaration");
                 if (At(stop) == ";")
                 {
+                    if (HasAssignment(declaration, stop)) GlobalInitializers.Add((declaration, stop + 1));
                     AddGlobalIdentifiers(declaration, stop);
                     ReadConstant(declaration, stop); start = stop + 1; continue;
                 }
                 int close = Partner[stop];
                 if (At(declaration) == "struct")
                 {
+                    if (HasAssignment(stop, close)) GlobalInitializers.Add((declaration, close + 1));
                     if (declaration + 2 != stop || Tokens[declaration + 1].Kind != PpTokenKind.Identifier)
                         throw new PpException("Unsupported HLSL aggregate declaration");
                     Types.Add(At(declaration + 1));
                     Structs[At(declaration + 1)] = (stop + 1, close);
                 }
                 else if (At(declaration) == "cbuffer" || At(declaration) == "tbuffer")
+                {
+                    if (HasAssignment(stop, close)) GlobalInitializers.Add((declaration, close + 1));
                     AddGlobalIdentifiers(stop, close);
+                }
                 else if (HasAssignment(declaration, stop))
                 {
                     while (close + 1 < Tokens.Length && At(close + 1) != ";") close++;
+                    GlobalInitializers.Add((declaration, close + 1));
                     AddGlobalIdentifiers(declaration, close);
                 }
                 else

@@ -31,7 +31,7 @@ namespace Noname.AvatarTools.Analysis
             }
         }
 
-        private static bool MayContainReferences(SerializedPropertyType type)
+        internal static bool MayContainReferences(SerializedPropertyType type)
         {
             switch (type)
             {

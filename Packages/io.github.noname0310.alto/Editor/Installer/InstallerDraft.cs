@@ -23,6 +23,9 @@ namespace Noname.AvatarTools.Installer
         public VRCAvatarDescriptor Avatar;
         public bool IncludeCommon = true;
         public bool CommonMobileOnly;
+        public bool AllowInitialValueChanges = true;
+        public bool AllowShaderConstantFolding = true;
+        public NumericalOptimization AllowedNumericalDifferences = NumericalOptimization.All;
         public bool IncludeMobile = true;
         public bool NormalizeProbeAnchors = true;
         public bool PreserveMmdBlendShapes = true;
@@ -33,6 +36,8 @@ namespace Noname.AvatarTools.Installer
         public List<string> AfkDiagnostics = new();
         public List<AnimationClip> AdditionalExcludedAnimations = new();
         public bool BakeLilToonMainTextures;
+        public bool BakeConstantShaderInputs;
+        public bool RemovePermanentlyHiddenGeometry = true;
         public bool CommonAllowCoordinateSpaceChanges;
         public bool CommonAllowTransparentSortingChanges;
         public bool CommonAllowAnimatedMaterialDefaultChanges;

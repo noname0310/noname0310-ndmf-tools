@@ -22,10 +22,21 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         private Scene scene;
         private GameObject root;
         private SkinnedMeshRenderer renderer;
+        private bool completeShaderCoverage;
+        private bool nativeShaderPrograms;
+        private bool completedShaderUnits;
 
         [SetUp]
         public void SetUp()
         {
+            completeShaderCoverage = Analysis.ShaderMeshInputs.CacheCompleteCoverage;
+            nativeShaderPrograms = Analysis.ShaderMeshInputs.CacheNativePrograms;
+            completedShaderUnits = Analysis.ShaderMeshInputs.CacheCompletedUnits;
+            // Native-analysis fixtures must exercise their proof path even after
+            // another test cached the same complete result. Cache tests opt in.
+            Analysis.ShaderMeshInputs.CacheCompleteCoverage = false;
+            Analysis.ShaderMeshInputs.CacheNativePrograms = false;
+            Analysis.ShaderMeshInputs.CacheCompletedUnits = false;
             scene = EditorSceneManager.NewPreviewScene();
             root = Track(new GameObject("Avatar"));
             SceneManager.MoveGameObjectToScene(root, scene);
@@ -35,6 +46,9 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         [TearDown]
         public void TearDown()
         {
+            Analysis.ShaderMeshInputs.CacheCompleteCoverage = completeShaderCoverage;
+            Analysis.ShaderMeshInputs.CacheNativePrograms = nativeShaderPrograms;
+            Analysis.ShaderMeshInputs.CacheCompletedUnits = completedShaderUnits;
             for (int i = objects.Count - 1; i >= 0; i--) if (objects[i] != null) Object.DestroyImmediate(objects[i]);
             objects.Clear();
             EditorSceneManager.ClosePreviewScene(scene);

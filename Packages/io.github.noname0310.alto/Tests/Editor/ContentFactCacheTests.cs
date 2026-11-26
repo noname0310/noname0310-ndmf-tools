@@ -43,6 +43,57 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(ContentFactCache.TextDigest(text), Is.EqualTo(BitConverter.ToString(ContentDigest.Bytes(raw, managed: true)).Replace("-", "").ToLowerInvariant()));
         }
 
+        [Test] public void FactProducerVersionsInvalidateOnlyDependentRecords()
+        {
+            string Revision(string kind) => kind == "compiler" ? "compiler/1" : kind == "proof" ? "compiler/1/proof/1" : null;
+            string Updated(string kind) => kind == "compiler" ? "compiler/1" : kind == "proof" ? "compiler/1/proof/2" : null;
+            var before = new ContentFactCache(directory, "environment", Revision);
+            before.Store("compiler", before.Key("compiler", "program"), writer => writer.Write(11));
+            before.Store("proof", before.Key("proof", "program"), writer => writer.Write(22));
+            var after = new ContentFactCache(directory, "environment", Updated);
+            Assert.That(after.TryRead("compiler", after.Key("compiler", "program"), r => r.ReadInt32(), out int value), Is.True);
+            Assert.That(value, Is.EqualTo(11));
+            Assert.That(after.TryRead("proof", after.Key("proof", "program"), r => r.ReadInt32(), out _), Is.False);
+            Assert.That(after.Key("unregistered", "program"), Is.Null);
+            Assert.That(new ContentFactCache(directory, "other environment", Updated).Key("compiler", "program"),
+                Is.Not.EqualTo(after.Key("compiler", "program")));
+        }
+
+        [Test] public void PersistentFactContractsAreExplicit()
+        {
+            foreach (string kind in new[] { "shader lexical summary", "shaderlab summary", "shader declarations",
+                "shader specialization", "shader preprocessing", "native shader environment", "native shader dependencies",
+                "native shader preprocessing", "native shader program", "native shader input evidence", "shader input slices",
+                "native shader build inputs", "complete shader input coverage", "completed shader unit coverage",
+                "shader source rewrite dependencies", "source shader constants", "runtime shared shader constants",
+                "runtime shared shader constants retained" })
+                Assert.That(AnalysisCacheContracts.Revision(kind), Is.Not.Null.And.Not.Empty, kind);
+            Assert.That(AnalysisCacheContracts.Revision("unknown producer"), Is.Null);
+        }
+
+        [Test] public void ShaderCachesShareByteBudgetAndRetainRecentlyUsedFacts()
+        {
+            string sibling = directory + "-shader";
+            Directory.CreateDirectory(directory); Directory.CreateDirectory(sibling);
+            try
+            {
+                string used = Path.Combine(directory, "used.bin"), stale = Path.Combine(sibling, "stale.bin"), added = Path.Combine(sibling, "added.bin");
+                File.WriteAllBytes(used, new byte[100]); File.WriteAllBytes(stale, new byte[100]);
+                File.SetLastWriteTimeUtc(used, DateTime.UtcNow.AddDays(-2));
+                File.SetLastWriteTimeUtc(stale, DateTime.UtcNow.AddDays(-1));
+                var budget = new AnalysisCacheDiskBudget(new[] { directory, sibling }, 250);
+                budget.Stored(100); budget.Used(used);
+                File.WriteAllBytes(added, new byte[100]); budget.Stored(100);
+                Assert.That(File.Exists(used), Is.True); Assert.That(File.Exists(added), Is.True);
+                Assert.That(File.Exists(stale), Is.False, "The byte limit is shared across cache families; use, not creation, controls eviction.");
+                budget.Stored(100);
+                Assert.That(File.Exists(used), Is.True, "An overestimate must be measured before eviction.");
+                Assert.That(File.Exists(added), Is.True);
+                Assert.That(AnalysisCacheDiskBudget.MaximumBytes, Is.EqualTo(100L * 1024 * 1024 * 1024));
+            }
+            finally { foreach (string file in Directory.GetFiles(sibling)) File.Delete(file); Directory.Delete(sibling); }
+        }
+
         [Test] public void FactCacheSurvivesReloadAndRejectsCorruptStorage()
         {
             var cache = new ContentFactCache(directory, "v1"); string key = cache.Key("test", "source");
@@ -54,6 +105,27 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(new ContentFactCache(directory, "v1").TryRead("test", key, r => r.ReadInt32(), out _), Is.False);
             ContentFactCache.Enabled = false;
             Assert.That(cache.TryRead("test", key, r => r.ReadInt32(), out _), Is.False);
+        }
+
+        [Test] public void NativeProgramArtifactsRoundTripRecursiveBindingsAndNullCollections()
+        {
+            var program = new ShaderNativeProgram { Success = true, ShaderData = new byte[] { 1, 2, 3 },
+                Attributes = new[] { UnityEngine.Rendering.VertexAttribute.Position, UnityEngine.Rendering.VertexAttribute.TexCoord7 },
+                ConstantBuffers = new[] { new ShaderNativeProgram.Buffer { Name = "cb:;\u2603", Size = 80, Fields = new[] {
+                    new ShaderNativeProgram.Field { Name = "outer", Index = 16, ConstantType = (UnityEngine.Rendering.ShaderConstantType)2,
+                        DataType = (UnityEngine.Rendering.ShaderParamType)0, StructSize = 16, ArraySize = 3, Rows = 1, Columns = 4,
+                        StructFields = new[] { new ShaderNativeProgram.Field { Name = "inner", Index = 4, Rows = 1, Columns = 1, StructFields = null } } },
+                    new ShaderNativeProgram.Field { Name = null, StructFields = Array.Empty<ShaderNativeProgram.Field>() } } } },
+                TextureBindings = new[] { new ShaderNativeProgram.Texture { Name = "_Texture", Index = 2, SamplerIndex = -1, ArraySize = 4,
+                    Multisampled = true, Dim = UnityEngine.Rendering.TextureDimension.Tex2DArray } } };
+            byte[] Encode(ShaderNativeProgram value) { using var stream = new MemoryStream(); using var writer = new BinaryWriter(stream); value.Write(writer); return stream.ToArray(); }
+            byte[] bytes = Encode(program);
+            var loaded = ShaderNativeProgram.Read(new BinaryReader(new MemoryStream(bytes)));
+            Assert.That(Encode(loaded), Is.EqualTo(bytes));
+            Assert.That(loaded.ConstantBuffers[0].Fields[0].StructFields[0].Name, Is.EqualTo("inner"));
+            Assert.That(loaded.ConstantBuffers[0].Fields[1].StructFields, Is.Empty);
+            Assert.That(loaded.ConstantBuffers[0].Fields[0].StructFields[0].StructFields, Is.Null);
+            Assert.Throws<EndOfStreamException>(() => ShaderNativeProgram.Read(new BinaryReader(new MemoryStream(bytes.Take(bytes.Length - 1).ToArray()))));
         }
 
         [Test] public void CachedDeclarationsRemainIndependentOfMaterialValuesAndCallerMutation()

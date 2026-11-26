@@ -49,6 +49,65 @@ namespace Noname.AvatarTools.Analysis
             return result;
         }
 
+        // Evaluate the same ordered callback contract as Analyze. Entry facts are
+        // global over-approximations; only an earlier operation in this callback
+        // can replace one with a more precise current value. Return every write,
+        // since another consumer may observe an intermediate destination value.
+        internal static ParameterValues[] Evaluate(VRC_AvatarParameterDriver driver,
+            IReadOnlyCollection<VirtualAnimatorController> owners, Func<string, ParameterValues> entryValues,
+            Func<string, IEnumerable<AnimatorControllerParameterType>> declaredTypes = null)
+        {
+            if (Analyze(driver, owners) == null) return null;
+            var current = new Dictionary<string, ParameterValues>(StringComparer.Ordinal);
+            var types = new Dictionary<string, AnimatorControllerParameterType[]>(StringComparer.Ordinal);
+            ParameterValues Read(string name) => current.TryGetValue(name, out var value) ? value : entryValues(name);
+            AnimatorControllerParameterType[] Types(string name)
+            {
+                if (!types.TryGetValue(name, out var found)) types.Add(name, found =
+                    (declaredTypes?.Invoke(name) ?? owners.Select(c => c.Parameters[name].type)).Distinct().ToArray());
+                return found;
+            }
+            var result = new ParameterValues[driver.parameters.Count];
+            for (int i = 0; i < result.Length; i++)
+            {
+                var operation = driver.parameters[i];
+                ParameterValues value;
+                switch (operation.type)
+                {
+                    case Change.Set: value = ParameterValues.Constant(operation.value); break;
+                    case Change.Copy: value = operation.convertRange ? ParameterValues.Unknown : Read(operation.source); break;
+                    case Change.Add:
+                        var previous = Read(operation.name);
+                        value = operation.value == 0 ? previous : Types(operation.name).Any(t => t != AnimatorControllerParameterType.Float)
+                            ? ParameterValues.Unknown : previous.TryGetConstant(out float number)
+                            ? ParameterValues.Constant(number + operation.value) : ParameterValues.Unknown;
+                        break;
+                    case Change.Random:
+                        value = ParameterValues.Range(operation.valueMin, operation.valueMax);
+                        if (Types(operation.name).Contains(AnimatorControllerParameterType.Bool))
+                        {
+                            var booleans = ParameterValues.Constant(0).Union(ParameterValues.Constant(1));
+                            value = Types(operation.name).All(t => t == AnimatorControllerParameterType.Bool)
+                                ? booleans : value.Union(booleans);
+                        }
+                        break;
+                    default: value = ParameterValues.Unknown; break;
+                }
+                ParameterValues stored = null;
+                if (Types(operation.name).Any(type => !Numeric(type))) value = ParameterValues.Unknown;
+                // Avatar-level writes can meet another declaration of the same
+                // name. Preserve all native storage interpretations in subsequent
+                // operations, just as the global reachability cell does.
+                foreach (var type in Types(operation.name))
+                {
+                    var converted = value.ConvertTo(type);
+                    stored = stored == null ? converted : stored.Union(converted);
+                }
+                result[i] = current[operation.name] = stored;
+            }
+            return result;
+        }
+
         private static bool Valid(Operation operation, IReadOnlyCollection<VirtualAnimatorController> owners)
         {
             if (operation == null || string.IsNullOrEmpty(operation.name) ||

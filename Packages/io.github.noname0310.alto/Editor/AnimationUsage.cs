@@ -37,10 +37,15 @@ namespace Noname.AvatarTools.BlendShapeOptimization
         internal static AnimationUsage Collect(GameObject avatar, VirtualControllerContext controllers,
             IReadOnlyDictionary<string, string> pathMap = null, bool analyzeReachability = false,
             IEnumerable<string> preservedParameters = null)
+            => Collect(avatar, controllers.Controllers, pathMap, analyzeReachability, preservedParameters);
+
+        internal static AnimationUsage Collect(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> pathMap = null, bool analyzeReachability = false,
+            IEnumerable<string> preservedParameters = null)
         {
             var result = new AnimationUsage();
             // NDMF can retain controller entries after another build pass removes their component.
-            var entries = controllers.Controllers.Where(e => !(e.Key is UnityEngine.Object owner) || owner != null).ToArray();
+            var entries = controllers.Where(e => !(e.Key is UnityEngine.Object owner) || owner != null).ToArray();
             if (analyzeReachability)
                 result.Reachability = AnimatorReachability.Analyze(avatar, entries.Select(e => e.Value), preservedParameters);
             foreach (var entry in entries)

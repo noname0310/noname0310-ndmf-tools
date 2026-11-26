@@ -24,6 +24,21 @@ namespace Noname.AvatarTools.Analysis
             { Semantic = semantic; ReadMask = readMask; SemanticIndex = semanticIndex; Kind = kind; }
         }
 
+        // Signature masks name physical register lanes. A packed float2 in .yz
+        // still exposes logical .xy to HLSL and to component-level consumers.
+        // Accept only layouts with an unambiguous contiguous component mapping.
+        internal static bool TrySemanticReadMask(byte signatureMask, byte physicalReadMask, out byte logicalReadMask)
+        {
+            logicalReadMask = 0;
+            if (signatureMask == 0 || (signatureMask & ~15) != 0 || (physicalReadMask & ~signatureMask) != 0) return false;
+            int shift = 0;
+            while ((signatureMask & (1 << shift)) == 0) shift++;
+            int components = signatureMask >> shift;
+            if ((components & (components + 1)) != 0) return false;
+            logicalReadMask = (byte)(physicalReadMask >> shift);
+            return true;
+        }
+
         private const uint CompilerFlags = (1u << 15) | (1u << 13) | (1u << 12);
         private static readonly Lazy<string> CompilerIdentity = new(GetCompilerIdentity);
         internal static string CompilerFingerprint => CompilerIdentity.Value;
@@ -186,8 +201,9 @@ namespace Noname.AvatarTools.Analysis
                 {
                     if (parameter(reflection, i, out var signature) < 0 || signature.SemanticName == IntPtr.Zero)
                     { error = "incomplete shader input signature"; return false; }
-                    result.Add(new Input(Marshal.PtrToStringAnsi(signature.SemanticName),
-                        (byte)(signature.Mask & signature.ReadWriteMask), signature.SemanticIndex));
+                    if (!TrySemanticReadMask(signature.Mask, signature.ReadWriteMask, out byte logicalReadMask))
+                    { error = "shader input component packing has no verified semantic mapping"; return false; }
+                    result.Add(new Input(Marshal.PtrToStringAnsi(signature.SemanticName), logicalReadMask, signature.SemanticIndex));
                 }
                 if (description.ConstantBuffers > 4096 || description.BoundResources > 4096)
                 { error = "unverified shader uniform coverage"; return false; }

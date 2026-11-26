@@ -21,6 +21,9 @@ namespace Noname.AvatarTools
         [Tooltip("Remove vertices unused by every submesh, and unused or duplicate bone-palette entries. Drawn geometry, morph frames and all skinning influences are retained. Index-dependent shaders remain protected.")]
         public bool RemoveUnusedMeshData = true;
 
+        [Tooltip("Remove triangles proved unable to render through every remaining animation, deformation and shader pass. Coincident corners and supported nonfinite hiding each require a complete proof. Geometry generation, external mesh readers, culling effects and primitive-index consumers remain protected. Original vertex numbering is retained until the ordinary index-preserving compaction pass.")]
+        public bool RemovePermanentlyHiddenGeometry = true;
+
         [Tooltip("Preserve shader VertexID values while merging meshes. Keep the original numbering where inexpensive; otherwise use verified shader offsets or an unused vertex attribute. Unsupported shader interfaces remain protected.")]
         public bool PreserveVertexIds = true;
 

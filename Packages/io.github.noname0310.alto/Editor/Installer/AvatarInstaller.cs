@@ -197,6 +197,11 @@ namespace Noname.AvatarTools.Installer
             foreach (var component in settings.GetComponentsInChildren<ALTOOptimizationComponent>(true)) component.ScopeRoot = root;
             Get<ALTOTraceAndOptimizeBlendShapes>().ScopeRoot = root;
             foreach (var component in settings.GetComponentsInChildren<ALTOPlatformOptimizationComponent>(true)) component.ApplyOnPlatforms = Mobile;
+            var outputs = Get<ALTOOptimizationPolicy>();
+            outputs.ApplyOnPlatforms = OptimizationPlatforms.All;
+            outputs.AllowInitialValueChanges = draft.AllowInitialValueChanges;
+            outputs.AllowShaderConstantFolding = draft.AllowShaderConstantFolding;
+            outputs.AllowedNumericalDifferences = draft.AllowedNumericalDifferences;
             var anchors = settings.transform.Find("Common/Rendering").GetComponent<ALTOMeshRendererSettingsOverride>();
             anchors.ApplyOnPlatforms = OptimizationPlatforms.All;
             anchors.OverrideProbeAnchor = draft.NormalizeProbeAnchors;
@@ -218,6 +223,8 @@ namespace Noname.AvatarTools.Installer
             shapes.ExcludedAnimations = draft.AdditionalExcludedAnimations.Concat(draft.ExcludeAfkAnimations
                 ? draft.AfkCandidates.Where(c => c.Selected).Select(c => c.Clip) : Enumerable.Empty<AnimationClip>()).Where(c => c != null).Distinct().ToList();
             Get<ALTOTraceAndOptimizeMaterials>().BakeLilToonMainTextures = draft.BakeLilToonMainTextures;
+            Get<ALTOTraceAndOptimizeMaterials>().BakeConstantShaderInputs = draft.BakeConstantShaderInputs;
+            Get<ALTOTraceAndOptimizeMeshes>().RemovePermanentlyHiddenGeometry = draft.RemovePermanentlyHiddenGeometry;
             var platformFilter = Get<ALTOOptimizationPlatformFilter>();
             platformFilter.enabled = draft.CommonMobileOnly;
             if (!draft.ParameterCompression) Remove(Get<ALTOParameterCompression>());
@@ -326,6 +333,7 @@ namespace Noname.AvatarTools.Installer
             platformFilter.ApplyOnPlatforms = Mobile; platformFilter.enabled = false;
             var commonMeshes = Child("Common/Policies").AddComponent<ALTOMeshOptimizationPolicy>();
             commonMeshes.enabled = false;
+            var outputs = Child("Common/Policies").AddComponent<ALTOOptimizationPolicy>();
             var anchors = Child("Common/Rendering").AddComponent<ALTOMeshRendererSettingsOverride>();
             anchors.OverrideProbeAnchor = true; anchors.ApplyOnPlatforms = OptimizationPlatforms.All;
             var optimization = Child("Common/Optimization");
@@ -358,7 +366,7 @@ namespace Noname.AvatarTools.Installer
             var reduction = Child("Mobile/Geometry").AddComponent<ALTOMeshReduction>();
             reduction.TriangleBudget = 60000; reduction.PreserveBorderEdges = false;
             foreach (var component in root.GetComponentsInChildren<ALTOPlatformOptimizationComponent>(true))
-                component.ApplyOnPlatforms = component == anchors ? OptimizationPlatforms.All : Mobile;
+                component.ApplyOnPlatforms = component == anchors || component == outputs ? OptimizationPlatforms.All : Mobile;
             commonMeshes.ApplyOnPlatforms = OptimizationPlatforms.PC;
             return root;
         }

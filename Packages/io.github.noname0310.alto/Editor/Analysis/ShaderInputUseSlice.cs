@@ -52,7 +52,7 @@ namespace Noname.AvatarTools.Analysis
             if (!program.Functions.TryGetValue(entry, out var roots) || roots.Count != 1) throw new PpException("Ambiguous shader input-query entry");
             if (query.UniformQuery) { AnalyzeUniform(entry); return; }
             for (int i = 1; i + 1 < program.Tokens.Length; i++)
-                if (program.At(i) == ":" && query.MatchesToken(program.At(i + 1)))
+                if (program.At(i) == ":" && query.MayDeclareToken(program.At(i + 1)))
                 {
                     if (program.Tokens[i - 1].Kind != PpTokenKind.Identifier) throw new PpException("Unsupported input semantic declarator");
                     fields.Add(program.At(i - 1));

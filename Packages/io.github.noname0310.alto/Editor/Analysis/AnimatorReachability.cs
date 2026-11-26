@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using nadena.dev.ndmf.animator;
+using Noname.AvatarTools.ParameterPolicy;
+using UnityEditor;
 using UnityEditor.Animations;
 using UnityEngine;
 using VRC.SDK3.Avatars.Components;
@@ -54,6 +56,8 @@ namespace Noname.AvatarTools.Analysis
         private readonly Dictionary<string, Cell> parameters = new(StringComparer.Ordinal);
         private readonly Dictionary<VirtualAnimatorController, HashSet<VirtualClip>> live = new();
         private readonly Dictionary<VirtualMotion, VirtualClip[]> motionClips = new();
+        private readonly Dictionary<VirtualMotion, HashSet<EditorCurveBinding>> motionBindings = new();
+        private readonly Dictionary<VirtualMotion, string[]> motionInputs = new();
         // Conditions are immutable NDMF lists. Key the list rather than the
         // transition: later condition rewrites must not reuse the old predicate.
         private readonly Dictionary<object, (string Name, AnimatorCondition[] Tests)[]> conditionGroups = new();
@@ -65,6 +69,7 @@ namespace Noname.AvatarTools.Analysis
         internal bool? LocalInstance { get; private set; }
         private bool fallback;
         private readonly bool reuseFixedInputs;
+        private readonly bool parameterWeightsUncertain;
         private bool valueFlowComplete;
         internal int StateCount { get; private set; }
         internal int ReachableStateCount { get; private set; }
@@ -146,6 +151,9 @@ namespace Noname.AvatarTools.Analysis
         {
             this.reuseFixedInputs = reuseFixedInputs;
             controllers = source;
+            parameterWeightsUncertain = ParameterSpecialization.Behaviours(source.SelectMany(c => c.AllReachableNodes())).Any(b =>
+                b is VRC_AnimatorLayerControl layer && (layer.goalWeight != 1 || !MotionAnalysis.Finite(layer.blendDuration)) ||
+                b is VRC_PlayableLayerControl playable && (playable.goalWeight != 1 || !MotionAnalysis.Finite(playable.blendDuration)));
             foreach (var controller in controllers)
             {
                 live.Add(controller, new());
@@ -230,6 +238,7 @@ namespace Noname.AvatarTools.Analysis
 
         private void BuildController(VirtualAnimatorController controller)
         {
+            var controllerOwners = new[] { controller };
             foreach (var layer in controller.Layers)
             {
                 if (layer.SyncedLayerIndex != -1)
@@ -251,7 +260,7 @@ namespace Noname.AvatarTools.Analysis
                     machine.Active.Work.Add(() => {
                         reachableMachines.Add(machine.Source);
                         if (machine.Parent != null) Reach(machine.Parent.Active);
-                        Behaviours(machine.Source.Behaviours);
+                        Behaviours(machine.Source.Behaviours, controllerOwners);
                     });
                     machine.Entry.Work.Add(() => {
                         Reach(machine.Active);
@@ -283,8 +292,8 @@ namespace Noname.AvatarTools.Analysis
                         ReachableStateCount++;
                         reachableStates.Add(state);
                         Reach(owner.Active);
-                        Behaviours(state.Behaviours);
-                        Motion(controller, state.Motion);
+                        Behaviours(state.Behaviours, controllerOwners);
+                        Motion(controller, layer, state);
                     });
                     Connect(node, state.Transitions, owner, machines, states);
                 }
@@ -332,7 +341,7 @@ namespace Noname.AvatarTools.Analysis
             }
         }
 
-        private void Behaviours(IEnumerable<StateMachineBehaviour> behaviours)
+        private void Behaviours(IEnumerable<StateMachineBehaviour> behaviours, VirtualAnimatorController[] owners)
         {
             foreach (var behaviour in behaviours)
             {
@@ -344,6 +353,17 @@ namespace Noname.AvatarTools.Analysis
                     if (valueFlowComplete) continue;
                     if (driver.localOnly && LocalInstance == false) continue;
                     if (driver.parameters == null) continue;
+                    var dependencies = ParameterDriverDataflow.Analyze(driver, owners);
+                    if (dependencies != null)
+                    {
+                        Action evaluate = () => {
+                            var writes = ParameterDriverDataflow.Evaluate(driver, owners, Get, name => parameters[name].Types);
+                            for (int i = 0; i < writes.Length; i++) AddValue(driver.parameters[i].name, writes[i]);
+                        };
+                        foreach (string name in dependencies.SelectMany(s => s).Distinct()) Watch(name, evaluate);
+                        Enqueue(evaluate);
+                        continue;
+                    }
                     // Include both local and remote execution. Ordered assignments are over-approximated by union.
                     foreach (var operation in driver.parameters)
                     {
@@ -381,19 +401,47 @@ namespace Noname.AvatarTools.Analysis
             }
         }
 
-        private void Motion(VirtualAnimatorController controller, VirtualMotion motion)
+        private void Motion(VirtualAnimatorController controller, VirtualLayer layer, VirtualState state)
         {
+            var motion = state.Motion;
             if (motion == null) return;
             if (!motionClips.TryGetValue(motion, out var clips))
                 motionClips.Add(motion, clips = motion.AllReachableNodes().OfType<VirtualClip>().Distinct().ToArray());
-            foreach (var clip in clips)
+            live[controller].UnionWith(clips);
+            if (valueFlowComplete) return;
+            if (!motionBindings.TryGetValue(motion, out var bindings))
+                motionBindings.Add(motion, bindings = new HashSet<EditorCurveBinding>(clips.SelectMany(c =>
+                    c.GetFloatCurveBindings().Concat(c.GetObjectCurveBindings()))));
+            var parameterBindings = bindings.Where(b => b.type == typeof(Animator)).ToArray();
+            if (parameterBindings.Length == 0) return;
+            if (!motionInputs.TryGetValue(motion, out var inputs))
+                motionInputs.Add(motion, inputs = ParameterSpecialization.Reads(motion.AllReachableNodes())
+                    .Where(n => !string.IsNullOrEmpty(n)).Distinct().ToArray());
+            bool supported = !parameterWeightsUncertain && (layer == controller.Layers.First() || layer.DefaultWeight == 1) &&
+                layer.AvatarMask == null && layer.SyncedLayerIndex == -1 &&
+                layer.BlendingMode == AnimatorLayerBlendingMode.Override && clips.All(c =>
+                    !c.IsMarkerClip && !c.Legacy && c.AdditiveReferencePoseClip == null &&
+                    MotionAnalysis.Source(c) is AnimationClip source && !source.humanMotion && source.events.Length == 0);
+            foreach (var binding in parameterBindings)
             {
-                if (!live[controller].Add(clip)) continue;
-                if (valueFlowComplete) continue;
-                // Include every Blend Tree child. Animated parameters can be blended or extrapolated, so
-                // endpoint/keyframe ranges alone are insufficient to prove a constant or a bound.
-                foreach (var binding in clip.GetFloatCurveBindings())
-                    if (binding.type == typeof(Animator)) AddValue(binding.propertyName, ParameterValues.Unknown);
+                string name = binding.propertyName;
+                if (!supported || binding.path != "" || binding.isPPtrCurve || binding.isDiscreteCurve ||
+                    !parameters.TryGetValue(name, out var cell) || cell.Types.Any(t => t != AnimatorControllerParameterType.Float))
+                { AddValue(name, ParameterValues.Unknown); continue; }
+                // Induction from the actual startup/default value avoids any
+                // producer-before-consumer or previous-frame assumption. A curve
+                // can preserve a constant only while every possible write and
+                // input still preserves it. Reevaluate when that premise grows.
+                Action evaluate = () => {
+                    if (!Get(name).TryGetConstant(out float initial) ||
+                        !ConstantMotionOutput.Matches(motion, binding, initial, true, this, motionBindings,
+                            new Dictionary<VirtualMotion, bool>(), new HashSet<VirtualMotion>(),
+                            allowInterpolation: true, writeDefaults: state.WriteDefaultValues))
+                        AddValue(name, ParameterValues.Unknown);
+                };
+                Watch(name, evaluate);
+                foreach (string input in inputs) Watch(input, evaluate);
+                Enqueue(evaluate);
             }
         }
     }

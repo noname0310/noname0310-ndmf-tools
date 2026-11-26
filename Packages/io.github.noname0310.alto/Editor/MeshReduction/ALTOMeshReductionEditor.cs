@@ -22,16 +22,9 @@ namespace Noname.AvatarTools.MeshReduction
             }
             EditorGUILayout.HelpBox("The budget includes every surviving mesh in Scope Root, including disabled, unselected and preserved renderers. " +
                 "Reduction runs after AAO cleanup. Mixed preserved/unselected inputs remain unchanged when another tool merges them. " +
-                "Preserve renderers that use vertex-index or custom vertex-data shader effects. " +
-                "Build and Analyze evaluates a full avatar copy and writes a report; it does not provide a continuous scene preview.", MessageType.Info);
+                "Preserve renderers that use vertex-index or custom vertex-data shader effects.", MessageType.Info);
             if (MeshReductionBackend.Simplify == null)
                 EditorGUILayout.HelpBox("Install Meshia Mesh Simplification 3.2 or a compatible 3.x version.", MessageType.Warning);
-            using (new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isCompiling || component.FindDescriptor() == null))
-                if (GUILayout.Button("Build and Analyze Avatar"))
-                {
-                    var avatar = component.FindDescriptor().gameObject;
-                    EditorApplication.delayCall += () => { if (avatar != null) AvatarBuildAnalysis.Analyze(avatar); };
-                }
         }
     }
 }

@@ -1,4 +1,3 @@
-using Noname.AvatarTools.Build;
 using UnityEditor;
 using UnityEngine;
 using VRC.SDK3.Avatars.ScriptableObjects;
@@ -11,17 +10,10 @@ namespace Noname.AvatarTools.Expressions
         public override void OnInspectorGUI()
         {
             serializedObject.Update(); DrawPropertiesExcluding(serializedObject, "m_Script"); serializedObject.ApplyModifiedProperties();
-            var component = (ALTOTraceAndOptimizeExpressions)target;
             EditorGUILayout.HelpBox("Analyzes the avatar's complete menu and controller graphs, wherever this component is attached. " +
                 "Parameter Policy preservation is shared. Synchronized declarations remain unchanged. " +
                 "Preserved controls match display names and types after generation; ambiguous matches are all retained. " +
                 "Preserving a menu does not undo a parameter freeze. Unverified shader outputs remain consumers.", MessageType.Info);
-            using (new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isCompiling || component.FindDescriptor() == null))
-                if (GUILayout.Button("Build and Analyze Avatar"))
-                {
-                    var avatar = component.FindDescriptor().gameObject;
-                    EditorApplication.delayCall += () => { if (avatar != null) AvatarBuildAnalysis.Analyze(avatar); };
-                }
         }
     }
 

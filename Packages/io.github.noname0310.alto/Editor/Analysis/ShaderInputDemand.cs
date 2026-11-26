@@ -23,6 +23,7 @@ namespace Noname.AvatarTools.Analysis
         private int lastRegionLine;
         private bool lastRegionMatch;
         internal bool LocationsComplete { get; private set; } = true;
+        internal bool UsesLocations => regions.Count != 0 || wholeValueScopes.Count != 0;
         internal ShaderInputDemand(ShaderInputQuery query) { Query = query; }
         internal string ContentSignature
         {
@@ -86,7 +87,7 @@ namespace Noname.AvatarTools.Analysis
             if (InRegion(token)) return true;
             if (token.Kind != PpTokenKind.Identifier && token.Kind != PpTokenKind.Symbol) return false;
             if (!queryMatches.TryGetValue(token.Text, out bool matches))
-                queryMatches.Add(token.Text, matches = Query.MatchesToken(token.Text));
+                queryMatches.Add(token.Text, matches = Query.MayDeclareToken(token.Text));
             if (matches || Names.Contains(token.Text)) return true;
             if (next?.Text == ".") return false;
             if (WholeValues.Contains(token.Text)) return true;

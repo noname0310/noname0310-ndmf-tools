@@ -25,9 +25,10 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         private static Dictionary<string, ParameterConstant> Constants(VirtualAnimatorController controller, string name, float value) =>
             ParameterSpecialization.Prepare(new[] { controller }, new Dictionary<string, float> { [name] = value }, new HashSet<string>());
 
-        private float[] SampleFrozen(AnimatorController controller, Action<AnimatorControllerPlayable, int> setInputs, int frames = 4, Func<float> sample = null)
+        private float[] SampleFrozen(AnimatorController controller, Action<AnimatorControllerPlayable, int> setInputs, int frames = 4, Func<float> sample = null,
+            float initialShapeWeight = 0)
         {
-            renderer.SetBlendShapeWeight(0, 0);
+            renderer.SetBlendShapeWeight(0, initialShapeWeight);
             var animator = root.AddComponent<Animator>();
             animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
             var graph = PlayableGraph.Create("Parameter specialization equivalence");

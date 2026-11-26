@@ -52,8 +52,19 @@ namespace Noname.AvatarTools.Analysis
         internal BooleanAnimationEquivalence BooleanSignals => booleanSignals ??= new BooleanAnimationEquivalence(this);
         private MaterialAnimationInputs materialInputs;
         internal MaterialAnimationInputs MaterialInputs => materialInputs ??= new MaterialAnimationInputs(this);
+        private ConstantPropertyAnalysis constantOutputs;
+        internal ConstantPropertyAnalysis ConstantOutputs => constantOutputs ??= new ConstantPropertyAnalysis(this);
         private AnimatorReachability reachability;
-        internal AnimatorReachability Reachability => reachability ??= AnimatorReachability.Analyze(Avatar, Controllers, PreservedParameters);
+        private Func<AnimatorReachability> reachabilityFactory;
+        internal AnimatorReachability Reachability => reachability ??= reachabilityFactory != null
+            ? reachabilityFactory() : AnimatorReachability.Analyze(Avatar, Controllers, PreservedParameters);
+
+        internal void InvalidateOutputs()
+        {
+            booleanSignals = null;
+            materialInputs = null;
+            constantOutputs = null;
+        }
 
         internal bool Writes(UnityEngine.Object target, string property) => writes.Contains((target, property));
         internal IReadOnlyList<BindingUse> ForObject(UnityEngine.Object target) =>
@@ -64,10 +75,12 @@ namespace Noname.AvatarTools.Analysis
 
         internal static AvatarAnimationIndex Create(GameObject avatar,
             IDictionary<object, VirtualAnimatorController> controllers, IReadOnlyDictionary<string, string> paths,
-            IEnumerable<string> preservedParameters = null)
+            IEnumerable<string> preservedParameters = null, AnimatorParameterDependencies parameterDependencies = null,
+            Func<AnimatorReachability> reachabilityFactory = null)
         {
             using var cost = AnalysisCost.Measure("Animation index");
             var result = new AvatarAnimationIndex { Avatar = avatar, Controllers = controllers.Values.Distinct().ToArray(), ControllerEntries = controllers, Paths = paths };
+            result.reachabilityFactory = reachabilityFactory;
             var owners = new Dictionary<VirtualClip, HashSet<Transform>>();
             var clipControllers = new Dictionary<VirtualClip, HashSet<VirtualAnimatorController>>();
             foreach (var pair in controllers)
@@ -83,7 +96,7 @@ namespace Noname.AvatarTools.Analysis
             }
             var preserved = result.PreservedParameters;
             preserved.UnionWith(preservedParameters ?? Array.Empty<string>());
-            var dependencies = preserved.Count == 0 ? null : AnimatorParameterDependencies.Collect(avatar, result.Controllers,
+            var dependencies = preserved.Count == 0 ? null : parameterDependencies ?? AnimatorParameterDependencies.Collect(avatar, result.Controllers,
                 forExpressions: true, controllerEntries: controllers);
             var resolutions = new Dictionary<(VirtualClip, string), (Transform[] Targets, bool Complete)>();
             // Clips share animation roots and paths. Resolve each root/path once

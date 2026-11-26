@@ -24,7 +24,7 @@ namespace Noname.AvatarTools.ParameterLayout
             var access = ExternalParameterAccess.Collect();
             if (access.Uncertain) reason = string.Join("; ", access.Diagnostics);
             if (controllers.SelectMany(c => c.AllReachableNodes()).OfType<VirtualClip>()
-                .Any(c => MotionAnalysis.Source(c) == null || MotionAnalysis.Source(c).events.Length != 0))
+                .Any(c => AnimationEventEffects.MayInvokeCallback(MotionAnalysis.Source(c))))
                 reason ??= "animation events or unknown clips may write inputs";
             if (reason != null) { messages.Add("Avatar-driven range analysis skipped: " + reason); return result; }
 

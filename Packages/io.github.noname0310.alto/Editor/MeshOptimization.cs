@@ -16,10 +16,12 @@ namespace Noname.AvatarTools.BlendShapeOptimization
         {
             using var hash = SHA256.Create();
             using (var stream = new CryptoStream(Stream.Null, hash, CryptoStreamMode.Write))
-            using (var writer = new BinaryWriter(stream, Encoding.UTF8, true))
+            using (var buffered = new BufferedStream(stream, 64 * 1024))
+            using (var writer = new BinaryWriter(buffered, Encoding.UTF8, true))
             {
                 write(writer);
                 writer.Flush();
+                buffered.Flush();
                 stream.FlushFinalBlock();
             }
             return BitConverter.ToString(hash.Hash).Replace("-", "").ToLowerInvariant();
@@ -55,7 +57,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
 
     internal static class MeshOptimization
     {
-        internal static DeformationRecipe CreateRecipe(OptimizationPlan plan)
+        internal static DeformationRecipe CreateRecipe(OptimizationPlan plan, Func<ShapeGroup, bool> removeIneffectiveGroup = null)
         {
             var result = new DeformationRecipe { Frozen = new ShapeDelta(plan.Source.vertexCount),
                 Groups = plan.Groups.Select(_ => new ShapeDelta(plan.Source.vertexCount)).ToArray() };
@@ -74,7 +76,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 foreach (var group in plan.Groups.ToArray())
                 {
                     var delta = result.Groups[index++];
-                    if (plan.Effects.HasEffect(delta)) retained.Add(delta);
+                    if (removeIneffectiveGroup?.Invoke(group) == false || plan.Effects.HasEffect(delta)) retained.Add(delta);
                     else
                     {
                         plan.Ineffective.AddRange(group.Inputs);
@@ -124,20 +126,27 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             mesh.name = plan.Source.name + " (BlendShapes Optimized)";
             try
             {
-                var vertices = mesh.vertices; var normals = mesh.normals; var tangents = mesh.tangents;
-                for (int i = 0; i < vertices.Length; i++)
+                // Removing zero-weight/ineffective channels needs no base-vertex
+                // arithmetic. Preserve the clone's exact buffer layout and bits,
+                // including signed zero and packed native attributes.
+                Vector3[] vertices = null;
+                if (plan.Frozen.Any(shape => shape.Weight != 0))
                 {
-                    vertices[i] += recipe.Frozen.Vertices[i];
-                    if (normals.Length == vertices.Length) normals[i] += recipe.Frozen.Normals[i];
-                    if (tangents.Length == vertices.Length)
+                    vertices = mesh.vertices; var normals = mesh.normals; var tangents = mesh.tangents;
+                    for (int i = 0; i < vertices.Length; i++)
                     {
-                        var delta = recipe.Frozen.Tangents[i];
-                        tangents[i] += new Vector4(delta.x, delta.y, delta.z, 0);
+                        vertices[i] += recipe.Frozen.Vertices[i];
+                        if (normals.Length == vertices.Length) normals[i] += recipe.Frozen.Normals[i];
+                        if (tangents.Length == vertices.Length)
+                        {
+                            var delta = recipe.Frozen.Tangents[i];
+                            tangents[i] += new Vector4(delta.x, delta.y, delta.z, 0);
+                        }
                     }
+                    mesh.vertices = vertices;
+                    if (normals.Length != 0) mesh.normals = normals;
+                    if (tangents.Length != 0) mesh.tangents = tangents;
                 }
-                mesh.vertices = vertices;
-                if (normals.Length != 0) mesh.normals = normals;
-                if (tangents.Length != 0) mesh.tangents = tangents;
                 // Rebuild the actual frame buffers: removing only serialized channel records leaves dead vertex data.
                 mesh.ClearBlendShapes();
                 var removed = new HashSet<int>(plan.Removed.Select(s => s.Index));
@@ -157,9 +166,12 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                     var delta = recipe.Groups[i];
                     mesh.AddBlendShapeFrame(plan.Groups[i].Name, 100, delta.Vertices, delta.Normals, delta.Tangents);
                 }
-                var bounds = plan.Source.bounds;
-                foreach (var vertex in vertices) bounds.Encapsulate(vertex);
-                mesh.bounds = bounds;
+                if (vertices != null)
+                {
+                    var bounds = plan.Source.bounds;
+                    foreach (var vertex in vertices) bounds.Encapsulate(vertex);
+                    mesh.bounds = bounds;
+                }
                 return mesh;
             }
             catch { UnityEngine.Object.DestroyImmediate(mesh); throw; }
@@ -171,7 +183,15 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             for (int i = 0; i < plan.Source.blendShapeCount; i++)
                 defaults[plan.Source.GetBlendShapeName(i)] = plan.Renderer.GetBlendShapeWeight(i);
             foreach (var group in plan.Groups) defaults[group.Name] = group.DefaultWeight;
+            var bounds = plan.Renderer.localBounds;
             plan.Renderer.sharedMesh = output;
+            // Assigning a rewritten mesh must not change the fixed AABB used by
+            // visibility-dependent Animator evaluation. Dynamic bounds remain
+            // engine-owned; callers separately protect their deformed inputs.
+            if (!plan.Renderer.updateWhenOffscreen &&
+                (!plan.Renderer.localBounds.center.Equals(bounds.center) ||
+                 !plan.Renderer.localBounds.extents.Equals(bounds.extents)))
+                plan.Renderer.localBounds = bounds;
             for (int i = 0; i < output.blendShapeCount; i++)
                 plan.Renderer.SetBlendShapeWeight(i, defaults[output.GetBlendShapeName(i)]);
         }

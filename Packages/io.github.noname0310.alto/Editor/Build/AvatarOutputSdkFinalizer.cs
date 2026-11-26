@@ -11,6 +11,7 @@ using Noname.AvatarTools.ObjectOptimization;
 using Noname.AvatarTools.Meshes;
 using Noname.AvatarTools.Physics;
 using Noname.AvatarTools.ParameterPolicy;
+using Noname.AvatarTools.BlendShapeOptimization;
 using UnityEditor;
 using UnityEngine;
 using VRC.SDK3.Avatars.Components;
@@ -51,6 +52,8 @@ namespace Noname.AvatarTools.Build
             session.Registry = ObjectRegistry.ActiveRegistry;
         }
 
+        internal static bool HasSession(BuildContext context) => Sessions.TryGetValue(context.AvatarRootObject, out _);
+
         internal static bool Defer(BuildContext context, ExpressionSettings settings,
             ISet<string> frozen, OptimizationBuildReport report)
         {
@@ -79,6 +82,8 @@ namespace Noname.AvatarTools.Build
                 !session.Context.GetState<ObjectOptimizationState>().Enabled &&
                 session.Context.GetState<AnimatorOptimizationState>().Settings?.Enabled != true &&
                 !session.Context.GetState<MeshOptimizationState>().Enabled &&
+                session.Context.GetState<OptimizationState>().Scopes.Count == 0 &&
+                !session.Context.GetState<Materials.MaterialOptimizationState>().BakeShaderInputs &&
                 !session.Context.GetState<PhysBoneOptimizationState>().Enabled &&
                 !ContactFilterPass.HasPendingRemovals(session.Context)) return;
             using var measurement = OptimizationMeasurement.Begin(session.Report, "SDK finalizer", "runtime output cleanup");
@@ -122,14 +127,20 @@ namespace Noname.AvatarTools.Build
                     .ToDictionary(e => e.Key, e => e.Value);
                 ContactFilterPass.Apply(session.Context, finalEntries);
                 var policy = ParameterPolicyPass.Resolve(session.Context, finalEntries);
+                using var shapeBoundary = session.Context.GetState<OptimizationState>().Provenance.BeginBoundary();
                 FinalOutputOptimization.Apply(avatar, finalEntries, policy, session.Frozen ??
                     new HashSet<string>(session.Context.GetState<ParameterPolicyState>().Constants.Keys, StringComparer.Ordinal),
                     session.Context.GetState<ObjectOptimizationState>(), session.Context.GetState<AnimatorOptimizationState>().Settings,
                     session.Settings, session.Report, saveForTests ?? saver.SaveAsset, session.LocalCandidates,
                     () => MeshOptimizationPass.ApplyFinal(session.Context, finalEntries, policy, saveForTests ?? saver.SaveAsset),
-                    () => PhysBoneOptimizationPass.ApplyFinal(session.Context, finalEntries, policy),
-                    () => StaticTransformOptimizationPass.ApplyFinal(session.Context, finalEntries, policy, mesh => (saveForTests ?? saver.SaveAsset)(mesh)),
-                    session.Context.GetState<OptimizationAnalysis>().Invalidate, session.Context.GetState<OptimizationAnalysis>().Shaders);
+                    () => PhysBoneOptimizationPass.ApplyFinalChanges(session.Context, finalEntries, policy),
+                    () => StaticTransformOptimizationPass.ApplyFinalChanges(session.Context, finalEntries, policy, mesh => (saveForTests ?? saver.SaveAsset)(mesh)),
+                    null, session.Context.GetState<OptimizationAnalysis>().Shaders,
+                    session.Context.GetState<OptimizationPolicy>(), session.Context.GetState<Materials.MaterialOptimizationState>(),
+                    session.Context.GetState<MeshOptimizationState>(),
+                    () => ALTOPlugin.ApplyFinal(session.Context, finalEntries, policy, saveForTests ?? saver.SaveAsset),
+                    () => Materials.MaterialOptimizationPass.SpecializeFinalChanges(session.Context, finalEntries, policy,
+                        null, saveForTests ?? saver.SaveAsset), analysis);
             }
             finally
             {

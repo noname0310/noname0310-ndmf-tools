@@ -12,6 +12,20 @@ namespace Noname.AvatarTools.Analysis
     {
         private static readonly Dictionary<Type, HashSet<string>> EmptyFields = new();
         private static readonly Dictionary<Type, bool> ReferenceFree = new();
+        private static readonly Dictionary<Type, bool> ManagedOwners = new();
+
+        internal static bool ManagedFieldsAreReferenceFree(Type owner)
+        {
+            if (ManagedOwners.TryGetValue(owner, out bool result)) return result;
+            result = !NativeType(owner) && (typeof(MonoBehaviour).IsAssignableFrom(owner) || typeof(ScriptableObject).IsAssignableFrom(owner));
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            if (result)
+                for (var type = owner; type != null && !NativeType(type); type = type.BaseType)
+                    foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                        if (Serialized(field) && (!names.Add(field.Name) || field.IsDefined(typeof(SerializeReference), false) ||
+                            !IsReferenceFree(field.FieldType, new HashSet<Type>()))) result = false;
+            return ManagedOwners[owner] = result;
+        }
 
         internal static HashSet<string> ReferenceFreeFields(Type owner)
         {

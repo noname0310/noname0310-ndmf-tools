@@ -53,6 +53,55 @@ namespace Noname.AvatarTools.Analysis
                 MaskCoverage = MeshMergeAnalysis.MaskCoverage(animations.Avatar, target, animations, typeof(GameObject)) };
         }
 
+        // Reparenting at the SDK boundary has no active NDMF path remapper. Prove
+        // a complete native-path transaction before changing the hierarchy. Mask
+        // inheritance needs a separate proof when the parent changes; retain it.
+        internal bool CanReparent(Transform frame, Transform parent, out Dictionary<string, string> map)
+        {
+            map = new Dictionary<string, string>(StringComparer.Ordinal);
+            var avatar = animations.Avatar.transform;
+            if (animations.Paths != null || frame == null || parent == null || frame == avatar ||
+                !frame.IsChildOf(avatar) || !parent.IsChildOf(avatar) || parent.IsChildOf(frame)) return false;
+            if (animations.ControllerEntries.Keys.OfType<Animator>().Any(a => a != null && a.transform != avatar) ||
+                frame.GetComponentsInChildren<Animator>(true).Length != 0 ||
+                animations.Controllers.SelectMany(c => c.Layers).Any(l => l.AvatarMask != null)) return false;
+            var moved = frame.GetComponentsInChildren<Transform>(true).ToHashSet();
+            if (moved.SelectMany(t => t.GetComponents<SkinnedMeshRenderer>()).Any(ComponentHoisting.HasExternalMorphInterface)) return false;
+            if (parent.Cast<Transform>().Any(t => t != frame && t.name == frame.name)) return false;
+            string oldPrefix = AnimationUtility.CalculateTransformPath(frame, avatar);
+            string parentPath = AnimationUtility.CalculateTransformPath(parent, avatar);
+            var parentTargets = AnimationUsage.Resolve(avatar, avatar, parentPath, null);
+            if (parentTargets.Count != 1 || parentTargets[0] != parent) return false;
+            string newPrefix = (parentPath.Length == 0 ? "" : parentPath + "/") + frame.name;
+            var destinations = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var target in moved)
+            {
+                string from = AnimationUtility.CalculateTransformPath(target, avatar);
+                var sources = AnimationUsage.Resolve(avatar, avatar, from, null);
+                if (sources.Count != 1 || sources[0] != target) return false;
+                string to = newPrefix + from.Substring(oldPrefix.Length);
+                if (!map.TryAdd(from, to) || !destinations.Add(to)) return false;
+            }
+            foreach (var use in animations.Bindings)
+            {
+                bool relocates = use.Targets.Any(moved.Contains);
+                if (relocates && (!use.Complete || use.Immutable || use.Roots.Length != 1 || use.Roots[0] != avatar)) return false;
+                // A previously unresolved destination must not acquire a writer,
+                // including an otherwise empty Write Defaults binding.
+                if (destinations.Contains(use.Binding.path) && !relocates) return false;
+            }
+            bool safe = true;
+            foreach (var behaviour in ParameterSpecialization.Behaviours(animations.Controllers.SelectMany(c => c.AllReachableNodes())).Distinct())
+                VRChatPlatformAnimatorBindings.Instance.RemapPathsInStateBehaviour(behaviour, path =>
+                {
+                    var targets = AnimationUsage.Resolve(avatar, avatar, path ?? "", null);
+                    bool relocates = targets.Any(moved.Contains);
+                    if (relocates && targets.Count != 1 || path != null && destinations.Contains(path) && !relocates) safe = false;
+                    return path;
+                });
+            return safe;
+        }
+
         // The NDMF remapper owns virtual paths. The late SDK boundary has native
         // paths and uses this same checked relocation with an explicit commit.
         internal bool CanFlatten(Transform frame, Transform[] children, bool removeFrame, out FlattenPlan plan)

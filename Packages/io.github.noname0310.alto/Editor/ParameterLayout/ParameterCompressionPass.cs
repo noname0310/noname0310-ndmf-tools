@@ -193,7 +193,7 @@ namespace Noname.AvatarTools.ParameterLayout
             var analysis = reason == null ? AnimatorReachability.Analyze(avatar, controllers, preserved) : null;
             reason ??= analysis?.FallbackReason;
             if (controllers.SelectMany(c => c.AllReachableNodes()).OfType<VirtualClip>()
-                .Any(c => MotionAnalysis.Source(c)?.events.Length > 0)) reason = "animation events may observe parameters";
+                .Any(c => AnimationEventEffects.MayInvokeCallback(MotionAnalysis.Source(c)))) reason = "animation events may observe parameters";
             if (reason != null)
             { report.Messages.Add("Unused synchronized parameter analysis skipped: " + reason); return new(StringComparer.Ordinal); }
             var output = new ExpressionOutputUsage(avatar, entries, null);

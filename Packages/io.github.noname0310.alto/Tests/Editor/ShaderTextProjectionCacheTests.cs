@@ -46,12 +46,13 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
 
             var cache = new PpTextProjectionCache();
             var state = new PpState();
-            cache.Add("query", "a", 10, new Dictionary<string, PpBinding>(), 12);
-            Assert.That(cache.TrySkip("query", "a", state), Is.False);
-            state.LineOffset = 10;
-            Assert.That(cache.TrySkip("query", "b", state), Is.False);
-            Assert.That(cache.TrySkip("other query", "a", state), Is.False);
-            Assert.That(cache.TrySkip("query", "a", state), Is.True);
+            cache.Add("query", PpLocations.Start("a").Remap(10), new Dictionary<string, PpBinding>(), 12);
+            Assert.That(cache.TrySkip("query", state), Is.False);
+            state.Locations = PpLocations.Start("b").Remap(10);
+            Assert.That(cache.TrySkip("query", state), Is.False);
+            state.Locations = PpLocations.Start("a").Remap(10);
+            Assert.That(cache.TrySkip("other query", state), Is.False);
+            Assert.That(cache.TrySkip("query", state), Is.True);
         }
 
         [Test]
@@ -79,13 +80,13 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         public void ShaderTextProjectionDoesNotResolveNewAbstractInputsDuringValidation()
         {
             var cache = new PpTextProjectionCache();
-            cache.Add("query", "root", 0, new Dictionary<string, PpBinding> { ["LAZY"] = PpBinding.Undefined }, 2);
-            var state = new PpState(); int calls = 0;
+            cache.Add("query", PpLocations.Start("root"), new Dictionary<string, PpBinding> { ["LAZY"] = PpBinding.Undefined }, 2);
+            var state = new PpState { Locations = PpLocations.Start("root") }; int calls = 0;
             state.InitialInput = (_, _) => { calls++; return PpBinding.Undefined; };
-            Assert.That(cache.TrySkip("query", "root", state), Is.False);
+            Assert.That(cache.TrySkip("query", state), Is.False);
             Assert.That(calls, Is.Zero);
             state.PeekInitialInput = _ => PpBinding.Undefined;
-            Assert.That(cache.TrySkip("query", "root", state), Is.True);
+            Assert.That(cache.TrySkip("query", state), Is.True);
             Assert.That(calls, Is.Zero);
         }
 
@@ -96,11 +97,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var before = new PpBinding(new[] { macro }, BigInteger.One);
             var after = new PpBinding(new[] { macro }, BigInteger.One << 30);
             var cache = new PpTextProjectionCache();
-            cache.Add("query", "root", 0, new Dictionary<string, PpBinding> { ["UNCHANGED"] = before }, 2);
-            var state = new PpState(); state.Macros["UNCHANGED"] = after;
+            cache.Add("query", PpLocations.Start("root"), new Dictionary<string, PpBinding> { ["UNCHANGED"] = before }, 2);
+            var state = new PpState { Locations = PpLocations.Start("root") }; state.Macros["UNCHANGED"] = after;
             PpBinding observed = null;
             state.ObserveMacroRead = (_, binding) => observed = binding;
-            Assert.That(cache.TrySkip("query", "root", state), Is.True);
+            Assert.That(cache.TrySkip("query", state), Is.True);
             Assert.That(observed, Is.SameAs(after));
         }
 

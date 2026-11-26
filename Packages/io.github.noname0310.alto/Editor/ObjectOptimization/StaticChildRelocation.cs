@@ -12,13 +12,15 @@ namespace Noname.AvatarTools.ObjectOptimization
     internal static class StaticChildRelocation
     {
         internal static bool TryPlan(Transform frame, Transform child, AvatarAnimationIndex animations,
-            TransformMutationAnalysis mutations, out Action apply)
+            TransformMutationAnalysis mutations, out Action apply, bool allowSmallDifferences = true)
         {
             apply = null;
             // Translation preserves the coordinate basis for arbitrary animated
             // rotations/scales. Position curves need only a constant value offset;
             // tangents, weights, timing and wrap modes remain exactly the same.
-            if (!SpatialFrameProof.TranslationOnly(frame)) return false;
+            // Translating keys moves addition across interpolation/blending.
+            // A strict native arithmetic certificate is not available for it.
+            if (!allowSmallDifferences || !SpatialFrameProof.TranslationOnly(frame, allowSmallDifferences)) return false;
             var uses = animations.ForObject(child).Where(u => u.Binding.type != null && typeof(Transform).IsAssignableFrom(u.Binding.type)).ToArray();
             if (uses.Any(u => !u.Complete || u.Immutable || u.Binding.isPPtrCurve || u.Targets.Length != 1 ||
                 u.Objects().Count() != 1 || !IsLocalTrs(u.Binding.propertyName))) return false;

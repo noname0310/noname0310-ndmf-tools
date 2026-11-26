@@ -17,12 +17,9 @@ namespace Noname.AvatarTools.Analysis
     // can refine declarations into actual reads, using proven constant scalar
     // material inputs and a complete set of reachable keyword combinations.
     // Snapshot proofs stay local; exact compiler programs can reuse durable facts.
-    internal sealed class ShaderMeshInputs
+    internal sealed partial class ShaderMeshInputs
     {
         internal const int MaximumVariantsPerUnit = 256;
-        internal const int MaximumCallsPerShader = 1024;
-        internal const int MaximumCallsPerSnapshot = 2048;
-        internal const int MaximumCompilesPerSnapshot = 128;
         private const string IndexIssue = ShaderProgramInspection.InputIssue;
         internal static readonly ShaderType[] Stages = { ShaderType.Vertex, ShaderType.Fragment,
             ShaderType.Geometry, ShaderType.Hull, ShaderType.Domain };
@@ -38,27 +35,35 @@ namespace Noname.AvatarTools.Analysis
         private readonly Dictionary<(ShaderTextKey Program, string Entry, ShaderType Stage, bool Native), (D3DShaderInputs.Input[] Inputs, string Error)> compiled = new();
         private readonly Dictionary<(ShaderData.Pass, ShaderType, string, ShaderCompilerPlatform, BuildTarget, GraphicsTier), (bool Success, string Code)> preprocessed = new();
         private readonly Dictionary<(bool, ShaderTextKey, string), string> inspectedPrograms = new();
+        private readonly BoundedAnalysisCache<(ShaderTextKey, string, string), bool> entryInputFacts = new(256, 32 * 1024 * 1024);
         private readonly Dictionary<(ShaderData.Pass, ShaderType), string> entries = new();
+        private readonly Dictionary<(ShaderData.Pass, ShaderType, string, ShaderCompilerPlatform, BuildTarget, GraphicsTier),
+            (ShaderNativeProgram Program, string Error)> nativePrograms = new();
+        private readonly Dictionary<(ShaderData.Pass, ShaderType, string, ShaderCompilerPlatform, BuildTarget, GraphicsTier),
+            (D3DShaderInputs.Input[] Inputs, string Error)> nativeSemanticFacts = new();
+        private readonly HashSet<(ShaderData.Pass, ShaderType, string, ShaderCompilerPlatform, BuildTarget, GraphicsTier)> nativeProgramRequests = new();
+        private readonly Dictionary<(ShaderData.Pass, ShaderType, string, ShaderCompilerPlatform, BuildTarget, GraphicsTier), ShaderData.Pass> nativeProgramOwners = new();
+        private readonly Dictionary<(ShaderData.Pass, ShaderType, string, ShaderCompilerPlatform, BuildTarget, GraphicsTier, string, string, bool),
+            (D3DShaderInputs.Input[] Inputs, string Error, string[] Constants)> nativeConstantFacts = new();
         private readonly Dictionary<ShaderData.Pass, string> passCompilerIdentities = new();
         private readonly Dictionary<ShaderData.Pass, string> preprocessingIdentities = new();
-        private static readonly Lazy<string> UnityCompilerIdentity = new(() =>
-        {
-            try
-            {
-                string compiler = Path.Combine(EditorApplication.applicationContentsPath, "Tools", "UnityShaderCompiler.exe");
-                return "Unity/" + Application.unityVersion + "/" + typeof(ShaderUtil).Module.ModuleVersionId + "/" +
-                    ShaderAnalysisCache.Digest(File.ReadAllBytes(compiler));
-            }
-            catch (Exception) { return null; }
-        });
+        private static readonly Lazy<string> UnityCompilerIdentity = new(() => UnityShaderCompilerIdentity.D3D);
         private readonly Dictionary<(ShaderData.Pass, ShaderType, ShaderCompilerPlatform, bool), ShaderKeywordPlan.DeclarationSet> keywordDeclarations = new();
         private readonly Dictionary<(ShaderData.Pass, ShaderType, ShaderCompilerPlatform, bool), LocalKeyword[]> passKeywords = new();
         private CompilePrefetch prefetch;
         private CompilePrefetch ahead;
         internal bool PrepareUnitsAhead = true;
         private static int AheadCompileLimit => Math.Min(6, Math.Max(1, (Environment.ProcessorCount - 1) / 2));
+        // Logical requests include cached facts. They are diagnostics, never a
+        // correctness limit shared by unrelated materials or earlier queries.
+        // Complete each bounded keyword plan, then reuse its durable facts.
         internal int PreprocessCalls { get; private set; }
         internal int CompileCalls { get; private set; }
+        internal int NativeProgramCompileCalls { get; private set; }
+        internal static bool CacheNativePrograms = true;
+        internal int NativeProgramCacheHits { get; private set; }
+        internal int NativeImportedProgramHits { get; private set; }
+        internal int EntrySignatureProofHits { get; private set; }
         internal readonly List<string> UnitDiagnostics = new();
         private readonly BoundedAnalysisCache<(string Source, string Query, ShaderTextKey Original, ShaderTextKey Specialized, string Entry), ShaderInputUseSlice> useSlices = new(MaximumVariantsPerUnit, 32 * 1024 * 1024);
         internal int UseSliceAnalyses { get; private set; }
@@ -100,7 +105,16 @@ namespace Noname.AvatarTools.Analysis
             var key = (shader, target.Value, query.Signature);
             if (cache.TryGetValue(key, out string cached)) return cached;
             string result;
-            try { result = Inspect(shader, target.Value, query, null, null, out _); }
+            try
+            {
+                string coverage = CoverageKey(shader, target.Value, query, null);
+                if (HasCoverage(coverage)) result = null;
+                else
+                {
+                    result = Inspect(shader, target.Value, query, null, null, out _);
+                    if (result == null) StoreCoverage(coverage);
+                }
+            }
             catch (Exception exception) { result = Unknown("variant inspection failed: " + exception.Message); }
             cache.Add(key, result);
             return result;
@@ -138,7 +152,10 @@ namespace Noname.AvatarTools.Analysis
             string result;
             try
             {
+                string coverage = CoverageKey(shader, target.Value, query, signature);
+                if (HasCoverage(coverage)) { materialCache.Add(key, null); return null; }
                 result = Inspect(shader, target.Value, query, constants, stableKeywords ? material : null, out var observed);
+                if (result == null) StoreCoverage(coverage);
                 if (result == null && observed != null)
                 {
                     if (certificates == null) inputCertificates.Add(certificateKey, certificates = new List<Dictionary<string, int>>());
@@ -155,7 +172,7 @@ namespace Noname.AvatarTools.Analysis
         internal static string SourceIssue(ShaderPropertyUsage.Proof proof, ShaderInputQuery query)
         {
             if (proof.Uncertain != null) return Unknown(proof.Uncertain);
-            if (proof.Tokens.Any(query.MatchesToken) || query.MayUseIdentifiers(proof) ||
+            if (proof.Tokens.Any(query.MayDeclareToken) || query.MayUseIdentifiers(proof) ||
                 query.Semantics.Any(s => MayPasteInput(proof, s.Name))) return IndexIssue;
             return null;
         }
@@ -243,15 +260,16 @@ namespace Noname.AvatarTools.Analysis
             if (programs.Passes.Count == 0) return Unknown("no inspectable shader programs");
             var backends = Backends(PlayerSettings.GetGraphicsAPIs(target));
             if (backends == null || backends.Length == 0) return Unknown("unverified graphics API coverage");
-            int shaderStart = PreprocessCalls;
             var units = programs.Passes.Where(p => ShaderPassSchedule.MayExecute(p.Pass)).SelectMany(p => Stages.Where(p.Pass.HasShaderStage)
                 .SelectMany(stage => backends.SelectMany(backend => Tiers.Select(tier => {
                     var id = p.Identifier;
                     if (!passCompilerIdentities.ContainsKey(p.Pass))
                     {
                         string asset = AssetDatabase.GetAssetPath(p.Shader);
-                        passCompilerIdentities[p.Pass] = UnityCompilerIdentity.Value == null || string.IsNullOrEmpty(asset) ? null :
-                            UnityCompilerIdentity.Value + "/" + AssetDatabase.GetAssetDependencyHash(asset) + "/" + ContentFactCache.TextDigest(PassSource(p.Pass));
+                        string sourceIdentity = ShaderBuildSource.TryGenerated(p.Shader, out string generatedSource, out _) ?
+                            ContentFactCache.TextDigest(generatedSource) : string.IsNullOrEmpty(asset) ? null : AssetDatabase.GetAssetDependencyHash(asset).ToString();
+                        passCompilerIdentities[p.Pass] = UnityCompilerIdentity.Value == null || sourceIdentity == null ? null :
+                            UnityCompilerIdentity.Value + "/" + sourceIdentity + "/" + ContentFactCache.TextDigest(PassSource(p.Pass));
                         preprocessingIdentities[p.Pass] = sources.NativePreprocessIdentity(shader, p.Shader, p.Pass, id, UnityCompilerIdentity.Value);
                     }
                     // Unity 2022's pass-keyword API cannot address imported
@@ -277,8 +295,8 @@ namespace Noname.AvatarTools.Analysis
             Exception pendingFailure = null;
             void PrepareNext()
             {
-                if (!PrepareUnitsAhead || pending.Count != 0 || exhausted || pendingFailure != null ||
-                    CompileCalls >= MaximumCompilesPerSnapshot || Environment.ProcessorCount < 4) return;
+                if (SemanticOnly(query) || !PrepareUnitsAhead || pending.Count != 0 || exhausted || pendingFailure != null ||
+                    Environment.ProcessorCount < 4) return;
                 // Metadata and Unity preprocessing stay on the editor thread.
                 // Repeated tiers often share a program. Bound both the metadata
                 // window and distinct native jobs, leaving capacity for current
@@ -300,7 +318,7 @@ namespace Noname.AvatarTools.Analysis
                         pendingFailure = exception; break;
                     }
                     pending.Enqueue(next);
-                    try { PrepareAhead(batch, shader, next, material, target, query, constants, shaderStart); }
+                    try { PrepareAhead(batch, shader, next, material, target, query, constants); }
                     catch { /* The canonical consumer diagnoses this unit. */ }
                 }
             }
@@ -315,7 +333,14 @@ namespace Noname.AvatarTools.Analysis
                     else break;
                     inspected = true;
                     var certificateKey = (shader, unit.Pass, unit.Stage, unit.Backend, unit.Tier, target, query.Signature, keywordSignature);
-                    if (unitCertificates.TryGetValue(certificateKey, out var certificates))
+                    string storedCertificateKey = UnitCoverageKey(unit, target, query, keywordSignature);
+                    if (!unitCertificates.TryGetValue(certificateKey, out var certificates))
+                    {
+                        if (!ContentFactCache.Shared.TryRead(UnitCoverageKind, storedCertificateKey, ReadUnitCoverage, out certificates))
+                            certificates = new();
+                        unitCertificates.Add(certificateKey, certificates);
+                    }
+                    if (certificates.Count != 0)
                     {
                         Dictionary<string, int> matching = null;
                         foreach (var certificate in certificates)
@@ -346,10 +371,9 @@ namespace Noname.AvatarTools.Analysis
                         Entry(unit.Pass, unit.Stage) is string entry)
                     {
                         int beforeCompile = CompileCalls, beforePreprocess = PreprocessCalls;
+                        var constantDependencies = new HashSet<string>(StringComparer.Ordinal);
                         var proof = ShaderInputVariantProof.Analyze(query, entry, enabled =>
                         {
-                            if (PreprocessCalls - shaderStart >= MaximumCallsPerShader)
-                                return new ShaderInputVariantProof.Sample { Issue = "Shader preprocessing budget exhausted" };
                             // The first program can share a native job with a
                             // later tier. Start that window before waiting for
                             // the first result; later windows retain their owner
@@ -361,30 +385,35 @@ namespace Noname.AvatarTools.Analysis
                                 ?? new ShaderInputPreparation(sourceId);
                             try
                             {
-                                string issue = Preprocess(unit.Pass, unit.Stage, enabled, unit.Backend, target, unit.Tier, query, constants, out var raw, preparation);
+                                string issue = PreprocessWithEvidence(unit.Pass, unit.Stage, enabled, unit.Backend, target, unit.Tier, query, constants, out var raw, preparation, constantDependencies);
                                 if (issue == null) PrepareNext();
+                                string specialized = raw == null ? null : Specialize(raw, constants).Code;
                                 return new ShaderInputVariantProof.Sample { Original = raw, SourceId = sourceId, Preparation = preparation,
-                                    Specialized = raw == null ? null : Specialize(raw, constants).Code,
+                                    Specialized = specialized,
                                     Issue = issue, InputLive = issue == IndexIssue };
                             }
                             catch { preparation.Dispose(); throw; }
                         }, demand => sources.InputDemand(shader, unit.Shader, unit.Pass, demand, target, unit.Backend, unit.Stage, unit.Tier),
                             UnitPlan, CompileProgram, value => UseSlice(value, query, entry), enabled =>
                                 BeginCompileBatch(unit.Pass, unit.Stage, enabled, unit.Backend, target, unit.Tier,
-                                    query, constants, entry, shaderStart, ShaderPropertyUsage.ProgramSourceId(unit.Shader)));
+                                    query, constants, entry, ShaderPropertyUsage.ProgramSourceId(unit.Shader)));
                         UnitDiagnostics.Add(unit.Shader.name + "/" + unit.Pass.Name + "/" + unit.Stage + "/" + unit.Tier +
                             ": samples=" + proof.Samples + ", preprocess=" + (PreprocessCalls - beforePreprocess) +
                             ", compile=" + (CompileCalls - beforeCompile) + ", complete=" + proof.Complete + ", issue=" + proof.Issue);
                         if (proof.InputLive) return IndexIssue;
                         if (proof.Complete)
                         {
+                            // Slicing records source assumptions; native evaluation
+                            // records every constant it reads, including branch
+                            // conditions eliminated from its final expressions.
+                            proof.Names.UnionWith(constantDependencies);
                             observedConstants?.UnionWith(proof.Names);
-                            if (certificates == null) unitCertificates.Add(certificateKey, certificates = new());
                             var certificate = new Dictionary<string, int>(StringComparer.Ordinal);
                             if (constants != null)
                                 foreach (var pair in constants)
                                     if (proof.Names.Contains(pair.Key)) certificate.Add(pair.Key, FloatBits(pair.Value));
                             certificates.Add(certificate);
+                            StoreUnitCoverage(storedCertificateKey, certificates);
                             continue;
                         }
                         sliceIssue = proof.Issue;
@@ -399,8 +428,6 @@ namespace Noname.AvatarTools.Analysis
                         return Unknown(plan.Issue + " in " + unit.Pass.Name + ", " + unit.Stage + ", " + unit.Backend +
                             (sliceIssue == null ? "" : "; input-use query: " + sliceIssue) +
                             (dependencies.Issue == null ? "" : "; " + dependencies.Issue));
-                    if (PreprocessCalls - shaderStart >= MaximumCallsPerShader || plan.Variants.Length > MaximumCallsPerSnapshot - PreprocessCalls)
-                        return Unknown("shader variant coverage exceeds the bounded analysis limit");
                     foreach (var enabled in plan.Variants)
                     {
                         string issue = Preprocess(unit.Pass, unit.Stage, enabled, unit.Backend, target, unit.Tier, query, constants, out _);
@@ -469,6 +496,11 @@ namespace Noname.AvatarTools.Analysis
         private string Preprocess(ShaderData.Pass pass, ShaderType stage, string[] keywords,
             ShaderCompilerPlatform backend, BuildTarget target, GraphicsTier tier, ShaderInputQuery query, IReadOnlyDictionary<string, float> constants, out string raw,
             ShaderInputPreparation preparation = null)
+            => PreprocessWithEvidence(pass, stage, keywords, backend, target, tier, query, constants, out raw, preparation, null);
+
+        private string PreprocessWithEvidence(ShaderData.Pass pass, ShaderType stage, string[] keywords,
+            ShaderCompilerPlatform backend, BuildTarget target, GraphicsTier tier, ShaderInputQuery query, IReadOnlyDictionary<string, float> constants, out string raw,
+            ShaderInputPreparation preparation, ISet<string> observedConstants)
         {
             raw = null;
             // Unity 2022's combined-stage backends can return empty, concatenated
@@ -479,7 +511,6 @@ namespace Noname.AvatarTools.Analysis
             var variantKey = (pass, stage, string.Join(";", keywords), backend, target, tier);
             if (!preprocessed.TryGetValue(variantKey, out var variant))
             {
-                if (PreprocessCalls >= MaximumCallsPerSnapshot) return Unknown("shader preprocessing budget exhausted");
                 PreprocessCalls++;
                 if ((prefetch == null || !prefetch.Programs.TryGetValue(variantKey, out variant)) &&
                     (ahead == null || !ahead.Programs.TryGetValue(variantKey, out variant)))
@@ -492,10 +523,42 @@ namespace Noname.AvatarTools.Analysis
             string issue = InspectProgram(variant.Success, raw, query);
             if (issue != IndexIssue) return issue;
             if (backend != ShaderCompilerPlatform.D3D || Application.platform != RuntimePlatform.WindowsEditor) return issue;
-            var specialized = Specialize(raw, constants);
-            string program = specialized.Code; int count = specialized.Count;
             string entry = Entry(pass, stage);
             if (entry == null) return Unknown("shader entry point is not uniquely inspectable");
+            if (SemanticOnly(query) && (stage == ShaderType.Vertex || stage == ShaderType.Fragment))
+            {
+                var signatureKey = ((ShaderTextKey)raw, entry, query.Signature);
+                if (!entryInputFacts.TryGetValue(signatureKey, out bool absent))
+                {
+                    absent = ShaderEntryInputs.Absent(raw, entry, query);
+                    entryInputFacts.Add(signatureKey, absent, raw.Length * 2);
+                }
+                if (absent) { EntrySignatureProofHits++; return null; }
+            }
+            var specialized = Specialize(raw, constants);
+            string program = specialized.Code; int count = specialized.Count;
+            if (SemanticOnly(query))
+            {
+                // The actual player program already supplies a complete semantic
+                // dependency proof. A second compilation of the specialized
+                // whole source cannot strengthen that fact and adds another
+                // compiler request. Source slicing and its pure-call probes still run
+                // in ShaderInputVariantProof to cover the same keyword choices.
+                if (preparation != null && !preparation.Started &&
+                    !ContentFactCache.Shared.Contains(ShaderSliceFacts.Key(preparation.SourceId, raw, program, query, entry)))
+                    preparation.Start(raw, program);
+                // Absence from the original native input signature is stronger
+                // than conditional absence under material constants. Query that
+                // independent, durable fact first: an unsupported arithmetic
+                // proof must not force the same native compile on every build.
+                var originalInputs = OriginalSemanticInputs(pass, stage, keywords, backend, target, tier);
+                if (originalInputs.Inputs != null && !query.MayReadCompiled(originalInputs.Inputs, true)) return null;
+                var actual = NativeConstantInputs(pass, stage, keywords, backend, target, tier, constants, semanticInputsOnly: true,
+                    observedConstants: observedConstants);
+                if (actual.Inputs == null) actual = originalInputs;
+                if (actual.Inputs == null) return Unknown(actual.Error ?? "native semantic dependency proof is unavailable");
+                return query.MayReadCompiled(actual.Inputs, true) ? IndexIssue : null;
+            }
             // Unity strips uniform reflection from some compiled variants. Use
             // the unstripped analysis compiler for named-uniform queries even
             // when no constants could be substituted.
@@ -505,37 +568,258 @@ namespace Noname.AvatarTools.Analysis
             {
                 if (native)
                 {
-                    // Parsing does not consume compiler/proof budgets. Overlap it
+                    // Parsing does not require a native compiler call. Overlap it
                     // with the native call (or an already queued compile), then
                     // consume the same native result before inspecting the slice.
-                    if (CompileCalls < MaximumCompilesPerSnapshot && preparation != null && !preparation.Started &&
+                    if (preparation != null && !preparation.Started &&
                         !ContentFactCache.Shared.Contains(ShaderSliceFacts.Key(preparation.SourceId, raw, program, query, entry)))
                         preparation.Start(raw, program);
                     proof = CompileProgram(program, entry, stage);
                 }
                 else
                 {
-                    if (CompileCalls >= MaximumCompilesPerSnapshot) return Unknown("shader compiler analysis budget exhausted");
-                    CompileCalls++;
-                    var timer = Stopwatch.StartNew();
-                    using var cost = AnalysisCost.Measure("Unity shader compiler");
+                    CountNativeProgramRequest(pass, stage, keywords, backend, target, tier);
                     string programKey = passCompilerIdentities.TryGetValue(pass, out string identity) && identity != null
                         ? ShaderAnalysisCache.Shared.Key(program, entry, stage, identity + "/" + backend + "/" + target + "/" + tier + "/" + string.Join(";", keywords))
                         : null;
                     proof = ShaderAnalysisCache.Shared.Compile(programKey, () =>
                     {
-                        var result = pass.CompileVariant(stage, keywords, backend, target, tier, true);
-                        if (!result.Success) return (null, "shader variant compilation failed");
+                        if (!TryNativeProgram(pass, stage, keywords, backend, target, tier, out var result, out string compileIssue))
+                            return (null, compileIssue);
                         D3DShaderInputs.Reflect(result.ShaderData, stage, out var inputs, out string error);
                         return (inputs, error);
                     });
-                    NativeCompileMilliseconds += timer.Elapsed.TotalMilliseconds;
-                    NativeCompileWaitMilliseconds += timer.Elapsed.TotalMilliseconds;
                     compiled.Add(key, proof);
                 }
             }
             if (proof.Inputs == null) return Unknown(proof.Error ?? "shader input reflection was incomplete");
-            return query.MayReadCompiled(proof.Inputs, native) ? IndexIssue : null;
+            if (query.MayReadCompiled(proof.Inputs, native)) return IndexIssue;
+            if (native)
+            {
+                // Strict source compilation is a discovery probe. Even without
+                // injected material constants it can fold a threshold differently
+                // from Unity's player compiler. Only the actual native program
+                // may certify that the queried input cannot affect its outputs.
+                // Anonymous native samplers can remain opaque for semantic
+                // dependencies; named-uniform absence still needs ownership.
+                var actual = NativeConstantInputs(pass, stage, keywords, backend, target, tier, constants,
+                    semanticInputsOnly: false, observedConstants: observedConstants);
+                if (actual.Inputs == null) return Unknown(actual.Error ?? "native constant dependency proof is unavailable");
+                if (query.MayReadCompiled(actual.Inputs, true)) return IndexIssue;
+            }
+            return null;
+        }
+
+        // Native bytes and public binding metadata describe one actual variant,
+        // independently of which proof consumes it. Position dependencies,
+        // nonfinite rasterization and whole-program reflection must share this
+        // snapshot-owned artifact and count its logical request once. Cache hits
+        // must not exclude later variants from an otherwise complete proof.
+        private void CountNativeProgramRequest(ShaderData.Pass pass, ShaderType stage, string[] keywords,
+            ShaderCompilerPlatform backend, BuildTarget target, GraphicsTier tier)
+        {
+            pass = NativeProgramOwner(pass, stage, keywords, backend, target, tier);
+            var key = (pass, stage, string.Join(";", keywords), backend, target, tier);
+            if (nativeProgramRequests.Add(key)) CompileCalls++;
+        }
+
+        private bool TryNativeProgram(ShaderData.Pass pass, ShaderType stage, string[] keywords,
+            ShaderCompilerPlatform backend, BuildTarget target, GraphicsTier tier,
+            out ShaderNativeProgram program, out string issue)
+        {
+            preprocessingIdentities.TryGetValue(pass, out string consumerIdentity);
+            pass = NativeProgramOwner(pass, stage, keywords, backend, target, tier);
+            var key = (pass, stage, string.Join(";", keywords), backend, target, tier);
+            if (nativePrograms.TryGetValue(key, out var cached))
+            { program = cached.Program; issue = cached.Error; return issue == null; }
+            program = default;
+            issue = null;
+            CountNativeProgramRequest(pass, stage, keywords, backend, target, tier);
+            // Capture the complete compiler artifact before applying any query or
+            // material constants. A new value domain needs evaluation, not another
+            // Unity compiler invocation. Imported ownership remains freshly proved.
+            const string artifactKind = "native shader program";
+            string artifactKey = null;
+            string requestedIdentity = CacheNativePrograms && ContentFactCache.Enabled
+                ? sources.NativeArtifactIdentity(pass, UnityCompilerIdentity.Value) ?? consumerIdentity : null;
+            if (CacheNativePrograms && ContentFactCache.Enabled && requestedIdentity != null)
+            {
+                artifactKey = ContentFactCache.Shared.Key(artifactKind, requestedIdentity, ContentFactCache.TextDigest(PassSource(pass)),
+                    stage.ToString(), key.Item3, backend.ToString(), target.ToString(), tier.ToString(), "public-metadata:true");
+                if (ContentFactCache.Shared.TryRead(artifactKind, artifactKey, ShaderNativeProgram.Read, out program))
+                {
+                    NativeProgramCacheHits++;
+                    nativePrograms.Add(key, (program, null)); return true;
+                }
+                // Earlier records included the importing consumer's dependency
+                // identity. It is still a valid (stronger) premise after today's
+                // ownership proof; promote it without another native compilation.
+                if (consumerIdentity != null && consumerIdentity != requestedIdentity)
+                {
+                    string previousKey = ContentFactCache.Shared.Key(artifactKind, consumerIdentity, ContentFactCache.TextDigest(PassSource(pass)),
+                        stage.ToString(), key.Item3, backend.ToString(), target.ToString(), tier.ToString(), "public-metadata:true");
+                    if (ContentFactCache.Shared.Contains(previousKey) &&
+                        ContentFactCache.Shared.TryRead(artifactKind, previousKey, ShaderNativeProgram.Read, out program))
+                    {
+                        NativeProgramCacheHits++;
+                        ContentFactCache.Shared.Store(artifactKind, artifactKey, program.Write);
+                        nativePrograms.Add(key, (program, null)); return true;
+                    }
+                }
+            }
+            var timer = Stopwatch.StartNew(); NativeProgramCompileCalls++;
+            try
+            {
+                using var cost = AnalysisCost.Measure("Unity shader compiler");
+                program = pass.CompileVariant(stage, keywords, backend, target, tier, true);
+                if (!program.Success) issue = "native shader variant compilation failed";
+            }
+            catch (Exception exception) { issue = "native shader variant compilation failed: " + exception.GetType().Name; }
+            finally
+            {
+                NativeCompileMilliseconds += timer.Elapsed.TotalMilliseconds;
+                NativeCompileWaitMilliseconds += timer.Elapsed.TotalMilliseconds;
+            }
+            if (issue == null && artifactKey != null) ContentFactCache.Shared.Store(artifactKind, artifactKey, program.Write);
+            nativePrograms.Add(key, (program, issue)); return issue == null;
+        }
+
+        private ShaderData.Pass NativeProgramOwner(ShaderData.Pass pass, ShaderType stage, string[] keywords,
+            ShaderCompilerPlatform backend, BuildTarget target, GraphicsTier tier)
+        {
+            var key = (pass, stage, string.Join(";", keywords), backend, target, tier);
+            if (nativeProgramOwners.TryGetValue(key, out var previous)) return previous;
+            var candidate = pass;
+            var visited = new HashSet<ShaderData.Pass>();
+            while (visited.Add(candidate) && visited.Count <= 64)
+            {
+                var next = sources.ImportedNativePass(candidate);
+                if (next == candidate) break;
+                if (Entry(candidate, stage) != Entry(next, stage) ||
+                    !Preprocessed(candidate, out var imported) || !Preprocessed(next, out var original) ||
+                    !imported.Success || !original.Success || string.IsNullOrEmpty(imported.Code) || imported.Code != original.Code) break;
+                candidate = next;
+                if (visited.Contains(candidate) || visited.Count == 64) { candidate = pass; break; }
+            }
+            // Resolve the complete chain before either constructing the artifact
+            // key or counting it. A -> B -> C must not compile B against C's
+            // identity and then compile C a second time as a separate program.
+            if (candidate != pass) NativeImportedProgramHits++;
+            nativeProgramOwners.Add(key, candidate); return candidate;
+
+            bool Preprocessed(ShaderData.Pass current, out (bool Success, string Code) value)
+            {
+                var currentKey = (current, stage, string.Join(";", keywords), backend, target, tier);
+                if (preprocessed.TryGetValue(currentKey, out value)) return true;
+                PreprocessCalls++;
+                value = NativePreprocess(current, stage, keywords, backend, target, tier);
+                preprocessed.Add(currentKey, value); return true;
+            }
+        }
+
+        // A native expression failure cannot invalidate the stronger fact that
+        // the original program never reads a semantic at all. This inventory has
+        // no material assumptions and is used only for whole-program semantic
+        // queries, never named uniforms or a projected output such as SV_POSITION.
+        private (D3DShaderInputs.Input[] Inputs, string Error) OriginalSemanticInputs(ShaderData.Pass pass, ShaderType stage,
+            string[] keywords, ShaderCompilerPlatform backend, BuildTarget target, GraphicsTier tier)
+        {
+            var key = (pass, stage, string.Join(";", keywords), backend, target, tier);
+            if (nativeSemanticFacts.TryGetValue(key, out var cached)) return cached;
+            CountNativeProgramRequest(pass, stage, keywords, backend, target, tier);
+            string identity = preprocessingIdentities.TryGetValue(pass, out var preprocessing) ? preprocessing : null;
+            string decoder = D3DShaderInputs.CompilerFingerprint;
+            // Never infer an environment identity from bytecode size or a shader
+            // name. The preprocessing identity covers the complete include graph
+            // and live compiler settings; source, stage, tier and keyword choice
+            // distinguish this exact program. Material values do not participate.
+            string contentKey = string.IsNullOrEmpty(identity) || decoder == null ||
+                !preprocessed.TryGetValue(key, out var source) || !source.Success || string.IsNullOrEmpty(source.Code)
+                ? null : ShaderAnalysisCache.Shared.Key("native-semantic-inventory-v1/" + ContentFactCache.TextDigest(source.Code),
+                    "native program", stage, identity + "/" + decoder + "/" + backend + "/" + target + "/" + tier + "/" + key.Item3);
+            var result = ShaderAnalysisCache.Shared.Compile(contentKey, () =>
+            {
+                if (!TryNativeProgram(pass, stage, keywords, backend, target, tier, out var actual, out string compileIssue))
+                    return (null, compileIssue);
+                D3DShaderInputs.Reflect(actual.ShaderData, stage, out var inputs, out string issue);
+                return (inputs?.Where(i => i.Kind == D3DShaderInputs.InputKind.Semantic).ToArray(), issue);
+            });
+            nativeSemanticFacts.Add(key, result); return result;
+        }
+
+        // Shared by whole-program queries and the vertex-position projection.
+        // Cache only native program facts; scene/material eligibility remains in
+        // the caller's snapshot, and every constant bit participates in this key.
+        // Semantic-only facts cannot satisfy the stricter named-input contract.
+        private (D3DShaderInputs.Input[] Inputs, string Error) NativeConstantInputs(ShaderData.Pass pass, ShaderType stage,
+            string[] keywords, ShaderCompilerPlatform backend, BuildTarget target, GraphicsTier tier,
+            IReadOnlyDictionary<string, float> constants, string outputSemantic = null, bool semanticInputsOnly = false,
+            ISet<string> observedConstants = null)
+        {
+            if (backend != ShaderCompilerPlatform.D3D || Application.platform != RuntimePlatform.WindowsEditor)
+                return (null, "native constant dependency proof requires D3D bytecode");
+            string enabled = string.Join(";", keywords);
+            var programKey = (pass, stage, enabled, backend, target, tier);
+            // Unity's public scalar metadata can overlap singleton-array metadata.
+            // Only exact native source declarations establish the scalar premise;
+            // an absent source premise means no material constant is seeded.
+            var nativeConstants = new Dictionary<string, float>(StringComparer.Ordinal);
+            var zeroIntegerUniforms = new HashSet<string>(StringComparer.Ordinal);
+            if (constants != null && preprocessed.TryGetValue(programKey, out var original) && original.Success)
+            {
+                if (!artifacts.Declarations.TryGetValue(original.Code, out var declarations))
+                {
+                    declarations = ShaderConstantInputs.PrepareCached(original.Code);
+                    artifacts.Declarations.Add(original.Code, declarations, (original.Code.Length + declarations.Source.Length) * 2);
+                }
+                foreach (var declaration in declarations.Declarations)
+                    if (constants.TryGetValue(declaration.Name, out float value))
+                    {
+                        if (declaration.Type == "float" || declaration.Type == "half") nativeConstants[declaration.Name] = value;
+                        else if (semanticInputsOnly && FloatBits(value) == 0 &&
+                            (declaration.Type == "int" || declaration.Type == "uint" || declaration.Type == "bool"))
+                        {
+                            // MaterialAnimationInputs uses the declared property's
+                            // typed getter and excludes non-scalar/unknown writers.
+                            // Positive zero has the same 32 bits after integer
+                            // conversion or raw upload; negative/nonzero values do
+                            // not carry this cross-type premise.
+                            nativeConstants[declaration.Name] = 0; zeroIntegerUniforms.Add(declaration.Name);
+                        }
+                    }
+            }
+            string signature = string.Join(";", nativeConstants.OrderBy(p => p.Key, StringComparer.Ordinal)
+                .Select(p => p.Key + ":" + FloatBits(p.Value)));
+            var key = (pass, stage, enabled, backend, target, tier, signature, outputSemantic ?? "", semanticInputsOnly);
+            if (nativeConstantFacts.TryGetValue(key, out var cached))
+            {
+                if (cached.Constants != null) observedConstants?.UnionWith(cached.Constants);
+                return (cached.Inputs, cached.Error);
+            }
+            CountNativeProgramRequest(pass, stage, keywords, backend, target, tier);
+            // The preprocessing identity covers live graphics/player/quality
+            // settings and the complete source/include dependency closure. The
+            // older compiler-only identity is insufficient for this native proof.
+            string identity = preprocessingIdentities.TryGetValue(pass, out var preprocessing) ? preprocessing : null;
+            string decoder = D3DShaderInputs.CompilerFingerprint;
+            string contentKey = string.IsNullOrEmpty(identity) || decoder == null ? null : ShaderAnalysisCache.Shared.Key(
+                (semanticInputsOnly ? "native-expression-dependencies-v4/semantics/" : "native-expression-dependencies-v2/named-inputs/") +
+                signature + "/" + (outputSemantic ?? "*") + "/" +
+                (preprocessed.TryGetValue(programKey, out var source) ? ContentFactCache.TextDigest(source.Code ?? "") : "<unavailable>"), "native program", stage,
+                identity + "/" + decoder + "/" + backend + "/" + target + "/" + tier + "/" + enabled);
+            var result = ShaderNativeInputFacts.Get(contentKey, () =>
+            {
+                if (!TryNativeProgram(pass, stage, keywords, backend, target, tier, out var actual, out string compileIssue))
+                    return (null, compileIssue, null);
+                using var evaluation = AnalysisCost.Measure("Native shader constant dependency evaluation");
+                var observed = new HashSet<string>(StringComparer.Ordinal);
+                D3DConstantEquivalence.TryInputs(actual, nativeConstants, stage, out var inputs, out string issue,
+                    outputSemantic, semanticInputsOnly, zeroIntegerUniforms, observed);
+                return (inputs, issue, observed.ToArray());
+            });
+            nativeConstantFacts.Add(key, result);
+            if (result.Constants != null) observedConstants?.UnionWith(result.Constants);
+            return (result.Inputs, result.Error);
         }
 
         private string PassSource(ShaderData.Pass pass)
@@ -559,7 +843,6 @@ namespace Noname.AvatarTools.Analysis
             var key = (program, entry, stage, true);
             if (!compiled.TryGetValue(key, out var proof))
             {
-                if (CompileCalls >= MaximumCompilesPerSnapshot) return (null, "shader compiler analysis budget exhausted");
                 CompileCalls++;
                 if ((prefetch == null || !prefetch.Native.TryGet(program, entry, stage, out proof)) &&
                     (ahead == null || !ahead.Native.TryGet(program, entry, stage, out proof)))
@@ -639,19 +922,16 @@ namespace Noname.AvatarTools.Analysis
         }
 
         private void PrepareAhead(CompilePrefetch batch, Shader shader, InspectionUnit unit, Material material, BuildTarget target,
-            ShaderInputQuery query, IReadOnlyDictionary<string, float> constants, int shaderStart)
+            ShaderInputQuery query, IReadOnlyDictionary<string, float> constants)
         {
-            if (unit.Backend != ShaderCompilerPlatform.D3D || Application.platform != RuntimePlatform.WindowsEditor ||
-                CompileCalls >= MaximumCompilesPerSnapshot || Environment.ProcessorCount < 3) return;
+            if (SemanticOnly(query) || unit.Backend != ShaderCompilerPlatform.D3D || Application.platform != RuntimePlatform.WindowsEditor ||
+                Environment.ProcessorCount < 3) return;
             string entry = Entry(unit.Pass, unit.Stage);
             if (entry == null) return;
             var plan = Plan(shader, unit, material, null, _ => true);
             if (plan.Issue != null || plan.Variants.Length == 0) return;
             var keywords = plan.Variants[0];
             var key = (unit.Pass, unit.Stage, string.Join(";", keywords), unit.Backend, target, unit.Tier);
-            int pending = (prefetch?.Programs.Count ?? 0) + batch.Programs.Count;
-            if (PreprocessCalls + pending >= MaximumCallsPerSnapshot ||
-                PreprocessCalls - shaderStart + pending >= MaximumCallsPerShader) return;
             if (!preprocessed.TryGetValue(key, out var value) && !batch.Programs.TryGetValue(key, out value))
             {
                 batch.Programs.Add(key, value = NativePreprocess(unit.Pass, unit.Stage, keywords, unit.Backend, target, unit.Tier));
@@ -670,20 +950,20 @@ namespace Noname.AvatarTools.Analysis
 
         private IDisposable BeginCompileBatch(ShaderData.Pass pass, ShaderType stage, IReadOnlyList<string[]> variants,
             ShaderCompilerPlatform backend, BuildTarget target, GraphicsTier tier, ShaderInputQuery query,
-            IReadOnlyDictionary<string, float> constants, string entry, int shaderStart, string sourceId)
+            IReadOnlyDictionary<string, float> constants, string entry, string sourceId)
         {
-            if (prefetch != null || backend != ShaderCompilerPlatform.D3D || Application.platform != RuntimePlatform.WindowsEditor) return null;
-            // Worker counts grow with available cores; logical proof budgets and
+            if (SemanticOnly(query) || prefetch != null || backend != ShaderCompilerPlatform.D3D || Application.platform != RuntimePlatform.WindowsEditor) return null;
+            // Worker counts grow with available cores; logical proof coverage and
             // publication order remain independent of scheduling and CPU count.
             int reserve = PrepareUnitsAhead ? AheadCompileLimit + 1 : 1;
-            int limit = Math.Min(Math.Min(16 - reserve, Math.Max(1, Environment.ProcessorCount - reserve)), MaximumCompilesPerSnapshot - CompileCalls);
+            int limit = Math.Min(16 - reserve, Math.Max(1, Environment.ProcessorCount - reserve));
             if (limit < 2) return null;
             var batch = prefetch = new CompilePrefetch(this, limit);
             try
             {
                 // Native source preparation stays on the main thread. Speculation
-                // never publishes proof results or spends the logical analysis
-                // budget: the ordinary consumer does both in its original order.
+                // never publishes proof results or counts logical requests:
+                // the ordinary consumer does both in its original order.
                 // Unconsumed entries are discarded when this round ends.
                 for (int i = 0; i < variants.Count && i < limit; i++)
                 {
@@ -692,8 +972,6 @@ namespace Noname.AvatarTools.Analysis
                     if (!preprocessed.TryGetValue(key, out var value) &&
                         (ahead == null || !ahead.Programs.TryGetValue(key, out value)))
                     {
-                        if (PreprocessCalls + batch.Programs.Count >= MaximumCallsPerSnapshot ||
-                            PreprocessCalls - shaderStart + batch.Programs.Count >= MaximumCallsPerShader) break;
                         batch.Programs.Add(key, value = NativePreprocess(pass, stage, keywords, backend, target, tier));
                     }
                     if (InspectProgram(value.Success, value.Code, query) != IndexIssue) continue;
@@ -744,6 +1022,7 @@ namespace Noname.AvatarTools.Analysis
             return result.OrderBy(p => p).ToArray();
         }
 
+        private static bool SemanticOnly(ShaderInputQuery query) => !query.UniformQuery && query.Semantics.Length != 0;
         private static string Unknown(string reason) => "unverified shader inputs: " + reason;
     }
 }

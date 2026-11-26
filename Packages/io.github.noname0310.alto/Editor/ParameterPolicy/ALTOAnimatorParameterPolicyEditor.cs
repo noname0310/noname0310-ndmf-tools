@@ -226,7 +226,7 @@ namespace Noname.AvatarTools.ParameterPolicy
                 item.FindPropertyRelative("Value").floatValue = 0;
             }
             EditorGUILayout.HelpBox("Source is optional. With a source, use its original parameter name; without one, use the final avatar name. " +
-                "Choose only lists authoring-time names. Build and Analyze verifies generated names, Preserve conflicts and Scope safety. " +
+                "Choose only lists authoring-time names. The build verifies generated names, Preserve conflicts and Scope safety. " +
                 "Subtree scopes require local renderer outputs; unproven bone, physics or behaviour effects require the avatar root scope.", MessageType.None);
         }
 

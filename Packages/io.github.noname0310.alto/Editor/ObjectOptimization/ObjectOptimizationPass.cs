@@ -30,6 +30,8 @@ namespace Noname.AvatarTools.ObjectOptimization
         internal bool AssumeFixedHumanoidBoneScale;
         internal ComponentHoistingOptions ComponentHoisting;
         internal bool RemoveUnusedObjects;
+        internal bool BakeConstantComponentProperties;
+        internal bool BakeConstantTransforms;
         // Set only while the SDK finalizer analyzes completed generator output.
         internal bool RuntimeDependenciesOnly;
         internal Action<UnityEngine.Object> DestroyObject = target => UnityEngine.Object.DestroyImmediate(target);
@@ -44,7 +46,7 @@ namespace Noname.AvatarTools.ObjectOptimization
             return target == null;
         }
         internal bool Enabled => Scope != null && (PruneUnusedSensorParameters || RemoveUnusedTransforms ||
-            RemoveRedundantConstraints || MergeStaticObjects || HoistComponents || FoldStaticTransformsIntoComponents || RemoveUnusedObjects);
+            RemoveRedundantConstraints || MergeStaticObjects || HoistComponents || FoldStaticTransformsIntoComponents || RemoveUnusedObjects || BakeConstantComponentProperties || BakeConstantTransforms);
         internal bool Protected(Component value) => value != null &&
             (ProtectedSubtrees.Any(s => s.Contains(value.transform)) || ProtectedComponents.Contains(ObjectRegistry.GetReference(value)));
     }
@@ -69,6 +71,8 @@ namespace Noname.AvatarTools.ObjectOptimization
             state.AssumeFixedHumanoidBoneScale = state.Component.AssumeFixedHumanoidBoneScale;
             state.ComponentHoisting = state.Component.ComponentHoisting?.Copy() ?? new ComponentHoistingOptions();
             state.RemoveUnusedObjects = state.Component.RemoveUnusedObjects;
+            state.BakeConstantComponentProperties = state.Component.BakeConstantComponentProperties;
+            state.BakeConstantTransforms = state.Component.BakeConstantTransforms;
             foreach (var obj in (state.Component.PreserveObjects ?? new()).Where(o => o != null))
             {
                 if (!obj.transform.IsChildOf(context.AvatarRootTransform))
@@ -122,7 +126,7 @@ namespace Noname.AvatarTools.ObjectOptimization
             // AAO removes editor-only settings components. Final dependency analysis uses
             // captured scope/preservation data and must not depend on that marker surviving.
             if (finalHierarchy ? !state.RemoveUnusedTransforms && !state.RemoveUnusedObjects && !state.PruneUnusedSensorParameters &&
-                !state.RemoveRedundantConstraints : state.Component == null) return 0;
+                !state.RemoveRedundantConstraints && !state.BakeConstantComponentProperties && !state.BakeConstantTransforms : state.Component == null) return 0;
             var watch = Stopwatch.StartNew();
             var avatar = context.AvatarRootObject;
             var settings = state.Component;
@@ -160,18 +164,37 @@ namespace Noname.AvatarTools.ObjectOptimization
                     changes += SensorParameterPruning.Apply(avatar, controllers, state, policy.Preserved, external, report.Messages);
                 var paths = services.ObjectPathRemapper.GetVirtualToRealPathMap();
                 var snapshot = new ObjectAnalysisSnapshot(avatar, entries, paths, state, policy.Preserved, shaders);
+                if (state.BakeConstantComponentProperties)
+                {
+                    changes += snapshot.Rewrite(() => ConstantComponentProperties.Apply(snapshot.Index, state,
+                        context.GetState<OptimizationPolicy>().AllowsInitialValueChanges, report.Messages,
+                        numericPolicy: context.GetState<OptimizationPolicy>(), snapshot: snapshot));
+                    changes += snapshot.Rewrite(() => ConstantResourceReferences.Apply(snapshot, state,
+                        context.GetState<OptimizationPolicy>().AllowsInitialValueChanges, report.Messages,
+                        context.GetState<Noname.AvatarTools.Meshes.MeshOptimizationState>()));
+                }
+                if (finalHierarchy && state.BakeConstantTransforms)
+                {
+                    changes += snapshot.Rewrite(() => ConstantTransformOutputs.Apply(snapshot.Index, state,
+                        context.GetState<OptimizationPolicy>().AllowsInitialValueChanges, report.Messages,
+                        numericPolicy: context.GetState<OptimizationPolicy>(), snapshot: snapshot));
+                }
                 if (finalHierarchy ? state.RemoveUnusedTransforms : settings.RemoveUnusedTransformOutputs)
                     changes += UnusedTransformOutputs.Apply(avatar, entries, paths, state, policy.Preserved, report.Messages, shaders, snapshot);
                 if (!finalHierarchy && (settings.BakeConstantTransforms || settings.BakeConstantVisibility))
                 {
-                    InvariantObjectCurves.Apply(avatar, entries, paths, state, analysis, report.Messages);
+                    InvariantObjectCurves.Apply(avatar, entries, paths, state, analysis, report.Messages,
+                        context.GetState<OptimizationPolicy>(), snapshot.Index);
                     snapshot.Invalidate();
                 }
                 if (finalHierarchy && state.RemoveRedundantConstraints)
                 {
+                    changes += snapshot.Rewrite(() => ConstantConstraintSettings.Apply(snapshot, state,
+                        context.GetState<OptimizationPolicy>().AllowsInitialValueChanges, report.Messages));
                     changes += ConstraintSourcePruning.Apply(avatar, entries, paths, state, policy.Preserved, report.Messages, shaders, snapshot);
                     changes += RedundantConstraints.Apply(avatar, entries, paths, state, policy.Preserved, report.Messages, shaders, snapshot);
-                    changes += ParentConstraintOptimization.Apply(avatar, entries, paths, state, policy.Preserved, report.Messages, shaders, snapshot);
+                    changes += ParentConstraintOptimization.Apply(avatar, entries, paths, state, policy.Preserved, report.Messages, shaders, snapshot,
+                        numericPolicy: context.GetState<OptimizationPolicy>());
                 }
                 // Defer collection until external generators and optimizers have consumed
                 // their authoring components. Their explicit renderer/bone references stay valid.

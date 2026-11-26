@@ -113,13 +113,17 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         }
 
         [Test]
-        public void ShaderMeshProofRetainsOversizedBuiltinFallbackWithoutInvalidPassQueries()
+        public void ShaderMeshProofInspectsBuiltinFallbackWithoutInvalidPassQueries()
         {
             var shader = Shader.Find("Legacy Shaders/Diffuse"); Assert.That(shader, Is.Not.Null);
             var sources = new ShaderPropertyUsage();
-            Assert.That(sources.MeshInputs.Issue(shader, false, BuildTarget.StandaloneWindows64), Does.Contain("unverified"));
-            Assert.That(sources.MeshInputs.PreprocessCalls, Is.LessThanOrEqualTo(1),
-                "A discovery probe cannot authorize an incomplete variant universe.");
+            var data = ShaderUtil.GetShaderData(shader);
+            int expected = Enumerable.Range(0, data.SubshaderCount).Sum(i => data.GetSubshader(i).PassCount);
+            var inventory = sources.GetPrograms(shader);
+            Assert.That(inventory.Passes.Count(p => p.Shader == shader), Is.EqualTo(expected),
+                "Built-in analysis must cover the complete native inventory, including fallback subshaders.");
+            Assert.That(inventory.Uncertain, Is.Null);
+            Assert.That(sources.MeshInputs.Issue(shader, false, BuildTarget.StandaloneWindows64), Is.Null);
         }
 
         [TestCase(BuildTarget.StandaloneWindows64)] [TestCase(BuildTarget.Android)] [TestCase(BuildTarget.iOS)]

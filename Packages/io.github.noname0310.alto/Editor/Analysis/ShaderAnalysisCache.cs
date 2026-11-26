@@ -16,21 +16,22 @@ namespace Noname.AvatarTools.Analysis
     {
         private const int Format = 1;
         private const int MaximumRecordBytes = 1024 * 1024;
-        private const long MaximumDiskBytes = 128L * 1024 * 1024;
-        private const int MaximumFiles = 16384;
         private static readonly object[] Gates = Enumerable.Range(0, 64).Select(_ => new object()).ToArray();
         private static readonly Lazy<ShaderAnalysisCache> SharedCache = new(() =>
             new ShaderAnalysisCache(Path.GetFullPath("Library/ALTO/ShaderAnalysis"),
-                typeof(ShaderAnalysisCache).Module.ModuleVersionId.ToString("N")));
+                AnalysisCacheContracts.CompiledInputs, AnalysisCacheDiskBudget.Shared));
         internal static ShaderAnalysisCache Shared => SharedCache.Value;
         private readonly string directory, analyzer;
-        private int writes;
+        private readonly AnalysisCacheDiskBudget diskBudget;
         private long hits, misses;
         internal long Hits => Interlocked.Read(ref hits);
         internal long Misses => Interlocked.Read(ref misses);
 
-        internal ShaderAnalysisCache(string directory, string analyzer)
-        { this.directory = Path.GetFullPath(directory); this.analyzer = analyzer; }
+        internal ShaderAnalysisCache(string directory, string analyzer, AnalysisCacheDiskBudget diskBudget = null)
+        {
+            this.directory = Path.GetFullPath(directory); this.analyzer = analyzer;
+            this.diskBudget = diskBudget ?? new AnalysisCacheDiskBudget(new[] { this.directory });
+        }
 
         internal string Key(string source, string entry, ShaderType stage, string compiler)
         {
@@ -68,6 +69,7 @@ namespace Noname.AvatarTools.Analysis
                             inputs[i] = new D3DShaderInputs.Input(name, mask, index, kind);
                         }
                         if (stream.Position != stream.Length) throw new InvalidDataException();
+                        diskBudget.Used(RecordPath(key));
                         Interlocked.Increment(ref hits); return (inputs, null);
                     }
                     catch (Exception exception) when (ReadFailure(exception)) { }
@@ -125,25 +127,14 @@ namespace Noname.AvatarTools.Analysis
                     writer.Write(payload.Length); writer.Write(payload);
                 }
                 // Readers see the complete old or new record, never a partial write.
-                if (File.Exists(path)) File.Replace(temporary, path, null);
+                var previous = new FileInfo(path); long replacedBytes = previous.Exists ? previous.Length : 0;
+                if (previous.Exists) File.Replace(temporary, path, null);
                 else File.Move(temporary, path);
                 temporary = null;
-                if (Interlocked.Increment(ref writes) % 256 == 1) Trim();
+                diskBudget.Stored(new FileInfo(path).Length, replacedBytes);
             }
             catch (Exception exception) when (ReadFailure(exception)) { }
             finally { if (temporary != null) try { File.Delete(temporary); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
-        }
-
-        private void Trim()
-        {
-            var files = new DirectoryInfo(directory).GetFiles("*.bin").OrderByDescending(f => f.LastWriteTimeUtc).ToArray();
-            long total = 0;
-            for (int i = 0; i < files.Length; i++)
-            {
-                total += files[i].Length;
-                if (i >= MaximumFiles || total > MaximumDiskBytes)
-                    try { files[i].Delete(); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-            }
         }
 
         private string RecordPath(string key)
@@ -166,6 +157,7 @@ namespace Noname.AvatarTools.Analysis
             if (!Directory.Exists(cache.directory)) return;
             // Delete only our flat records, never recursively delete a caller's path.
             foreach (string file in Directory.GetFiles(cache.directory, "*.bin")) File.Delete(file);
+            cache.diskBudget.InvalidateSize();
         }
     }
 }

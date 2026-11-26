@@ -12,6 +12,9 @@ namespace Noname.AvatarTools
         [Tooltip("Bake supported static lilToon main color adjustments and secondary textures into a generated main texture on PC and mobile. Animated or unsupported settings are retained. Uses lilToon's texture baker; filtering, mipmaps and shader fallback appearance can differ from runtime composition.")]
         public bool BakeLilToonMainTextures;
 
+        [Tooltip("Replace verified immutable numeric shader inputs with shared constants after all material processing. Every use of a shader must agree on each value; animated or externally written inputs remain uniforms. Produces one replacement per shader, without per-material shader permutations. Unsupported source contracts and mobile shader allowlists remain protected.")]
+        public bool BakeConstantShaderInputs;
+
         [Tooltip("Remove saved properties and texture references only when no shader branch, dependency or VRChat fallback can use them. Source assets and Material Variants are retained.")]
         public bool RemoveUnusedSavedProperties = true;
 

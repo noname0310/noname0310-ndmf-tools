@@ -50,10 +50,10 @@ namespace Noname.AvatarTools.Analysis
                 File(document, included, guard | once.Dependencies, depth + 1);
                 state.Join(skipped, included, once.Dependencies); return;
             }
-            int offset = state.LineOffset; string logicalFile = state.LogicalFile;
-            state.LineOffset = 0; state.LogicalFile = document.Id;
-            Execute(document.Body, document.Id, state, guard, depth);
-            state.LineOffset = offset; state.LogicalFile = logicalFile;
+            var locations = state.Locations;
+            state.Locations = PpLocations.Start(document.Id);
+            try { Execute(document.Body, document.Id, state, guard, depth); }
+            finally { state.Locations = locations; }
         }
         private void Emit(PpToken[] tokens, BigInteger guard)
         {
@@ -102,29 +102,49 @@ namespace Noname.AvatarTools.Analysis
                     case "pragma":
                         Pragma(tokens, file, state, guard); break;
                     case "line":
-                        var lines = Expand(tokens, state);
-                        if (lines.Length != 1 || lines[0].Length < 1 || lines[0].Length > 2 ||
-                            !int.TryParse(lines[0][0].Text, NumberStyles.None, CultureInfo.InvariantCulture, out int line) || line < 1 ||
-                            lines[0].Length == 2 && lines[0][1].Kind != PpTokenKind.String)
-                            throw new PpException("Unresolved #line location");
-                        if (guard != BigInteger.Zero || lines[0].Any(t => t.Dependencies != BigInteger.Zero))
-                            throw new PpException("Conditional #line location requires separate compiler variants");
-                        state.LineOffset = line - tokens[0].Line - 1;
-                        if (lines[0].Length == 2) state.LogicalFile = lines[0][1].Text.Substring(1, lines[0][1].Text.Length - 2);
+                        Line(tokens, state);
                         break;
                     case "error": throw new PpException("Reachable #error: " + PpLexer.Spell(tokens));
                     default: throw new PpException("Unsupported preprocessor directive: " + instruction.Directive);
                 }
             }
         }
+        private void Line(PpToken[] tokens, PpState state)
+        {
+            PpLocations joined = null;
+            foreach (var operand in Expand(tokens, state))
+            {
+                if (operand.Length < 1 || operand.Length > 2 || operand[0].Kind != PpTokenKind.Number ||
+                    !int.TryParse(operand[0].Text, NumberStyles.None, CultureInfo.InvariantCulture, out int line) || line < 0 ||
+                    operand.Length == 2 && (operand[1].Kind != PpTokenKind.String || !operand[1].Text.StartsWith("\"", StringComparison.Ordinal)))
+                    throw new PpException("Unresolved #line location");
+                string filename = operand.Length == 2 ? operand[1].Text.Substring(1, operand[1].Text.Length - 2) : null;
+                // Escaped filename decoding is compiler-specific. Preserve the
+                // line fact but do not invent a logical path for slice matching
+                // or __FILE__. Plain filenames have one verified representation.
+                // The native models disagree on continued operands: FXC anchors
+                // at the last operand, Unity's caching preprocessing at the first.
+                // Record the distinction so abstract queries execute both models.
+                // A trailing spliced blank line still advances the following line.
+                int first = tokens[0].Line, last = tokens[tokens.Length - 1].Line;
+                if (first != last) state.Budget.DialectEffects |= PpDialectEffects.ContinuedLineDirective;
+                int anchor = dialect == PpDialect.UnityCaching ? first : last;
+                var next = state.Locations.Remap((long)line - anchor - 1, filename, operand.Length == 2,
+                    operand[0].Dependencies, operand.Length == 2 ? operand[1].Dependencies : BigInteger.Zero,
+                    filename == null || !filename.Contains('\\'));
+                // A surrounding unknown branch joins at its own control boundary.
+                // Unconditional overwrites therefore discard old location guards.
+                joined = joined == null ? next : PpLocations.Join(joined, next, BigInteger.Zero);
+            }
+            state.Locations = joined ?? throw new PpException("Empty #line expansion");
+        }
         private void Text(PpInstruction instruction, PpState state, BigInteger guard)
         {
             long started = System.Diagnostics.Stopwatch.GetTimestamp();
             var tokens = instruction.Tokens;
-            string file = string.IsNullOrEmpty(state.LogicalFile) ? rootFile : state.LogicalFile;
             var cache = reuseTextProjection && projection != null && tokens.Length >= 32
                 ? instruction.ProjectionCache ??= new PpTextProjectionCache() : null;
-            if (cache != null && cache.TrySkip(projectionSignature, file, state))
+            if (cache != null && cache.TrySkip(projectionSignature, state, rootFile))
             { state.Budget.TextTicks += System.Diagnostics.Stopwatch.GetTimestamp() - started; return; }
             var observer = state.ObserveMacroRead;
             Dictionary<string, PpBinding> reads = cache == null ? null : new(StringComparer.Ordinal);
@@ -135,9 +155,7 @@ namespace Noname.AvatarTools.Analysis
             };
             try
             {
-                var demand = projection == null ? null : new PpProjection(state, projection,
-                    t => state.LineOffset == 0 && t.File == file ? t :
-                        new PpToken(t.Text, t.Kind, file, t.Line + state.LineOffset, t.Space, t.Dependencies, t.Hidden));
+                var demand = projection == null ? null : new PpProjection(state, projection, state.Locations, rootFile);
                 foreach (var item in Chunks(tokens, state))
                 {
                     if (item.Count == 1 && demand != null && !demand.MayContribute(tokens[item.Start], item.Next)) continue;
@@ -151,7 +169,7 @@ namespace Noname.AvatarTools.Analysis
                         first.Text != "__LINE__" && first.Text != "__FILE__" && first.Text != "__COUNTER__") Emit(chunk, guard);
                     else foreach (var output in Expand(chunk, state)) Emit(output, guard);
                 }
-                if (reads != null) cache.Add(projectionSignature, file, state.LineOffset, reads, remaining - state.Budget.Remaining);
+                if (reads != null) cache.Add(projectionSignature, state.Locations, reads, remaining - state.Budget.Remaining, rootFile);
             }
             finally
             {
@@ -190,7 +208,7 @@ namespace Noname.AvatarTools.Analysis
             if (arm.Directive == "else") condition = new PpValue(1);
             else if (arm.Directive == "ifdef" || arm.Directive == "ifndef")
             {
-                IdentifierOperand(arm.Condition, arm.Directive); condition = Defined(state.Get(arm.Condition[0].Text, true));
+                IdentifierOperand(arm.Condition, arm.Directive); condition = Defined(state, arm.Condition[0].Text);
                 if (arm.Directive == "ifndef" && condition.Bits.HasValue) condition = new PpValue(condition.Truth.Value ? 0UL : 1UL, condition.Dependencies);
             }
             else
@@ -236,6 +254,16 @@ namespace Noname.AvatarTools.Analysis
         {
             bool? value = binding.Presence;
             return new PpValue(value.HasValue ? value.Value ? 1UL : 0UL : null, binding.Dependencies);
+        }
+        private static PpValue Defined(PpState state, string name)
+        {
+            var binding = state.Get(name, true);
+            // Availability of compiler builtins, especially __COUNTER__, differs
+            // between supported preprocessors. An absent authored macro is not a
+            // proof that the native builtin is undefined. Explicit undef/define
+            // writes remain exact through the ordinary binding presence fact.
+            return BuiltinName(name) && !state.Macros.ContainsKey(name)
+                ? new PpValue(null, binding.Dependencies) : Defined(binding);
         }
         private void Include(PpToken[] tokens, string file, PpState state, BigInteger guard, int depth)
         {
@@ -315,18 +343,20 @@ namespace Noname.AvatarTools.Analysis
                 {
                     if (token.Text == "__COUNTER__") NonlocalCounterObserved = true;
                     bool overridden = state.Macros.ContainsKey(token.Text);
-                    if (!overridden && abstractLocations && (token.Text == "__LINE__" || token.Text == "__FILE__" || token.Text == "__COUNTER__"))
+                    if (!overridden && abstractLocations && BuiltinName(token.Text))
                     {
                         // Imported ShaderLab wrappers and compiler-injected headers
                         // affect locations/counters. Do not guess their initial state.
                         BigInteger dependencies = token.Dependencies;
+                        if (token.Text == "__LINE__") dependencies |= state.Locations.LineDependencies;
+                        if (token.Text == "__FILE__") dependencies |= state.Locations.FileDependencies;
                         if (token.Text == "__COUNTER__")
                         { dependencies |= state.Macros.Values.Aggregate(BigInteger.Zero, (d, b) => d | b.Dependencies); }
                         return new PpToken(token.Text, PpTokenKind.Symbol, token.File, token.Line, token.Space, dependencies);
                     }
-                    if (!overridden && token.Text == "__LINE__") return Number(token.Line + state.LineOffset, token);
-                    if (!overridden && token.Text == "__FILE__") return new PpToken("\"" + (state.LogicalFile ?? token.File).Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"", PpTokenKind.String,
-                        token.File, token.Line, token.Space, token.Dependencies);
+                    if (!overridden && token.Text == "__LINE__") return Number(state.Locations.ReadLine(token), token.Taint(state.Locations.LineDependencies));
+                    if (!overridden && token.Text == "__FILE__") return new PpToken("\"" + state.Locations.ReadFile(token).Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"", PpTokenKind.String,
+                        token.File, token.Line, token.Space, token.Dependencies | state.Locations.FileDependencies);
                     if (!overridden && token.Text == "__COUNTER__")
                     {
                         var result = new PpToken(counter.Bits?.ToString(CultureInfo.InvariantCulture) ?? "<counter>", counter.Bits.HasValue ? PpTokenKind.Number : PpTokenKind.Symbol,
@@ -340,7 +370,7 @@ namespace Noname.AvatarTools.Analysis
                 }
                 try
                 {
-                    var expanded = new PpExpander(Select, Builtin, dialect, condition ? name => Defined(state.Get(name, true)) : null, state.Budget).Expand(tokens).ToArray();
+                    var expanded = new PpExpander(Select, Builtin, dialect, condition ? name => Defined(state, name) : null, state.Budget).Expand(tokens).ToArray();
                     if (pending == null)
                     {
                         var counterDependencies = counter.Dependencies;
@@ -374,7 +404,8 @@ namespace Noname.AvatarTools.Analysis
             for (int i = 0; i < result.Length; i++) result[i] = outcomes[i].Tokens;
             return result;
         }
-        private static PpToken Number(int value, PpToken site) => new(value.ToString(CultureInfo.InvariantCulture), PpTokenKind.Number,
+        private static PpToken Number(long value, PpToken site) => new(value.ToString(CultureInfo.InvariantCulture), PpTokenKind.Number,
             site.File, site.Line, site.Space, site.Dependencies);
+        internal static bool BuiltinName(string name) => name == "__LINE__" || name == "__FILE__" || name == "__COUNTER__";
     }
 }

@@ -172,7 +172,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         [TestCase("Constant", 0f)] [TestCase("Constant", 1f)]
         [TestCase("PartialProof", 0f)] [TestCase("PartialProof", 1f)]
         [TestCase("Sliced", 0f)] [TestCase("LocalKeyword", 0f)]
-        public void ShaderUnitPipelineKeepsSerialProofsAndLogicalBudgets(string fixture, float value)
+        public void ShaderUnitPipelineKeepsSerialProofsAndRequestCounts(string fixture, float value)
         {
             RequireD3DAnalysis();
             var material = Track(new Material(MeshInputShader(fixture)));
@@ -192,7 +192,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
 
         [TestCase(127, 0)] [TestCase(128, 0)]
         [TestCase(0, 2047)] [TestCase(0, 2048)]
-        public void ShaderUnitPipelineKeepsTheSameBudgetExhaustionBoundary(int compiles, int preprocessing)
+        public void ShaderUnitPipelineCompletesCoverageAfterEarlierShaderRequests(int compiles, int preprocessing)
         {
             RequireD3DAnalysis();
             var material = Track(new Material(MeshInputShader("PartialProof")));
@@ -209,7 +209,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 typeof(ShaderMeshInputs).GetProperty("PreprocessCalls", flags).SetValue(inputs, preprocessing);
             }
             string expected = serial.Issue(material, renderer, index, false, BuildTarget.StandaloneWindows64);
-            Assert.That(expected, Does.StartWith("unverified shader inputs:"));
+            Assert.That(expected, Is.Null, "Aggregate work counters are not evidence that a later shader is unsafe.");
             Assert.That(pipeline.Issue(material, renderer, index, false, BuildTarget.StandaloneWindows64), Is.EqualTo(expected));
             Assert.That(pipeline.PreprocessCalls, Is.EqualTo(serial.PreprocessCalls));
             Assert.That(pipeline.CompileCalls, Is.EqualTo(serial.CompileCalls));

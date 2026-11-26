@@ -16,6 +16,7 @@ namespace Noname.AvatarTools.AnimatorOptimization
             EditorGUILayout.PropertyField(serializedObject.FindProperty("SimplifyConstantBlendTrees"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("MergeSameWeightClips"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("BakeConstantMaterialProperties"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("BakeConstantMaterialSlots"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("RemoveUnusedMaterialProperties"));
             serializedObject.ApplyModifiedProperties();
             if (((ALTOTraceAndOptimizeAnimator)target).FindDescriptor() == null)
@@ -25,7 +26,7 @@ namespace Noname.AvatarTools.AnimatorOptimization
                 "Original controllers, animation clips and materials are preserved.", MessageType.Info);
             EditorGUILayout.HelpBox("Unsupported behaviours and synchronized layers disable graph analysis. " +
                 "Structural Blend Tree rewrites require static clips, Write Defaults On and compatible weights. " +
-                "Material baking supports Float/Range properties; Color and Vector channels are preserved. " +
+                "Material baking supports Float/Range values and proven complete Color/Vector/texture-transform groups. Partial groups remain animated. " +
                 "Unused material tracks are removed only as complete properties after checking shader sources, fallbacks and material swaps. " +
                 "Dead state logic can simplify dynamic trees when their implicit defaults are preserved. " +
                 "Layer indices and public parameter definitions are retained. Optimization counts are printed in the Console.", MessageType.None);

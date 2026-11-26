@@ -75,6 +75,7 @@ namespace Noname.AvatarTools.Occlusion
                 {
                     var mesh = target.Masks.Remove(target.Source, target.RemovedTriangles);
                     ObjectRegistry.RegisterReplacedObject(target.Source, mesh);
+                    context.GetState<OptimizationState>().Provenance.RecordMeshRewrite(target.Renderer, target.Source, mesh);
                     context.AssetSaver.SaveAsset(mesh); target.Renderer.sharedMesh = mesh;
                 }
             }

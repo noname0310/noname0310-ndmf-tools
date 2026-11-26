@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEditor.Rendering;
 using UnityEngine.Rendering;
@@ -16,6 +17,53 @@ namespace Noname.AvatarTools.Analysis
         internal readonly BoundedAnalysisCache<ShaderTextKey, ShaderConstantInputs.Plan> Declarations = new(256, 32 * 1024 * 1024);
         internal readonly BoundedAnalysisCache<(ShaderTextKey, string), (string Code, int Count)> Specializations = new(256, 32 * 1024 * 1024);
         private readonly BoundedAnalysisCache<ShaderTextKey, ShaderProgramInspection> inspections = new(512, 32 * 1024 * 1024);
+        private readonly BoundedAnalysisCache<ShaderTextKey, ShaderPropertyUsage.SourceSummary> sourceFacts = new(512, 32 * 1024 * 1024);
+        private readonly BoundedAnalysisCache<ShaderTextKey, ShaderPropertyUsage.LabSummary> labFacts = new(128, 32 * 1024 * 1024);
+        private readonly BoundedAnalysisCache<ShaderTextKey, string> commentFree = new(512, 32 * 1024 * 1024);
+        private readonly BoundedAnalysisCache<ShaderTextKey, List<List<string>>> nativeImports = new(128, 32 * 1024 * 1024);
+        internal int SourceScans { get; private set; }
+        internal int LabScans { get; private set; }
+
+        internal List<List<string>> NativeImports(string source)
+        {
+            ShaderTextKey key = source;
+            if (nativeImports.TryGetValue(key, out var previous)) return previous;
+            using var cost = AnalysisCost.Measure("Shader discovery/import slot parsing");
+            var result = ShaderPropertyUsage.NativeImportSlots(source);
+            int size = source.Length * 2;
+            if (result != null)
+                foreach (var sub in result) foreach (string name in sub) size += 16 + (name?.Length ?? 0) * 2;
+            nativeImports.Add(key, result, size);
+            return result;
+        }
+
+        internal string WithoutComments(string source)
+        {
+            ShaderTextKey key = source;
+            if (commentFree.TryGetValue(key, out var previous)) return previous;
+            using var cost = AnalysisCost.Measure("Shader discovery/comment removal");
+            string result = ShaderPropertyUsage.StripComments(source);
+            commentFree.Add(key, result, (source.Length + result.Length) * 2);
+            return result;
+        }
+
+        internal ShaderPropertyUsage.SourceSummary SourceFacts(string source)
+        {
+            ShaderTextKey key = source;
+            if (sourceFacts.TryGetValue(key, out var previous)) return previous;
+            using var cost = AnalysisCost.Measure("Shader lexical summary");
+            var facts = ShaderPropertyUsage.SourceSummary.Get(source); SourceScans++;
+            sourceFacts.Add(key, facts, source.Length * 2 + facts.Cost); return facts;
+        }
+
+        internal ShaderPropertyUsage.LabSummary LabFacts(string source)
+        {
+            ShaderTextKey key = source;
+            if (labFacts.TryGetValue(key, out var previous)) return previous;
+            using var cost = AnalysisCost.Measure("ShaderLab summary");
+            var facts = ShaderPropertyUsage.LabSummary.Get(source); LabScans++;
+            labFacts.Add(key, facts, source.Length * 2 + facts.Cost); return facts;
+        }
         private sealed class NativeProgram
         {
             internal readonly ShaderTextKey Source;

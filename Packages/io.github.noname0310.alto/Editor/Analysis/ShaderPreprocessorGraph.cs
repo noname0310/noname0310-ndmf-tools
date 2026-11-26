@@ -63,7 +63,8 @@ namespace Noname.AvatarTools.Analysis
                 }
                 context = ShaderAnalysisCache.Digest(data.ToArray());
             }
-            string key = cache.Key(kind, source.Id, ContentFactCache.TextDigest(source.Text), query.Signature, demand?.ContentSignature, context);
+            string key = cache.Key(kind, "conditional-source-locations-v3", source.Id, ContentFactCache.TextDigest(source.Text),
+                query.Signature, demand?.ContentSignature, context);
             if (cache.TryRead(kind, key, reader =>
             {
                 ShaderSourceTrace.Validate(reader, includes);
@@ -129,6 +130,11 @@ namespace Noname.AvatarTools.Analysis
                 else names.ExceptWith(locallyDefined.Where(n => !IsCompilerInput(n)));
                 var keywords = (keywordNames ?? Array.Empty<string>()).ToHashSet(StringComparer.Ordinal);
                 names.UnionWith(keywords);
+                // These are interpreter builtins, not authored macro overrides.
+                // Seeding an abstract macro would hide their mutable location or
+                // counter dependencies. Explicit source/definition writes below
+                // still override them through the ordinary macro environment.
+                names.RemoveWhere(PpInterpreter.BuiltinName);
                 if (definitions != null) names.ExceptWith(definitions.Keys);
                 var ordered = new List<string>(); var inputs = new Dictionary<string, PpBinding>(StringComparer.Ordinal); var state = new PpState();
                 PpBinding Input(string name)
@@ -183,7 +189,7 @@ namespace Noname.AvatarTools.Analysis
                         if (token.Kind == PpTokenKind.Identifier || token.Kind == PpTokenKind.Symbol)
                         {
                             result.CodeDependencies.Add(token.Text);
-                            hasInput |= query.MatchesToken(token.Text);
+                            hasInput |= query.MayDeclareToken(token.Text);
                         }
                     }
                 }

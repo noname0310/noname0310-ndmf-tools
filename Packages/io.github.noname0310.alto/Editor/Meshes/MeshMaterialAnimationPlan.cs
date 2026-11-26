@@ -23,8 +23,9 @@ namespace Noname.AvatarTools.Meshes
             a.Count == b.Count && a.All(p => b.TryGetValue(p.Key, out var signal) && p.Value.Equals(signal));
 
         internal static MeshMaterialAnimationPlan Create(IReadOnlyList<MeshMergeCandidate> group, MeshMergePolicy policy = null,
-            bool validateDefaults = true)
+            bool validateDefaults = true, MeshMergePlanning planning = null)
         {
+            using var cost = AnalysisCost.Measure("Mesh planning/material contract");
             var result = new MeshMaterialAnimationPlan();
             if (group.Count == 0) return result;
             var destination = group[0];
@@ -33,9 +34,11 @@ namespace Noname.AvatarTools.Meshes
             // in every reader proof. Freezing only the currently queried property
             // would allow one newly introduced writer to invalidate another proof.
             var changingUniforms = new HashSet<string>(properties.Where(p => p != null), StringComparer.Ordinal);
+            string writers = planning == null ? null : string.Join("\n", changingUniforms.OrderBy(p => p, StringComparer.Ordinal));
             var prepared = new HashSet<MeshMergeCandidate>();
             bool Reads(MeshMergeCandidate candidate, string property)
             {
+                if (planning != null) return planning.Reads(candidate, property, properties, changingUniforms, writers);
                 var shaders = candidate.Shaders ??= new ShaderPropertyUsage();
                 var materials = candidate.PossibleMaterials.ToArray();
                 if (prepared.Add(candidate))
@@ -47,7 +50,7 @@ namespace Noname.AvatarTools.Meshes
             foreach (string property in properties)
             {
                 if (property == null) { result.Issue = "unsupported material animation binding"; return result; }
-                var profiles = group.ToDictionary(c => c, c => Profile(c, property));
+                var profiles = group.ToDictionary(c => c, c => planning?.Profile(c, property) ?? Profile(c, property));
                 bool identical = group.All(c => SameProfile(profiles[destination], profiles[c]));
                 // Preserve the established identical-profile path without needing
                 // a shader absence proof. Only differences require reader analysis.

@@ -85,7 +85,9 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         {
             var random = new Random(5376);
             string alphabet = "ab_X09 ;{}()[]+/*#=<>\\\"'\r\n\t\u00a0\u0300\u200c\u200d\u2028\u03b1\ud800\udfff";
-            var query = new ShaderInputQuery(new ShaderInputQuery.Semantic("CUSTOM", 3));
+            // Compare tokenization independently of indexed declaration coverage:
+            // source arrays can span several indices from one semantic declaration.
+            var query = new ShaderInputQuery(new ShaderInputQuery.Semantic("CUSTOM"));
             for (int test = 0; test < 1500; test++)
             {
                 var text = new StringBuilder();
@@ -105,7 +107,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         [Test]
         public void ShaderInspectionPreservesEveryUnicodeBoundaryCharacter()
         {
-            var query = new ShaderInputQuery(new ShaderInputQuery.Semantic("CUSTOM", 3));
+            var query = new ShaderInputQuery(new ShaderInputQuery.Semantic("CUSTOM"));
             for (int value = char.MinValue; value <= char.MaxValue; value++)
             {
                 string before = ";" + (char)value + "CUSTOM3;";

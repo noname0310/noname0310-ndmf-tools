@@ -5,6 +5,7 @@ using System.Linq;
 using nadena.dev.ndmf;
 using nadena.dev.ndmf.animator;
 using Noname.AvatarTools.Build;
+using Noname.AvatarTools.BlendShapeOptimization;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -217,6 +218,7 @@ namespace Noname.AvatarTools.MeshReduction
                     if (request.Renderer is SkinnedMeshRenderer skin)
                     {
                         var weights = Enumerable.Range(0, request.Source.blendShapeCount).Select(skin.GetBlendShapeWeight).ToArray();
+                        context.GetState<OptimizationState>().Provenance.RecordMeshRewrite(skin, request.Source, request.Result);
                         skin.sharedMesh = request.Result;
                         for (int i = 0; i < weights.Length; i++) skin.SetBlendShapeWeight(i, weights[i]);
                     }

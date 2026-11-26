@@ -12,7 +12,8 @@ namespace Noname.AvatarTools.Analysis
 {
     // An absence proof, not a shader compiler or an active-variant approximation. All source
     // branches, includes, passes, UsePass and fallback dependencies contribute possible names.
-    // A declaration counts as usage. Missing/generated-only source keeps the binding alive.
+    // Imported programs do not require editable source. Fixed-function state and
+    // program availability are separate proofs; a declaration counts as usage.
     internal sealed partial class ShaderPropertyUsage
     {
         internal sealed class Programs
@@ -23,9 +24,11 @@ namespace Noname.AvatarTools.Analysis
             internal readonly HashSet<string> ShaderLabIdentifiers = new(StringComparer.Ordinal);
             internal readonly HashSet<string> ShaderLabStateIdentifiers = new(StringComparer.Ordinal);
             internal bool ShaderLabStatesComplete = true;
+            internal string ShaderLabStateIssue;
             internal readonly HashSet<string> NativeDependencyPaths = new(StringComparer.Ordinal);
             internal readonly HashSet<Shader> NativeShaderDependencies = new();
             internal bool NativeDependenciesComplete = true;
+            internal string DegenerateRasterizationIssue;
             internal string Uncertain;
         }
 
@@ -37,8 +40,10 @@ namespace Noname.AvatarTools.Analysis
             internal readonly Dictionary<string, Regex> PastePatterns = new(StringComparer.Ordinal);
             internal bool TokenPasting;
             internal string Uncertain;
+            internal string FixedFunctionUncertain;
 
-            internal bool MayUse(string property) => Uncertain != null || MayExpandName(property);
+            internal bool MayUse(string property) => FixedFunctionUncertain != null || MayUseProgramIdentifier(property);
+            internal bool MayUseProgramIdentifier(string identifier) => Uncertain != null || MayExpandName(identifier);
 
             internal bool MayExpandName(string property)
             {
@@ -73,11 +78,15 @@ namespace Noname.AvatarTools.Analysis
         private readonly Dictionary<Shader, Programs> programs = new();
         private readonly Dictionary<(Shader, string, BuildTarget), bool> propertyReads = new();
         private readonly Dictionary<string, string> files = new(StringComparer.Ordinal);
+        // A ShaderLab snapshot belongs to the shader, not its asset container.
+        // Multiple generated shaders may share one .asset file or include origin.
+        private readonly Dictionary<Shader, string> shaderSources = new();
         private readonly Dictionary<(string, string), PpDocument> parsedPreprocessorDocuments = new();
         private readonly Dictionary<(Shader, Shader, string, string), ShaderPreprocessorGraph.Source[]> resolvedIncludes = new();
         private readonly Dictionary<(Shader Owner, ShaderTextKey Source, string Query, string Context, string IncludeSearch), ShaderPreprocessorGraph> preprocessorGraphs = new();
         private readonly Dictionary<(Shader, int, int, bool), ShaderData.Pass> passSnapshots = new();
         private readonly Dictionary<ShaderData.Pass, string> passSources = new();
+        private readonly Dictionary<Shader, ShaderImportedMetadata> importedMetadata = new();
         private readonly Dictionary<(BuildTarget, ShaderCompilerPlatform, ShaderType, UnityEngine.Rendering.GraphicsTier?), Dictionary<string, string>> preprocessorContexts = new();
         internal int FilesRead => files.Count;
         internal double PreprocessorGraphMilliseconds { get; private set; }
@@ -103,8 +112,9 @@ namespace Noname.AvatarTools.Analysis
             if (propertyReads.TryGetValue((shader, property, target), out bool cached)) return cached;
             bool Inspect()
             {
-                if (!Get(shader).MayUse(property)) return false;
                 var program = GetPrograms(shader);
+                if (!program.ShaderLabStatesComplete) return true;
+                if (!Get(shader).MayUse(property)) return false;
                 // ShaderLab render states and declarations are part of the native
                 // material contract, independently of HLSL program references.
                 if (program.Uncertain != null || program.ShaderLabIdentifiers.Contains(property) || program.Passes.Count == 0) return true;
@@ -136,7 +146,8 @@ namespace Noname.AvatarTools.Analysis
             foreach (string property in properties.Distinct(StringComparer.Ordinal))
             {
                 if (string.IsNullOrEmpty(property) || !Identifier.IsMatch(property) || propertyReads.ContainsKey((shader, property, target))) continue;
-                if (!proof.MayUse(property)) propertyReads[(shader, property, target)] = false;
+                if (!program.ShaderLabStatesComplete) propertyReads[(shader, property, target)] = true;
+                else if (!proof.MayUse(property)) propertyReads[(shader, property, target)] = false;
                 else if (program.Uncertain != null || program.ShaderLabIdentifiers.Contains(property) || program.Passes.Count == 0)
                     propertyReads[(shader, property, target)] = true;
                 else pending.Add(property);
@@ -168,9 +179,8 @@ namespace Noname.AvatarTools.Analysis
             return false;
         }
 
-        private static void ReadShaderLabIdentifiers(string source, ISet<string> names, bool skipProperties = false)
+        private static void ReadShaderLabIdentifiers(IReadOnlyList<PpToken> tokens, ISet<string> names, bool skipProperties = false)
         {
-            var tokens = PpLexer.Lex(source);
             for (int i = 0; i < tokens.Count; i++)
             {
                 var token = tokens[i];
@@ -216,7 +226,7 @@ namespace Noname.AvatarTools.Analysis
 
         internal static string ProgramSourceId(Shader owner)
         {
-            string physical = PhysicalPath(AssetDatabase.GetAssetPath(owner));
+            string physical = ShaderBuildSource.PhysicalPath(owner);
             return Path.Combine(physical != null ? Path.GetDirectoryName(physical) :
                 Path.Combine(EditorApplication.applicationContentsPath, "CGIncludes"), "__ALTO_PASS_SOURCE__");
         }
@@ -248,7 +258,7 @@ namespace Noname.AvatarTools.Analysis
             string passSource = PassSource(pass);
             var key = (owner, passSource, query.Signature + (demand == null ? "" : "|demand:" + demand.Signature), context, includeSearch);
             if (preprocessorGraphs.TryGetValue(key, out var previous)) return previous;
-            string physical = PhysicalPath(AssetDatabase.GetAssetPath(owner));
+            string physical = ShaderBuildSource.PhysicalPath(owner);
             string directory = physical != null ? Path.GetDirectoryName(physical) :
                 Path.Combine(EditorApplication.applicationContentsPath, "CGIncludes");
             var source = new ShaderPreprocessorGraph.Source(ProgramSourceId(owner), passSource);
@@ -258,7 +268,7 @@ namespace Noname.AvatarTools.Analysis
                 if (resolvedIncludes.TryGetValue(includeKey, out var previousSources)) return previousSources;
                 var roots = program.IncludeDirectories.Concat(new[] { Path.GetDirectoryName(origin), directory });
                 var paths = roots.Where(p => !string.IsNullOrEmpty(p)).Select(p => Path.GetFullPath(Path.Combine(p, include)))
-                    .Concat(new[] { PhysicalPath(include) }).Where(p => p != null && File.Exists(p)).Distinct(StringComparer.Ordinal).ToArray();
+                    .Concat(new[] { IncludePhysicalPath(include) }).Where(p => p != null && SourceExists(p)).Distinct(StringComparer.Ordinal).ToArray();
                 var result = paths.Select(path =>
                 {
                     if (!files.TryGetValue(path, out string text))
@@ -285,10 +295,13 @@ namespace Noname.AvatarTools.Analysis
         {
             if (shader == null) return new Proof { Uncertain = "missing shader" };
             if (cache.TryGetValue(shader, out var cached)) return cached;
+            using var discoveryCost = AnalysisCost.Measure("Shader source and pass discovery");
             var proof = new Proof(); cache.Add(shader, proof);
             var sourcePrograms = new Programs(); programs.Add(shader, sourcePrograms);
             var seenShaders = new HashSet<Shader>();
             var requiredPasses = new Dictionary<Shader, HashSet<string>>();
+            var rasterStates = new Dictionary<Shader, ShaderRasterizationState>();
+            var importedStates = new Dictionary<Shader, ShaderImportedMetadata>();
             var seenFiles = new HashSet<string>(StringComparer.Ordinal);
             var directories = new HashSet<string>(StringComparer.Ordinal);
             var passSources = new List<(string Source, string Directory)>();
@@ -297,34 +310,26 @@ namespace Noname.AvatarTools.Analysis
             string Read(string path)
             {
                 sourcePrograms.NativeDependencyPaths.Add(path);
-                if (files.TryGetValue(path, out var source)) return StripComments(source);
+                if (files.TryGetValue(path, out var source)) return Artifacts.WithoutComments(source);
                 if (files.Count >= 512 || new FileInfo(path).Length > 4 * 1024 * 1024)
                     throw new InvalidOperationException("shader source analysis limit reached");
-                source = File.ReadAllText(path); files.Add(path, source); return StripComments(source);
+                source = File.ReadAllText(path); files.Add(path, source); return Artifacts.WithoutComments(source);
             }
             void Scan(string text, string directory)
             {
-                if (UntrackedInclude.IsMatch(text)) sourcePrograms.NativeDependenciesComplete = false;
-                foreach (Match token in Tokens.Matches(text))
-                    if (token.Value[0] != '"' && token.Value[0] != '\'')
-                    {
-                        proof.Tokens.Add(token.Value);
-                        if (token.Value == "__TIME__" || token.Value == "__DATE__" || token.Value == "__TIMESTAMP__")
-                            sourcePrograms.NativeDependenciesComplete = false;
-                    }
-                proof.TokenPasting |= text.Contains("##");
-                ScanPasting(text, proof);
-                foreach (Match include in Include.Matches(text))
+                using var cost = AnalysisCost.Measure("Shader discovery/include closure");
+                var facts = Artifacts.SourceFacts(text);
+                facts.Apply(proof);
+                sourcePrograms.NativeDependenciesComplete &= facts.TrackedIncludes;
+                foreach (string path in facts.Includes)
                 {
-                    var match = IncludePath.Match(include.Groups[1].Value);
-                    if (!match.Success)
+                    if (path == null)
                     { sourcePrograms.NativeDependenciesComplete = false; Uncertain("macro or unsupported include path"); continue; }
-                    string path = match.Groups[1].Value.Replace('\\', '/');
                     var roots = directories.Concat(new[] { directory, includeDirectory }).Where(d => !string.IsNullOrEmpty(d));
                     var possiblePaths = roots.Select(d => Path.GetFullPath(Path.Combine(d, path)))
-                        .Concat(new[] { PhysicalPath(path) }).Where(p => p != null).Distinct(StringComparer.Ordinal).ToArray();
+                        .Concat(new[] { IncludePhysicalPath(path) }).Where(p => p != null).Distinct(StringComparer.Ordinal).ToArray();
                     sourcePrograms.NativeDependencyPaths.UnionWith(possiblePaths);
-                    var candidates = possiblePaths.Where(File.Exists).ToArray();
+                    var candidates = possiblePaths.Where(SourceExists).ToArray();
                     if (candidates.Length == 0) Uncertain("unresolved include " + path);
                     foreach (string candidate in candidates)
                         if (seenFiles.Add(candidate)) Scan(Read(candidate), Path.GetDirectoryName(candidate));
@@ -339,23 +344,27 @@ namespace Noname.AvatarTools.Analysis
                 else required?.Add(requiredPass);
                 if (!seenShaders.Add(current)) return;
                 sourcePrograms.NativeShaderDependencies.Add(current);
-                if (seenShaders.Count > 64 || ShaderUtil.ShaderHasError(current))
+                if (seenShaders.Count > 64)
                 { Uncertain("invalid or excessive shader dependencies"); return; }
-                for (int i = 0; i < current.GetPropertyCount(); i++)
-                { proof.Tokens.Add(current.GetPropertyName(i)); sourcePrograms.ShaderLabIdentifiers.Add(current.GetPropertyName(i)); }
-                string assetPath = AssetDatabase.GetAssetPath(current), physical = PhysicalPath(assetPath);
+                var discovered = Discover(current);
+                if (discovered.HasError) { Uncertain("invalid or excessive shader dependencies"); return; }
+                proof.Tokens.UnionWith(discovered.Properties); sourcePrograms.ShaderLabIdentifiers.UnionWith(discovered.Properties);
+                string physical = discovered.PhysicalPath;
+                bool generatedSource = discovered.Generated;
+                string generatedText = discovered.GeneratedText;
                 string directory = physical != null ? Path.GetDirectoryName(physical) : includeDirectory;
-                bool builtin = assetPath == "Resources/unity_builtin_extra" || assetPath == "Library/unity default resources";
-                if (builtin) sourcePrograms.ShaderLabStatesComplete = false;
-                if (builtin) sourcePrograms.ShaderWideKeywordOwners.Add(current);
-                if (!builtin && (physical == null || !File.Exists(physical) || Path.GetExtension(physical) != ".shader"))
-                { Uncertain("shader source is unavailable: " + current.name); return; }
-                if (!builtin)
+                var data = discovered.Data;
+                bool editable = discovered.Editable;
+                directories.Add(directory);
+                if (editable)
                 {
-                    directories.Add(directory);
-                    string source = Read(physical);
-                    ReadShaderLabIdentifiers(source, sourcePrograms.ShaderLabIdentifiers);
-                    ReadShaderLabIdentifiers(source, sourcePrograms.ShaderLabStateIdentifiers, true);
+                    string source = generatedSource ? generatedText : Read(physical);
+                    shaderSources[current] = source;
+                    var facts = Artifacts.LabFacts(source);
+                    if (facts.Issue != null) throw new InvalidOperationException(facts.Issue);
+                    rasterStates.Add(current, facts.Rasterization);
+                    sourcePrograms.ShaderLabIdentifiers.UnionWith(facts.Identifiers);
+                    sourcePrograms.ShaderLabStateIdentifiers.UnionWith(facts.StateIdentifiers);
                     passSources.Add((source, directory));
                     foreach (Match dependency in ShaderDependency.Matches(source))
                     {
@@ -372,30 +381,64 @@ namespace Noname.AvatarTools.Analysis
                         Visit(Shader.Find(name), importedPass);
                     }
                 }
+                else
+                {
+                    // An importer can expose complete native programs without a
+                    // ShaderLab file. Do not confuse source rewriting capability
+                    // with input analysis or trust an unrelated TextAsset subasset.
+                    if (!importedMetadata.TryGetValue(current, out var metadata))
+                    {
+                        using var cost = AnalysisCost.Measure("Shader discovery/imported metadata");
+                        importedMetadata.Add(current, metadata = ShaderImportedMetadata.Read(current, data));
+                    }
+                    importedStates.Add(current, metadata);
+                    sourcePrograms.ShaderLabIdentifiers.UnionWith(metadata.StateIdentifiers);
+                    sourcePrograms.ShaderLabStateIdentifiers.UnionWith(metadata.StateIdentifiers);
+                    proof.Tokens.UnionWith(metadata.StateIdentifiers);
+                    if (metadata.StateIssue != null)
+                    {
+                        sourcePrograms.ShaderLabStatesComplete = false;
+                        sourcePrograms.ShaderLabStateIssue ??= metadata.StateIssue;
+                        proof.FixedFunctionUncertain ??= metadata.StateIssue;
+                    }
+                    // The snippet API does not share the imported pass index
+                    // space. Its complete keyword universe is the safe fallback.
+                    sourcePrograms.ShaderWideKeywordOwners.Add(current);
+                    var nativeDependencies = CollectNativeShaderDependencies(current);
+                    if (metadata.DependencyIssue == null)
+                    {
+                        foreach (var dependency in metadata.Dependencies)
+                        {
+                            Shader resolved = null;
+                            foreach (var candidate in nativeDependencies)
+                            {
+                                if (candidate.name != dependency.Shader) continue;
+                                if (resolved != null && resolved != candidate)
+                                { Uncertain("ambiguous imported shader dependency: " + dependency.Shader); resolved = null; break; }
+                                resolved = candidate;
+                            }
+                            // Resolve against actual imported objects, not a name
+                            // lookup which could select a different shader asset.
+                            if (resolved == null) { Uncertain("unresolved imported shader dependency: " + dependency.Shader); continue; }
+                            Visit(resolved, dependency.Pass);
+                        }
+                    }
+                    else
+                    {
+                        // Unknown metadata cannot narrow a dependency to one
+                        // named pass. Inspect every native dependency instead.
+                        foreach (var dependency in nativeDependencies)
+                            if (dependency != current) Visit(dependency);
+                    }
+                }
                 // Imported sources include generated surface-shader code and Unity's implicit
                 // includes. For built-in shaders this also includes their fallback subshaders;
                 // their declared properties supply the ShaderLab render-state inputs.
-                var data = ShaderUtil.GetShaderData(current);
-                int count = builtin ? data.SubshaderCount : data.SerializedSubshaderCount;
-                // Unity 2022 can report more serialized subshaders than its inspection API
-                // exposes (for example platform-stripped subshaders). Calling GetPass on
-                // those entries logs an Editor error instead of throwing. Keep the output.
-                if (!builtin && count > data.SubshaderCount)
-                { Uncertain("not all serialized subshaders are inspectable"); return; }
-                if (count == 0) Uncertain("shader contains no inspectable subshaders");
-                for (int i = 0; i < count; i++)
+                if (discovered.PassIssue != null) Uncertain(discovered.PassIssue);
+                foreach (var pass in discovered.Passes)
                 {
-                    var subshader = builtin ? data.GetSubshader(i) : data.GetSerializedSubshader(i);
-                    for (int j = 0; j < subshader.PassCount; j++)
-                    {
-                        var passKey = (current, i, j, builtin);
-                        if (!passSnapshots.TryGetValue(passKey, out var pass)) passSnapshots.Add(passKey, pass = subshader.GetPass(j));
-                        string source = PassSource(pass);
-                        if (string.IsNullOrWhiteSpace(source))
-                        { if (!pass.IsGrabPass) Uncertain("a shader pass has no inspectable source"); continue; }
-                        passSources.Add((StripComments(source), directory));
-                        if (!pass.IsGrabPass) sourcePrograms.Passes.Add((current, pass, new UnityEngine.Rendering.PassIdentifier((uint)i, (uint)j)));
-                    }
+                    passSources.Add((pass.Source, directory));
+                    if (!pass.Pass.IsGrabPass) sourcePrograms.Passes.Add((current, pass.Pass, pass.Identifier));
                 }
             }
             try
@@ -404,6 +447,11 @@ namespace Noname.AvatarTools.Analysis
                 // UsePass imports named programs, not every sibling pass in the
                 // referenced shader. Source/property discovery remains unchanged.
                 sourcePrograms.Passes.RemoveAll(p => requiredPasses.TryGetValue(p.Shader, out var names) && names != null && !names.Contains(p.Pass.Name));
+                RegisterImportedNativePasses(sourcePrograms);
+                foreach (var state in rasterStates)
+                    sourcePrograms.DegenerateRasterizationIssue ??= state.Value.Issue(requiredPasses[state.Key]);
+                foreach (var state in importedStates)
+                    sourcePrograms.DegenerateRasterizationIssue ??= state.Value.RasterizationIssue(requiredPasses[state.Key]);
                 // Discovery errors are distinct from a missing include in an inactive
                 // branch. The latter may be resolved by Unity's variant preprocessor.
                 sourcePrograms.Uncertain = proof.Uncertain;

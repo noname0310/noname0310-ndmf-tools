@@ -27,8 +27,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(sources.MeshInputs.CompileCalls, Is.EqualTo(compiles));
             Assert.That(sources.MeshInputs.PreprocessCalls, Is.EqualTo(preprocess));
             material.SetFloat("_Gate", 1);
-            Assert.That(sources.MeshInputs.Issue(material, renderer, FrameIndex(), query, BuildTarget.StandaloneWindows64), Does.Contain("may depend"));
-            Assert.That(sources.MeshInputs.CompileCalls, Is.GreaterThan(compiles));
+            Assert.That(sources.MeshInputs.Issue(material, renderer, FrameIndex(), query, BuildTarget.StandaloneWindows64), Does.Contain("may depend"),
+                "A changed gate must invalidate the absence certificate, even when the native program can be reused.");
         }
 
         [Test]

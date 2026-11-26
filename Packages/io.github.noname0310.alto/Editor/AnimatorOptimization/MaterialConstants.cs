@@ -1,155 +1,174 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Noname.AvatarTools.Analysis;
-using nadena.dev.ndmf;
 using nadena.dev.ndmf.animator;
+using Noname.AvatarTools.Analysis;
+using Noname.AvatarTools.ObjectOptimization;
 using UnityEditor;
-using UnityEditor.Animations;
 using UnityEngine;
-using VRC.SDK3.Avatars.Components;
-using VRC.SDKBase;
+using UnityEngine.Rendering;
 
 namespace Noname.AvatarTools.AnimatorOptimization
 {
     internal static class MaterialConstants
     {
-        private sealed class Use
+        private enum Storage { Scalar, Vector, Color, TextureTransform }
+
+        private sealed class Change
         {
-            internal object Owner;
-            internal VirtualAnimatorController Controller;
-            internal VirtualLayer Layer;
-            internal VirtualClip Clip;
-            internal EditorCurveBinding Binding;
             internal Renderer Renderer;
+            internal string Property;
+            internal Storage Storage;
+            internal Vector4 Value;
+            internal bool ChangesInitial;
+            internal AvatarAnimationIndex.BindingUse[] Writers;
         }
 
         internal static void Optimize(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, Action<Material> save, AnimatorOptimizationReport report,
-            AnimatorReachability analysis = null)
+            AnimatorReachability analysis = null, Func<Renderer, bool> allowInitialChanges = null,
+            Func<Renderer, bool> preservedRenderer = null, Func<Material, bool> preservedMaterial = null,
+            IEnumerable<string> preservedInputs = null)
         {
-            analysis ??= AnimatorReachability.Analyze(avatar, controllers.Values);
-            if (analysis.FallbackReason != null) return;
-            var uses = new List<Use>();
-            var swaps = new HashSet<Renderer>();
-            var ambiguous = new HashSet<VirtualClip>();
-            var roots = new Dictionary<VirtualClip, Transform>();
-            var bindingCache = new Dictionary<VirtualMotion, HashSet<EditorCurveBinding>>();
-            var stateCache = new Dictionary<VirtualLayer, VirtualState[]>();
-            Renderer Resolve(Transform root, string path)
+            using var cost = AnalysisCost.Measure("Constant output consumer/material properties");
+            if (ObjectOptimizationSafety.UnsupportedRuntime(avatar) != null) return;
+            var index = AvatarAnimationIndex.Create(avatar, controllers, paths, preservedInputs);
+            if (index.UnsafeReason != null) return;
+            var constants = new ConstantPropertyAnalysis(index, analysis);
+            var changes = new List<Change>();
+            // Native material writers remain authoritative even when their output is
+            // absent from every animation clip. Resolve them once per snapshot.
+            foreach (var renderer in avatar.GetComponentsInChildren<Renderer>(true))
             {
-                if (root == avatar.transform && paths != null && paths.TryGetValue(path, out var mapped)) path = mapped;
-                var target = root;
-                foreach (string part in (path ?? "").Split('/'))
-                {
-                    if (part.Length == 0) continue;
-                    var children = target.Cast<Transform>().Where(t => t.name == part).ToArray();
-                    if (children.Length != 1) return null;
-                    target = children[0];
-                }
-                var renderers = target.GetComponents<Renderer>();
-                return renderers.Length == 1 && (renderers[0] is SkinnedMeshRenderer || renderers[0] is MeshRenderer) ? renderers[0] : null;
-            }
-            foreach (var entry in controllers)
-            foreach (var layer in entry.Value.Layers)
-            foreach (var clip in layer.AllReachableNodes().OfType<VirtualClip>().Distinct())
-            {
-                var root = entry.Key is Animator animator ? animator.transform : avatar.transform;
-                if (roots.TryGetValue(clip, out var previous) && previous != root) ambiguous.Add(clip); else roots[clip] = root;
-                foreach (var binding in clip.GetObjectCurveBindings())
-                    if (typeof(Renderer).IsAssignableFrom(binding.type) && binding.propertyName.StartsWith("m_Materials", StringComparison.Ordinal))
-                    { var renderer = Resolve(root, binding.path); if (renderer != null) swaps.Add(renderer); }
-                foreach (var binding in clip.GetFloatCurveBindings())
-                {
-                    if (!typeof(Renderer).IsAssignableFrom(binding.type) || !binding.propertyName.StartsWith("material.", StringComparison.Ordinal)) continue;
-                    // Unity animates a Color/Vector as one property-block value. Deleting a constant
-                    // channel while another channel remains animated makes the deleted channel zero,
-                    // not the material's stored default. Keep component bindings until a whole-property
-                    // proof accounts for every channel, including implicit values and other writers.
-                    if (binding.propertyName.IndexOf('.', "material.".Length) >= 0) continue;
-                    var renderer = Resolve(root, binding.path);
-                    if (renderer != null) uses.Add(new Use { Owner = entry.Key, Controller = entry.Value, Layer = layer,
-                        Clip = clip, Binding = binding, Renderer = renderer });
-                }
-            }
-            var behaviours = controllers.Values.SelectMany(c => c.AllReachableNodes()).Distinct()
-                .SelectMany(n => n is VirtualState s ? s.Behaviours : n is VirtualStateMachine m ? m.Behaviours : Enumerable.Empty<StateMachineBehaviour>()).ToArray();
-            bool hasWeightControl = behaviours.Any(b => b is VRC_AnimatorLayerControl || b is VRC_PlayableLayerControl);
-            var copies = new Dictionary<Renderer, Material[]>();
-            var removals = new Dictionary<VirtualClip, HashSet<EditorCurveBinding>>();
-            foreach (var group in uses.GroupBy(u => (u.Renderer, u.Binding.propertyName)))
-            {
-                var first = group.First(); var renderer = first.Renderer;
-                if (swaps.Contains(renderer) || group.Any(u => ambiguous.Contains(u.Clip) || u.Clip.IsMarkerClip ||
-                    u.Layer.BlendingMode != AnimatorLayerBlendingMode.Override || u.Layer.SyncedLayerIndex != -1 || u.Layer.AvatarMask != null ||
-                    u.Owner is VRCAvatarDescriptor.AnimLayerType type && type == VRCAvatarDescriptor.AnimLayerType.Additive)) continue;
-                if (group.Select(u => u.Binding).Distinct().Count() != 1) continue;
-                if (!MotionAnalysis.Constant(first.Clip.GetFloatCurve(first.Binding), out float value) ||
-                    group.Any(u => !MotionAnalysis.Constant(u.Clip.GetFloatCurve(u.Binding), out float other) || other != value)) continue;
+                if (!(renderer is MeshRenderer || renderer is SkinnedMeshRenderer) || renderer.HasPropertyBlock() ||
+                    preservedRenderer?.Invoke(renderer) == true) continue;
                 var materials = renderer.sharedMaterials;
-                if (materials.Length == 0 || materials.Any(m => m == null)) continue;
-                var block = new MaterialPropertyBlock(); renderer.GetPropertyBlock(block);
-                if (!block.isEmpty) continue;
-                bool hasSlotBlock = false;
-                for (int i = 0; i < materials.Length; i++) { renderer.GetPropertyBlock(block, i); if (!block.isEmpty) hasSlotBlock = true; }
-                if (hasSlotBlock) continue;
-                string property = first.Binding.propertyName.Substring("material.".Length);
-                var defaults = new float[materials.Length];
-                bool supported = true;
-                for (int i = 0; i < materials.Length; i++)
-                    if (!Read(materials[i], property, out defaults[i])) supported = false;
-                if (!supported) continue;
-                bool sameDefault = defaults.All(v => v == value);
-                if (!sameDefault && (hasWeightControl || group.Any(u => !(u.Owner is VRCAvatarDescriptor.AnimLayerType type) ||
-                    type != VRCAvatarDescriptor.AnimLayerType.FX))) continue;
-                bool proven = true;
-                var constants = new Dictionary<VirtualMotion, bool>();
-                foreach (var context in group.GroupBy(u => (u.Controller, u.Layer)))
+                if (materials.Length == 0 || materials.Any(m => m == null || preservedMaterial?.Invoke(m) == true)) continue;
+                var uses = index.ForObject(renderer);
+                var native = ContactOutputs.Writers(avatar, renderer, index).SelectMany(ContactOutputs.Properties).ToHashSet(StringComparer.Ordinal);
+                // Dynamic resource changes need their own whole-use relocation proof.
+                // Constant swaps have already been resolved by ConstantMaterialSlots.
+                if (uses.Any(u => u.Binding.isPPtrCurve && u.Binding.propertyName.StartsWith("m_Materials", StringComparison.Ordinal))) continue;
+                foreach (var group in uses.Where(u => u.Binding.propertyName.StartsWith("material.", StringComparison.Ordinal))
+                    .GroupBy(u => MaterialAnimationInputs.PropertyName(u.Binding.propertyName)))
                 {
-                    var layer = context.Key.Layer;
-                    if (!sameDefault && layer != context.Key.Controller.Layers.First() && layer.DefaultWeight != 1) { proven = false; break; }
-                    if (!stateCache.TryGetValue(layer, out var states))
-                        stateCache.Add(layer, states = layer.AllReachableNodes().OfType<VirtualState>().Where(analysis.IsReachable).ToArray());
-                    if (states.Length == 0 || states.Any(s => !s.WriteDefaultValues ||
-                        !ConstantOutput(s.Motion, first.Binding, value, sameDefault, analysis, new(), bindingCache, constants))) { proven = false; break; }
-                }
-                if (!proven) continue;
-                if (!sameDefault)
-                {
-                    if (!copies.TryGetValue(renderer, out var changed))
+                    string name = group.Key;
+                    if (name == null || native.Contains(name)) continue;
+                    if (!Read(materials[0], name, out var storage, out var initial)) continue;
+                    var defaults = new Vector4[materials.Length]; bool supported = true;
+                    for (int i = 0; i < materials.Length; i++)
+                        if (!Read(materials[i], name, out var other, out defaults[i]) || other != storage) supported = false;
+                    if (!supported) continue;
+                    string channels = storage == Storage.Scalar ? "" : storage == Storage.Color ? "rgba" : "xyzw";
+                    var fields = group.GroupBy(u => u.Binding.propertyName).ToDictionary(g => g.Key, g => g.ToArray());
+                    if (fields.Count != (channels.Length == 0 ? 1 : 4)) continue;
+                    var value = Vector4.zero; HashSet<VirtualClip> footprint = null;
+                    for (int channel = 0; channel < Math.Max(1, channels.Length); channel++)
                     {
-                        changed = materials.Select(m => {
-                            var copy = UnityEngine.Object.Instantiate(m); copy.name = m.name + " (optimized)";
-                            save(copy); return copy;
-                        }).ToArray();
-                        copies.Add(renderer, changed); renderer.sharedMaterials = changed;
+                        string binding = "material." + name + (channels.Length == 0 ? "" : "." + channels[channel]);
+                        if (!fields.TryGetValue(binding, out var writers)) { supported = false; break; }
+                        var clips = new HashSet<VirtualClip>(writers.Select(w => w.Clip));
+                        // Unity writes vectors/colors as whole property-block entries.
+                        // A sibling written in another clip can overwrite this channel
+                        // implicitly. Require identical complete channel coverage.
+                        if (footprint != null && !footprint.SetEquals(clips)) { supported = false; break; }
+                        footprint = clips;
+                        if (constants.TryProve(renderer, binding, ConstantOutputValue.Scalar(initial[channel]), out var proof, out _))
+                            value[channel] = proof.Value.Number;
+                        else if (defaults.All(d => ConstantOutputValue.Scalar(d[channel]).Equals(ConstantOutputValue.Scalar(initial[channel]))) &&
+                            constants.MatchesInitialValue(renderer, writers, initial[channel], allowInterpolation: true))
+                            value[channel] = initial[channel];
+                        else { supported = false; break; }
                     }
-                    foreach (var material in changed) material.SetFloat(property, value);
+                    if (!supported) continue;
+                    bool changed = defaults.Any(d => Enumerable.Range(0, 4).Any(channel =>
+                        !ConstantOutputValue.Scalar(d[channel]).Equals(ConstantOutputValue.Scalar(value[channel]))));
+                    // The optional callback retains the established direct-call
+                    // contract; the build pass always supplies captured policy.
+                    if (changed && (allowInitialChanges?.Invoke(renderer) == false || group.Any(u => u.PreservedInput))) continue;
+                    changes.Add(new Change { Renderer = renderer, Property = name, Storage = storage, Value = value,
+                        ChangesInitial = changed, Writers = group.ToArray() });
                 }
-                foreach (var use in group)
+            }
+            var removals = new Dictionary<VirtualClip, HashSet<EditorCurveBinding>>();
+            foreach (var group in changes.GroupBy(c => c.Renderer))
+            {
+                if (group.Any(c => c.ChangesInitial))
                 {
-                    if (!removals.TryGetValue(use.Clip, out var bindings)) removals.Add(use.Clip, bindings = new());
-                    bindings.Add(use.Binding);
+                    var copies = new Dictionary<Material, Material>();
+                    var materials = group.Key.sharedMaterials;
+                    for (int i = 0; i < materials.Length; i++)
+                    {
+                        if (!copies.TryGetValue(materials[i], out var copy))
+                        {
+                            copy = UnityEngine.Object.Instantiate(materials[i]); copy.name = materials[i].name + " (constant outputs)";
+                            copies.Add(materials[i], copy);
+                            foreach (var change in group) Write(copy, change);
+                            save(copy);
+                        }
+                        materials[i] = copy;
+                    }
+                    group.Key.sharedMaterials = materials;
+                }
+                foreach (var change in group)
+                {
+                    if (change.ChangesInitial) report.InitialOutputs++;
+                    foreach (var writer in change.Writers)
+                    {
+                        if (!removals.TryGetValue(writer.Clip, out var bindings)) removals.Add(writer.Clip, bindings = new());
+                        bindings.Add(writer.Binding);
+                    }
                 }
             }
             foreach (var pair in removals)
             { report.MaterialCurves += pair.Value.Count; MotionAnalysis.RemoveCurves(pair.Key, pair.Value); }
+            foreach (var change in changes) report.ConstantOutputProofs.Record(initializationChanged: change.ChangesInitial);
         }
 
-        private static bool ConstantOutput(VirtualMotion motion, EditorCurveBinding binding, float value, bool defaultMatches,
-            AnimatorReachability analysis, HashSet<VirtualMotion> stack,
-            Dictionary<VirtualMotion, HashSet<EditorCurveBinding>> bindings, Dictionary<VirtualMotion, bool> constants)
-            => ConstantPropertyOutput.Matches(motion, binding, value, defaultMatches, analysis, bindings, constants, stack);
-        private static bool Read(Material material, string property, out float value)
+        private static bool Read(Material material, string name, out Storage storage, out Vector4 value)
         {
-            value = 0;
-            if (material.shader == null || !material.HasProperty(property)) return false;
-            int index = material.shader.FindPropertyIndex(property);
-            if (index < 0) return false;
-            var type = material.shader.GetPropertyType(index);
-            if (type != UnityEngine.Rendering.ShaderPropertyType.Float && type != UnityEngine.Rendering.ShaderPropertyType.Range) return false;
-            value = material.GetFloat(property);
-            return MotionAnalysis.Finite(value);
+            storage = default; value = default;
+            if (material.shader == null) return false;
+            int property = material.shader.FindPropertyIndex(name);
+            if (property < 0)
+            {
+                if (!name.EndsWith("_ST", StringComparison.Ordinal)) return false;
+                string texture = name.Substring(0, name.Length - 3);
+                property = material.shader.FindPropertyIndex(texture);
+                if (property < 0 || material.shader.GetPropertyType(property) != ShaderPropertyType.Texture) return false;
+                if ((material.shader.GetPropertyFlags(property) & ShaderPropertyFlags.PerRendererData) != 0) return false;
+                var scale = material.GetTextureScale(texture); var offset = material.GetTextureOffset(texture);
+                storage = Storage.TextureTransform; value = new Vector4(scale.x, scale.y, offset.x, offset.y);
+            }
+            else
+            {
+                var flags = material.shader.GetPropertyFlags(property);
+                if ((flags & (ShaderPropertyFlags.PerRendererData | ShaderPropertyFlags.Gamma)) != 0) return false;
+                switch (material.shader.GetPropertyType(property))
+                {
+                    case ShaderPropertyType.Float: case ShaderPropertyType.Range:
+                        storage = Storage.Scalar; value.x = material.GetFloat(name); break;
+                    case ShaderPropertyType.Vector: storage = Storage.Vector; value = material.GetVector(name); break;
+                    case ShaderPropertyType.Color: storage = Storage.Color; value = material.GetColor(name); break;
+                    default: return false;
+                }
+            }
+            for (int i = 0; i < 4; i++) if (!MotionAnalysis.Finite(value[i])) return false;
+            return true;
+        }
+
+        private static void Write(Material material, Change change)
+        {
+            switch (change.Storage)
+            {
+                case Storage.Scalar: material.SetFloat(change.Property, change.Value.x); break;
+                case Storage.Vector: material.SetVector(change.Property, change.Value); break;
+                case Storage.Color: material.SetColor(change.Property, change.Value); break;
+                case Storage.TextureTransform:
+                    string texture = change.Property.Substring(0, change.Property.Length - 3);
+                    material.SetTextureScale(texture, new Vector2(change.Value.x, change.Value.y));
+                    material.SetTextureOffset(texture, new Vector2(change.Value.z, change.Value.w)); break;
+            }
         }
     }
 }

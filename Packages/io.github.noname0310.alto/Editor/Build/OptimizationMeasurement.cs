@@ -31,6 +31,8 @@ namespace Noname.AvatarTools.Build
         public int ParentIndex = -1;
         public double StartMilliseconds, Milliseconds;
         public bool Completed, Succeeded;
+        public bool ManagedAllocationsAvailable;
+        public long ThreadAllocatedBytes;
         public OptimizationMemoryUsage Before, After;
     }
 
@@ -47,6 +49,27 @@ namespace Noname.AvatarTools.Build
         private Timeline timeline;
         private readonly OptimizationStageMeasurement sample;
         private readonly long started;
+        private readonly long allocatedBefore;
+        private readonly int allocationThread;
+        private static Func<long> allocationCounter = CreateAllocationCounter();
+
+        // Unlike the editor-wide heap snapshots, this is an allocation total for
+        // the executing thread. Nested measurements are inclusive; worker-thread
+        // allocations and native Unity/shader-compiler memory are not included.
+        private static Func<long> CreateAllocationCounter()
+        {
+            var method = typeof(GC).GetMethod("GetAllocatedBytesForCurrentThread", Type.EmptyTypes);
+            return method == null || method.ReturnType != typeof(long)
+                ? null : (Func<long>)Delegate.CreateDelegate(typeof(Func<long>), method);
+        }
+
+        private static long ReadAllocatedBytes()
+        {
+            if (allocationCounter == null) return -1;
+            try { return allocationCounter(); }
+            catch (NotSupportedException) { allocationCounter = null; return -1; }
+            catch (NotImplementedException) { allocationCounter = null; return -1; }
+        }
 
         private OptimizationMeasurement(OptimizationBuildReport report, string kind, string name)
         {
@@ -58,6 +81,8 @@ namespace Noname.AvatarTools.Build
             };
             timeline.Current = report.Measurements.Count;
             report.Measurements.Add(sample);
+            allocationThread = Environment.CurrentManagedThreadId;
+            allocatedBefore = ReadAllocatedBytes();
             started = Stopwatch.GetTimestamp();
             sample.StartMilliseconds = (started - timeline.Started) * 1000d / Stopwatch.Frequency;
         }
@@ -71,6 +96,12 @@ namespace Noname.AvatarTools.Build
         {
             if (timeline == null) return;
             sample.Milliseconds = (Stopwatch.GetTimestamp() - started) * 1000d / Stopwatch.Frequency;
+            long allocatedAfter = Environment.CurrentManagedThreadId == allocationThread ? ReadAllocatedBytes() : -1;
+            // Some Unity Mono versions expose the API but return zero even after
+            // allocating this measurement and its timeline. Do not report that
+            // unsupported counter as a measured zero-allocation optimization.
+            sample.ManagedAllocationsAvailable = allocatedBefore > 0 && allocatedAfter >= allocatedBefore;
+            if (sample.ManagedAllocationsAvailable) sample.ThreadAllocatedBytes = allocatedAfter - allocatedBefore;
             sample.After = OptimizationMemoryUsage.Capture();
             sample.Completed = true;
             timeline.Current = sample.ParentIndex;

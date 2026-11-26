@@ -27,6 +27,9 @@ namespace Noname.AvatarTools.ObjectOptimization
         private static readonly Dictionary<System.Type, bool> SupportedTypes = new();
         private static readonly Dictionary<System.Reflection.Assembly, string> AssemblyNames = new();
 
+        internal static bool IsBuildOnly(Component component) => component is INDMFEditorOnly || component is IEditorOnly ||
+            component != null && EditorAssemblies.Contains(AssemblyName(component.GetType()));
+
         // Type/assembly identity is immutable for the lifetime of this Editor
         // domain. Keep component state out of this metadata cache.
         internal static string AssemblyName(System.Type type)

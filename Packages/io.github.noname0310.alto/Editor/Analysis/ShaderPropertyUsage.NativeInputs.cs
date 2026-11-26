@@ -11,10 +11,30 @@ namespace Noname.AvatarTools.Analysis
     internal sealed partial class ShaderPropertyUsage
     {
         private readonly Dictionary<Shader, string> nativeDependencyIdentities = new();
+        private readonly Dictionary<(ShaderData.Pass, string), string> nativeArtifactIdentities = new();
         private readonly Dictionary<string, string> nativeFileDigests = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string[]> nativeImportedDependencies = new(StringComparer.Ordinal);
         private bool nativeEnvironmentRead;
         private string nativeEnvironment;
+
+        internal string NativeArtifactIdentity(ShaderData.Pass pass, string compiler)
+        {
+            var key = (pass, compiler);
+            if (nativeArtifactIdentities.TryGetValue(key, out string previous)) return previous;
+            Shader owner = null; PassIdentifier identifier = default;
+            foreach (var pair in passSnapshots)
+                if (pair.Value == pass)
+                {
+                    owner = pair.Key.Item1;
+                    identifier = new PassIdentifier((uint)pair.Key.Item2, (uint)pair.Key.Item3);
+                    break;
+                }
+            // CompileVariant is invoked on this pass, after any UsePass alias has
+            // been proved. Its importing consumer is not a compiler input. Keep
+            // consumer coverage proofs separate, with their full dependencies.
+            string identity = owner == null ? null : NativePreprocessIdentity(owner, owner, pass, identifier, compiler);
+            nativeArtifactIdentities.Add(key, identity); return identity;
+        }
 
         internal string NativePreprocessIdentity(Shader root, Shader owner, ShaderData.Pass pass, PassIdentifier identifier, string compiler)
         {
@@ -50,6 +70,7 @@ namespace Noname.AvatarTools.Analysis
                 var dependencies = programs.NativeShaderDependencies.OrderBy(s => ProgramSourceId(s), StringComparer.Ordinal).ToArray();
                 foreach (var dependency in dependencies)
                 {
+                    if (ShaderBuildSource.TryGenerated(dependency, out _, out _)) continue;
                     string asset = AssetDatabase.GetAssetPath(dependency);
                     if (string.IsNullOrEmpty(asset)) { nativeDependencyIdentities.Add(shader, null); return null; }
                     if (!nativeImportedDependencies.TryGetValue(asset, out var imported))
@@ -79,16 +100,42 @@ namespace Noname.AvatarTools.Analysis
                     parts.Add(digest);
                 }
                 parts.Add(dependencies.Length.ToString());
+                var records = new List<(string Origin, List<string> Values)>();
                 foreach (var dependency in dependencies)
                 {
+                    var record = new List<string>();
                     string asset = AssetDatabase.GetAssetPath(dependency);
-                    if (string.IsNullOrEmpty(asset)) { nativeDependencyIdentities.Add(shader, null); return null; }
-                    parts.Add(asset); parts.Add(AssetDatabase.GetAssetDependencyHash(asset).ToString());
-                    parts.Add(dependency.name);
-                    parts.Add(dependency.keywordSpace.keywords.Length.ToString());
-                    foreach (var keyword in dependency.keywordSpace.keywords)
-                    { parts.Add(keyword.name); parts.Add(keyword.isOverridable ? "global" : "local"); }
+                    if (ShaderBuildSource.TryGenerated(dependency, out string source, out string sourcePath))
+                    { record.Add(sourcePath); record.Add(ContentFactCache.TextDigest(source)); }
+                    else
+                    {
+                        if (string.IsNullOrEmpty(asset)) { nativeDependencyIdentities.Add(shader, null); return null; }
+                        record.Add(asset); record.Add(AssetDatabase.GetAssetDependencyHash(asset).ToString());
+                    }
+                    record.Add(dependency.name);
+                    record.Add(dependency.keywordSpace.keywords.Length.ToString());
+                    foreach (var keyword in dependency.keywordSpace.keywords.OrderBy(k => k.name, StringComparer.Ordinal))
+                    {
+                        record.Add(keyword.name); record.Add(keyword.isOverridable ? "global" : "local");
+                        record.Add(keyword.type.ToString()); record.Add(keyword.isDynamic ? "dynamic" : "variant");
+                        // Global keywords only override matching, overridable
+                        // entries in this shader's imported keyword space. An
+                        // unrelated shader import must not invalidate every pass.
+                        if (keyword.isOverridable) record.Add(Shader.IsKeywordEnabled(keyword.name) ? "enabled" : "disabled");
+                    }
+                    records.Add((ProgramSourceId(dependency), record));
                 }
+                // ProgramSourceId identifies an include directory, not a shader.
+                // Distinct files in the same directory need a total ordering;
+                // HashSet/Unity-object enumeration order is not persistent input.
+                records.Sort((a, b) =>
+                {
+                    int order = string.CompareOrdinal(a.Origin, b.Origin);
+                    for (int i = 0; order == 0 && i < Math.Min(a.Values.Count, b.Values.Count); i++)
+                        order = string.CompareOrdinal(a.Values[i], b.Values[i]);
+                    return order != 0 ? order : a.Values.Count.CompareTo(b.Values.Count);
+                });
+                foreach (var record in records) parts.AddRange(record.Values);
                 identity = ContentFactCache.Shared.Key("native shader dependencies", parts.ToArray());
             }
             nativeDependencyIdentities.Add(shader, identity); return identity;
@@ -109,8 +156,6 @@ namespace Noname.AvatarTools.Analysis
                 if (settings == null) return null;
                 parts.Add(name); parts.Add(EditorJsonUtility.ToJson(settings));
             }
-            foreach (var keyword in Shader.globalKeywords)
-            { parts.Add(keyword.name); parts.Add(Shader.IsKeywordEnabled(keyword) ? "enabled" : "disabled"); }
             return nativeEnvironment = ContentFactCache.Shared.Key("native shader environment", parts.ToArray());
         }
     }

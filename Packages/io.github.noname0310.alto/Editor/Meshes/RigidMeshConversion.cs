@@ -26,8 +26,10 @@ namespace Noname.AvatarTools.Meshes
 
         internal static string ValidateExplicitConversion(MeshRenderer renderer, AvatarAnimationIndex animations,
             AvatarDependencyGraph references, ShaderPropertyUsage shaders, bool allowCoordinateSpaceChanges = false,
-            bool allowTransparentSortingChanges = false, BuildTarget? target = null, bool allowShaderIndexChanges = false)
+            bool allowTransparentSortingChanges = false, BuildTarget? target = null, bool allowShaderIndexChanges = false,
+            bool allowSmallNumericalDifferences = true)
         {
+            if (!allowSmallNumericalDifferences) return "strict numerical policy retains the original rigid rendering pipeline";
             var filter = renderer.GetComponent<MeshFilter>(); var mesh = filter != null ? filter.sharedMesh : null;
             string reason = SkinnedMeshAssembler.ValidateGeometry(renderer, mesh) ?? MeshMergeAnalysis.ShaderIssue(renderer.sharedMaterials,
                 shaders, true, allowCoordinateSpaceChanges, allowTransparentSortingChanges, target, renderer, animations, allowShaderIndexChanges);
@@ -91,12 +93,14 @@ namespace Noname.AvatarTools.Meshes
             return destination;
         }
 
-        internal static Mesh WeightUnweighted(SkinnedMeshRenderer renderer, Action<Mesh> save)
+        internal static Mesh WeightUnweighted(SkinnedMeshRenderer renderer, Action<Mesh> save,
+            BlendShapeOptimization.BlendShapeProvenance provenance = null)
         {
             var source = renderer.sharedMesh;
             var weights = Enumerable.Range(0, source.blendShapeCount).Select(renderer.GetBlendShapeWeight).ToArray();
             var result = RigidMesh(source, true);
             ObjectRegistry.RegisterReplacedObject(source, result); save?.Invoke(result);
+            provenance?.RecordMeshRewrite(renderer, source, result);
             renderer.sharedMesh = null; renderer.sharedMesh = result; renderer.bones = new[] { renderer.transform };
             for (int shape = 0; shape < weights.Length; shape++) renderer.SetBlendShapeWeight(shape, weights[shape]);
             return result;

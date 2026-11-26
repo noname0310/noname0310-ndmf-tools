@@ -63,6 +63,9 @@ namespace Noname.AvatarTools.Build
             Platform = platform;
             StartedUtc = DateTime.UtcNow.ToString("O");
             Input = OptimizationResourceCounts.Capture(avatar);
+            Messages.Add("Proof-assumption summaries classify applied shared constant outputs, invariant object outputs and parent constraints. " +
+                "Strict proof means no numerical permission was required; it does not assert universal runtime bit identity. " +
+                "Other geometry passes are not classified by these summaries.");
             // Analysis retains this report's measurement list even if a later
             // pass fails before the normal end-of-build publication.
             AvatarBuildAnalysis.PublishReport(avatar, this);

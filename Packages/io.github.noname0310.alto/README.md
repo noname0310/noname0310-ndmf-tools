@@ -6,7 +6,7 @@ ALTO uses constant propagation, reachability and dependency analysis to optimize
 
 The package provides **ALTO Trace And Optimize Animator**,
 **ALTO Trace And Optimize BlendShapes**, **ALTO Animator Parameter
-Policy**, **ALTO Parameter Layout**, **ALTO Parameter Compression**, **ALTO Build Exclusions**, **ALTO Rendering Filter**, **ALTO PhysBone Filter**, **ALTO Contact Filter**,
+Policy**, **ALTO Optimization Policy**, **ALTO Parameter Layout**, **ALTO Parameter Compression**, **ALTO Build Exclusions**, **ALTO Rendering Filter**, **ALTO PhysBone Filter**, **ALTO Contact Filter**,
 **ALTO Trace And Optimize Objects**, **ALTO Material Atlas**,
 **ALTO Mesh Renderer Settings Override**, **ALTO Mesh Optimization Policy**, **ALTO Mesh Reduction**, **ALTO Remove Occluded Mesh**,
 **ALTO Trace And Optimize Meshes**,
@@ -645,6 +645,15 @@ external-only sensors still require explicit input freezing.
   full-weight writer inside a Direct tree. Quaternion and discrete properties
   do not use scalar interpolation. Near-identity scales are not rounded to identity.
   Dynamic or preserved inputs and ambiguous child settings remain conservative.
+  With **Optimization Policy > Allow Initial Value Changes**, supported
+  constant visual poses can also replace different starting poses. Simulation,
+  sensor, humanoid/IK and initialization readers still protect their inputs.
+- **Bake Constant Component Properties** normalizes verified Renderer, Light,
+  Audio and Particle configuration and removes redundant spatial settings on
+  Contacts, PhysBone Colliders and constraints. Only supported native animation
+  bindings participate. Enabled-state lifecycle, simulation initialization,
+  existing particles and runtime-produced outputs remain protected. Supported
+  resource-reference tracks are normalized through the same consumer checks.
 - **Remove Unused Transform Outputs** traces runtime consumers back through
   parent transforms, skin bones, physics chains, serialized references and
   Unity/VRC constraint sources. Remove unobserved constraints and their unused
@@ -878,6 +887,17 @@ processors.
 - **Remove Unused Mesh Data** removes vertices referenced by no submesh and
   unused or duplicate bone-palette entries. Retained vertices keep their full
   skinning influences and every morph frame. It can also run without merging.
+- **Remove Permanently Hidden Geometry**, enabled by default, removes triangles
+  only after proving they cannot render through every remaining deformation and
+  relevant shader pass. Coincident corners and supported nonfinite hiding have
+  separate proofs; a NaN transform alone never permits deletion. Nonfinite hiding
+  currently requires verified Windows D3D programs and skinning. All-pass vertex
+  verification currently requires a Windows Editor and a D3D target; unsupported
+  targets retain the triangles. Vertex numbering
+  and culling bounds are retained; ordinary index-preserving compaction may run
+  afterward. Primitive-ID readers, geometry generation, external mesh consumers,
+  changed culling behavior and unknown shader outputs prevent deletion. This proof
+  is separate from sampled occlusion.
 - **Preserve Vertex IDs**, enabled by default, extends final mesh assembly to
   shaders that read `SV_VertexID`. Vertex storage order is independent of the
   destination renderer, its original morph indices and material draw order.
@@ -1133,7 +1153,7 @@ work; it does not strip or rewrite the shader variants shipped by Unity.
 Compiled input facts are also cached independently of avatars under
 `Library/ALTO/ShaderAnalysis`. Keys include the compiler input source (expanded
 includes and substituted constants), entry point, stage, compiler identity and
-settings, and analysis assembly revision. Unity compilation additionally records
+settings, and the producing analysis contract revision. Unity compilation additionally records
 the shader dependency hash, target, graphics tier and keywords. Semantic read
 masks, uniform usage and resource bindings serve subsequent input queries without
 recompiling. Each program record stores the complete reflected inventory;
@@ -1143,16 +1163,32 @@ same logical proof budgets as fresh compilation.
 Only successful, complete reflection is persisted. Atomic writes, integrity checks
 and bounded storage protect the optional cache; absent, corrupt or inaccessible
 records trigger normal compilation. Use **Tools > Noname > ALTO > Clear Shader
-Analysis Cache** to discard it. The cache survives editor restarts, but updates to
-the analysis assembly invalidate its records.
-Shader declaration plans, specialized source, preprocessor dependencies and input-use
-summaries also use `Library/ALTO/AnalysisFacts`.
+Analysis Cache** to discard it. The cache survives editor restarts and unrelated
+editor code recompilation. Analysis contract changes invalidate their dependent
+records; source, compiler and environment changes still require fresh evidence.
+Shader lexical and ShaderLab summaries, declaration plans, specialized source,
+preprocessor dependencies and input-use summaries also use
+`Library/ALTO/AnalysisFacts`. The complete native program and its binding metadata
+are cached independently of material values and queried inputs. A new material
+value domain evaluates that artifact again instead of invoking Unity's compiler
+again. Only successful compiler artifacts are persisted.
+Proven `UsePass` aliases share the effective pass's compiler artifact while each
+consumer retains its own coverage checks. Dependency records use a deterministic
+ordering, independent of Unity object discovery order.
+Completed keyword-coverage proofs can be reused for individual passes/stages,
+even when a later pass remains unsupported or reads the input. These certificates
+retain every source and native constant premise actually used in the proof;
+unrelated material values do not invalidate them. Source/include/import changes,
+compiler settings, keyword choices and changed or unproved premises require
+fresh analysis. Failed and incomplete coverage is never accepted as a certificate.
 These records share no avatar objects. Include resolution and contents are checked
-again, full pass coverage is still evaluated, and probe requests retain their
-normal logical budgets. Existing snapshot-local lookups run before
+again, every required pass must have valid coverage, and fresh probe requests
+retain their normal logical budgets. Existing snapshot-local lookups run before
 content hashing; immutable source strings reuse their digests. Storage is bounded
-to 32 MiB of in-memory records, with disk records periodically trimmed to 256 MiB. The same cache-clear command
-discards these records. Large inputs use native SHA-256 on supported Windows
+to 32 MiB of in-memory records. Both disk caches share a 100 GiB limit, with recent
+use determining retention and no separate file-count limit. Unrelated global
+shader keywords do not invalidate a shader's records. The same cache-clear command
+discards both caches. Large inputs use native SHA-256 on supported Windows
 editors, with an equivalent managed fallback on other environments.
 Within a build, bounded caches also share immutable source inspections and
 specialization plans across optimization stages. Source lookup hashes are computed
@@ -1185,6 +1221,15 @@ swap clips. It runs after external optimizers and before final mesh merging.
   VRChat's Safety Fallback properties contribute to the usage analysis.
 - **Share Equivalent Materials** shares materials with identical serialized render
   state, shader, keywords, tags, values and texture references. Names may differ.
+- **Bake Constant Shader Inputs** replaces verified immutable scalar floating-point uniforms
+  with constants after material processing and late generators. Every material
+  using that shader, including animation replacements, must agree on the exact
+  value. Different values remain uniforms. This creates one replacement per
+  shader, without per-material shader permutations. Unsupported declarations,
+  native writers, property blocks and unremappable references retain the input.
+  Generated custom shaders are not used on Android or iOS. This option starts OFF
+  because shader analysis and compilation can add substantial build time.
+  It does not enable lilToon texture baking.
 - **Preserve Materials** retains selected material assets. Renderer/subtree
   preservation from Objects and external optimizer input mapping also apply.
 
@@ -1192,7 +1237,20 @@ Source materials and clips are never overwritten. Material Variants retain their
 inheritance. Unknown shader inputs, external asset readers, immutable swap clips
 and shared clips spanning the scope boundary are retained.
 
-Baking is disabled by default. The build report identifies baked or retained
+Shared shader generation and validation reuse cross-avatar artifacts under
+`Library/ALTO/AnalysisFacts`; compiled input analysis uses
+`Library/ALTO/ShaderAnalysis`. Keys include exact source/include content, compiler
+identity and environment, target and keyword coverage, typed constant values,
+and any proved per-use value domains used by validation.
+Avatar-specific writer and reference proofs are checked again for each build.
+Runtime specialization currently requires a Windows target using D3D graphics
+APIs. Each candidate is checked against the original native programs across its
+passes and variants. Inputs whose arithmetic or layout cannot be proved equivalent
+remain uniforms; unsupported programs retain their original shader.
+Deleting these cache directories only makes the next analysis run cold. Fewer
+uniform declarations do not by themselves establish a runtime speed improvement.
+
+lilToon texture baking is disabled by default. The build report identifies baked or retained
 inputs. Main-texture and correction animation prevents baking; animated layer
 settings can still leave an independent static color-correction bake possible.
 Layer baking requires a compatible UV0 domain, static lighting participation,
@@ -1360,8 +1418,7 @@ this component does not force a final face/body merge.
 Cloth, mesh swaps, additional vertex streams, more than four skinning influences
 per vertex and unsupported topology are retained. Explicitly preserve meshes
 whose shaders depend on vertex indices or custom vertex data. An overlapping
-Meshia simplifier is an error. **Build and Analyze Avatar** evaluates a full
-avatar copy and reports the result; it is not a continuous scene preview.
+Meshia simplifier is an error.
 
 ## ALTO Trace And Optimize Expressions
 
@@ -1416,8 +1473,54 @@ have no direct pose consumer; they are not deleted without a liveness proof.
 Material bindings remain consumers when shader usage has not been proven;
 ShaderLab Properties alone are not a complete shader-uniform inventory.
 Unsupported runtime behaviour or unverifiable preservation skips cleanup.
-**Build and Analyze Avatar** records each control's removal/retention reason,
+The build report records each control's removal/retention reason,
 removed local parameters and before/after counts. Original assets are unchanged.
+
+## ALTO Optimization Policy
+
+**Allow small numerical differences** contains independent checkboxes, all ON
+by default, including the baseline behavior without an explicit policy:
+
+| Feature | Applies to |
+| --- | --- |
+| Animation evaluation | Continuous animation output simplification and eligible normalized blends |
+| BlendShape baking | Morph deformation baking and combination |
+| Transform merging | Static hierarchy frame removal and child relocation |
+| Component hoisting | Moving supported components and folding their local pose |
+| Constraint optimization | Supported constraint replacement and source-offset simplification |
+| Mesh merging | Renderer-frame equivalence during mesh combination |
+| Skinning optimization | Static bone rebinding and rigid mesh conversion |
+
+These choices use one shared numerical criterion. Explicit comparisons use
+`1e-6 * max(1, abs(a), abs(b))`. Proofs which derive an error bound must include
+all contributing arithmetic, rather than assigning a fresh allowance to each
+term. Normalized interpolation of identical continuous outputs is also
+equivalent under the selected feature's policy, including ordinary evaluation
+roundoff. Clear an individual checkbox for stricter proofs. This can retain transforms, curves or mesh groups
+which would otherwise be optimized. The Installer exposes the choice under
+**Advanced > Setup > Common**.
+
+The contract applies at the selected continuous-property or geometry boundary.
+Custom effects which inspect exact floating-point values may observe the allowed
+differences. Parameter, transition, index, cache-identity and direct shader-input
+analysis still use exact facts. Known stateful readers remain protected;
+non-finite results and persistent accumulation are not ordinary roundoff.
+Shader uniforms with unknown consumers remain exact.
+
+**Allow Initial Value Changes** permits proven constant visual outputs to replace
+their authored starting values before Animator evaluation. It starts ON in the
+component and installer template. Disable it to retain differing initial values;
+without an applicable policy, changing those values is not allowed.
+
+This permission applies only to transient initialization appearance. Physics rest
+poses, sensor outputs, parameter feedback, later Write Defaults restoration and
+other persistent effects still require proof. It does not freeze inputs or enable
+an optimization by itself. Select the corresponding Bake or Freeze option in the
+Animator, BlendShapes, Objects or Materials optimizer. Scope and platform settings
+control where the permission applies; the most specific scope wins.
+Authored data retains its captured scope when the build relocates its object.
+A shared output inherits each feature's stricter numerical contract from its
+contributors, without disabling the unrelated features.
 
 ## ALTO Animator Parameter Policy
 
@@ -1473,7 +1576,7 @@ enable freezing on other platforms. Turn it off to keep the policies independent
 **Freeze Parameters** accepts explicit constant values. Assign an
 optional source object/controller and choose one of its original names, or
 leave Source empty and enter a final avatar name. The **Choose...** button lists
-authoring-time declarations; Build and Analyze verifies final names. Bool values
+authoring-time declarations; the build verifies final names. Bool values
 must be `0` or `1`, and Int values must be whole numbers within the Int range.
 **Use Default Value** reads the final Expression Parameters default after
 generators run, falling back to a consistent controller default. VRChat's
@@ -1577,6 +1680,15 @@ proportions: defaults of 20, 60, and 80 become one shape at 100, with deformatio
 such as `abc`, `abcd`, and `abce` produce three independent groups: `abc`, `d`, and
 `e`.
 
+**Freeze Constant Animated BlendShapes** (enabled by default) also bakes shapes
+whose complete animation output is proved constant. Changing their authored
+starting weights requires Optimization Policy permission. MMD and descriptor
+interfaces, native facial tracking, exclusions and external mesh consumers remain
+protected. Per-shape permissions are retained through known mesh rewrites; an
+external merge without a complete source map uses the conservative combination
+of its possible source permissions. Later material, animation and hierarchy
+cleanup can expose additional constant or ineffective shapes.
+
 **Remove Ineffective BlendShapes** (enabled by default) removes shapes with
 exactly zero position, normal and tangent deltas on every vertex still indexed
 by any submesh, across every frame. This includes empty separator shapes and
@@ -1663,7 +1775,8 @@ Animators. Disable individual optimizations in the Inspector:
 | Simplify Unused State Logic | Follow state conditions and timing back from actual outputs instead of treating every transition as a consumer. Remove unused internal AAP/Set/Add/Copy calculations and collapse empty state machines to their original default state. Replace dead ordinary Direct/1D trees with an existing empty leaf while retaining implicit Write Defaults effects. At the final SDK boundary, remove proven empty Write Defaults On override layers. Keep additive, masked, synchronized, default-sensitive and referenced layers; preserve cross-playable layer-control indices. Preserved input values and their observable consumers survive; input preservation does not retain effect-free state logic. |
 | Simplify Constant Blend Trees | Replace static 1D or Direct trees with a selected child when parameter analysis proves its weight is one. Also collapse 1D trees whose branches reference the same constant clip with identical sampling settings, even with a dynamic input. Preserve zero-valued writes, binding coverage and observable timing. |
 | Merge Same Weight Clips | Combine disjoint static clips driven by the same parameter in a non-normalized Direct tree. |
-| Bake Constant Material Properties | Bake invariant Float/Range material properties into renderer-specific build copies. Color and Vector channels remain animated because Unity writes their combined property-block value. Animated material slots, ambiguous targets and unproven weights are preserved. |
+| Bake Constant Material Slots | Bake proven constant material-reference tracks into renderer slots. Null references, native writers, initialization readers, shared bindings and later Write Defaults are considered. Source assets remain unchanged. |
+| Bake Constant Material Properties | Bake constant Float/Range values and complete Color/Vector/texture-transform groups into build materials. A dynamic sibling channel prevents baking its whole property. All possible material swaps and writers participate. Changed starting values require Optimization Policy permission. |
 | Remove Unused Material Properties | Remove complete material-property tracks only when every possible material shader is proven not to use the property. Preserved inputs and their live outputs remain dynamic; they do not retain unused properties in the same clip. Reanalyze dependent computations after material conversion. Preserve active Color/Vector channels and unknown shader consumers. |
 
 Graph rewriting runs before Avatar Optimizer and again after its layer merging.
@@ -1798,17 +1911,14 @@ and holes. Depth tolerance is in world units. Higher settings cost more GPU time
 An empty **Reference Pose** uses the current build pose. Additional pose clips
 use avatar-relative paths and a sample time. Pose inspection uses temporary
 copies and leaves source transforms, meshes, materials and clips untouched.
-**Analyze / Preview Current Setup** shows retained geometry in blue and removal
-regions in red. This does not evaluate generators or Animator state machines;
-**Analyze Build (Active Platform)** runs isolated SDK preprocessing and reports
-the generated result, without uploading. Removal runs after constant visibility
+Removal runs after constant visibility
 analysis and before BlendShape freezing and mesh reduction. With an active
 ALTO Material Atlas, removal and morph freezing wait until actual conversion
 and material-output cleanup finish. This evaluates the resulting opacity and
 surviving animation instead of predicting a conversion that might be skipped.
 
 Sampling cannot guarantee that a region stays hidden through all runtime motion.
-Inspect the preview and include representative poses. The editor needs a GPU
+Inspect the built avatar and include representative poses. The editor needs a GPU
 supporting SM5 fragment buffers, compute shaders and R32 float render/blend
 targets. Unsupported GPU capabilities preserve the mesh and report the reason.
 

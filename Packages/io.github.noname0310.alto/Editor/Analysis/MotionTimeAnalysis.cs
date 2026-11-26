@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using nadena.dev.ndmf.animator;
@@ -11,9 +12,11 @@ namespace Noname.AvatarTools.Analysis
         private readonly HashSet<VirtualMotion> observed = new();
         private readonly Dictionary<VirtualMotion, bool> constant = new();
         private readonly HashSet<VirtualMotion> visiting = new();
+        private readonly Func<VirtualClip, bool> clipPose;
 
-        internal MotionTimeAnalysis(IEnumerable<VirtualAnimatorController> controllers)
+        internal MotionTimeAnalysis(IEnumerable<VirtualAnimatorController> controllers, Func<VirtualClip, bool> clipPose = null)
         {
+            this.clipPose = clipPose ?? MotionAnalysis.ConstantPoseClip;
             foreach (var controller in controllers)
             {
                 var layers = controller.Layers.ToArray();
@@ -45,7 +48,7 @@ namespace Noname.AvatarTools.Analysis
             if (!visiting.Add(motion)) return false;
             result = motion switch
             {
-                VirtualClip clip => MotionAnalysis.ConstantPoseClip(clip),
+                VirtualClip clip => clipPose(clip),
                 VirtualBlendTree tree => tree.Children.All(c => c.TimeScale == 1 && c.CycleOffset == 0 &&
                     !c.Mirror && ConstantPose(c.Motion)),
                 _ => false

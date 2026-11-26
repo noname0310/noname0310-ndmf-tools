@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using UnityEditor;
 using UnityEngine;
 using VRC.SDK3.Avatars.Components;
 
@@ -22,7 +23,36 @@ namespace Noname.AvatarTools.Analysis
             if (analysis.FallbackReason != null) yield break;
             var proof = new InvariantComponentSettings(index, analysis, index.ControllerEntries);
             foreach (var candidate in candidates)
-                if (proof.IsConstant(candidate)) yield return candidate;
+                if (proof.IsConstant(candidate) || NonnegativeScaleOutputs(candidate, index, proof)) yield return candidate;
+        }
+
+        private static bool NonnegativeScaleOutputs(VRCHeadChop component, AvatarAnimationIndex index,
+            InvariantComponentSettings invariant)
+        {
+            // This is a sign fact, not permission to bake a factor or remove its
+            // curves. Finite normalized interpolation of identical nonnegative
+            // contributors can change magnitude bits without reversing winding.
+            // Keep all lifecycle/reference fields exact, and reuse the bounded
+            // mixer premises (including retained defaults and stable weights).
+            using var serialized = new SerializedObject(component);
+            var factors = new HashSet<string> { nameof(component.globalScaleFactor) };
+            var bones = serialized.FindProperty(nameof(component.targetBones));
+            if (bones?.isArray == true)
+                for (int i = 0; i < bones.arraySize; i++)
+                {
+                    var factor = bones.GetArrayElementAtIndex(i).FindPropertyRelative("scaleFactor");
+                    if (factor != null) factors.Add(factor.propertyPath);
+                }
+            foreach (var group in index.ForObject(component).GroupBy(u => u.Binding.propertyName))
+            {
+                if (invariant.IsConstantProperty(component, group.Key)) continue;
+                var property = serialized.FindProperty(group.Key);
+                if (!factors.Contains(group.Key) || property?.propertyType != SerializedPropertyType.Float ||
+                    !Nonnegative(property.floatValue) ||
+                    !index.ConstantOutputs.MatchesInitialValue(component, group.ToArray(), property.floatValue, true,
+                        ConstantOutputKind.Scalar, allowSmallNumericalDifferences: true)) return false;
+            }
+            return true;
         }
 
         private static bool Nonnegative(float value) => MotionAnalysis.Finite(value) && value >= 0;

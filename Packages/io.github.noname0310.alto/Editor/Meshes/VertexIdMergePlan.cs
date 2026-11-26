@@ -31,6 +31,8 @@ namespace Noname.AvatarTools.Meshes
             try
             {
                 var sensitive = group.Where(c => c.VertexIdMaterials.Count != 0).ToArray();
+                var layouts = new Dictionary<SkinnedMeshRenderer, VertexRewriteLayout>();
+                if (trim) foreach (var candidate in group) layouts.Add(candidate.Renderer, new VertexRewriteLayout(candidate.Renderer.sharedMesh));
                 var first = sensitive.OrderBy(c => c.VertexIdAdapters.Count == c.VertexIdMaterials.Select(m => m.shader).Distinct().Count() ? 1 : 0)
                     .ThenByDescending(c => c.Renderer.sharedMesh.vertexCount).FirstOrDefault();
                 plan.VertexOrder = (first == null ? group : new[] { first }.Concat(group.Where(c => c != first)))
@@ -42,10 +44,10 @@ namespace Noname.AvatarTools.Meshes
                 if (trim)
                 {
                     var compactable = sensitive.Where(c => c.VertexIdAdapters.Count == c.VertexIdMaterials.Select(m => m.shader).Distinct().Count() &&
-                        c.Renderer.sharedMesh.vertexCount <= 16777216 && UsedCount(c.Renderer.sharedMesh) < c.Renderer.sharedMesh.vertexCount).ToArray();
-                    long savings = compactable.Sum(c => RemovedVertexBytes(c.Renderer.sharedMesh));
-                    long vertices = group.Sum(c => (long)(sensitive.Contains(c) && !compactable.Contains(c) ? c.Renderer.sharedMesh.vertexCount : UsedCount(c.Renderer.sharedMesh)));
-                    long cost = vertices * 8; // A portable float2 UV stream, without half precision or compression.
+                        c.Renderer.sharedMesh.vertexCount <= 16777216 && layouts[c.Renderer].CompactVertexCount < c.Renderer.sharedMesh.vertexCount).ToArray();
+                    long savings = compactable.Sum(c => layouts[c.Renderer].RemovedBytes);
+                    long vertices = group.Sum(c => (long)(sensitive.Contains(c) && !compactable.Contains(c) ? c.Renderer.sharedMesh.vertexCount : layouts[c.Renderer].CompactVertexCount));
+                    long cost = VertexRewriteLayout.OriginalIdAttributeBytes(vertices);
                     int channel = savings > cost && compactable.Length != 0 ? SpareChannel(group, target ?? EditorUserBuildSettings.activeBuildTarget) : -1;
                     if (channel >= 0)
                     {
@@ -59,7 +61,7 @@ namespace Noname.AvatarTools.Meshes
                 foreach (var renderer in plan.VertexOrder)
                 {
                     offsets.Add(renderer, cursor);
-                    cursor = checked(cursor + (trim && !plan.KeepVertices.Contains(renderer) ? UsedCount(renderer.sharedMesh) : renderer.sharedMesh.vertexCount));
+                    cursor = checked(cursor + (trim && !plan.KeepVertices.Contains(renderer) ? layouts[renderer].CompactVertexCount : renderer.sharedMesh.vertexCount));
                 }
                 var modes = sensitive.SelectMany(c => c.VertexIdMaterials.Select(m => new { Shader = m.shader, Renderer = c.Renderer }))
                     .Where(x => !plan.AttributeInputs.Contains(x.Renderer)).GroupBy(x => x.Shader)
@@ -109,36 +111,7 @@ namespace Noname.AvatarTools.Meshes
         }
 
         internal static int UsedCount(Mesh mesh)
-        {
-            var used = new HashSet<int>();
-            for (int i = 0; i < mesh.subMeshCount; i++) used.UnionWith(mesh.GetIndices(i, true));
-            return used.Count == 0 ? mesh.vertexCount : used.Count;
-        }
-
-        private static long RemovedVertexBytes(Mesh mesh)
-        {
-            long stride = 0;
-            for (int stream = 0; stream < mesh.vertexBufferCount; stream++) stride += mesh.GetVertexBufferStride(stream);
-            var used = new HashSet<int>();
-            for (int slot = 0; slot < mesh.subMeshCount; slot++) used.UnionWith(mesh.GetIndices(slot, true));
-            if (used.Count == 0) return 0;
-            var removed = Enumerable.Range(0, mesh.vertexCount).Where(v => !used.Contains(v)).ToArray();
-            long bytes = removed.Length * stride;
-            // Count nonzero removed deltas; sparse morphs do not pay for every
-            // zero vertex. The vertex-index entry accompanies each stored delta.
-            if (mesh.blendShapeCount != 0)
-            {
-                var positions = new Vector3[mesh.vertexCount]; var normals = new Vector3[mesh.vertexCount]; var tangents = new Vector3[mesh.vertexCount];
-                for (int shape = 0; shape < mesh.blendShapeCount; shape++)
-                    for (int frame = 0; frame < mesh.GetBlendShapeFrameCount(shape); frame++)
-                    {
-                        mesh.GetBlendShapeFrameVertices(shape, frame, positions, normals, tangents);
-                        foreach (int vertex in removed)
-                            if (positions[vertex] != Vector3.zero || normals[vertex] != Vector3.zero || tangents[vertex] != Vector3.zero) bytes += 40;
-                    }
-            }
-            return bytes;
-        }
+            => new VertexRewriteLayout(mesh).CompactVertexCount;
 
         private static int SpareChannel(IReadOnlyList<MeshMergeCandidate> group, BuildTarget target)
         {

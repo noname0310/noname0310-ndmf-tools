@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using nadena.dev.ndmf;
+using Noname.AvatarTools.BlendShapeOptimization;
 using UnityEngine;
 using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
@@ -77,7 +78,11 @@ namespace Noname.AvatarTools.Build
                 mesh.SetSubMeshes(KeptSubMeshes.Select(SourceMesh.GetSubMesh).ToArray(), MeshUpdateFlags.DontRecalculateBounds);
                 ObjectRegistry.RegisterReplacedObject(SourceMesh, mesh);
                 context.AssetSaver.SaveAsset(mesh);
-                if (Renderer is SkinnedMeshRenderer skin) skin.sharedMesh = mesh;
+                if (Renderer is SkinnedMeshRenderer skin)
+                {
+                    context.GetState<OptimizationState>().Provenance.RecordMeshRewrite(skin, SourceMesh, mesh);
+                    skin.sharedMesh = mesh;
+                }
                 else Renderer.GetComponent<MeshFilter>().sharedMesh = mesh;
             }
             Renderer.sharedMaterials = Materials.Where((_, index) => SlotMap[index] >= 0).ToArray();

@@ -83,6 +83,9 @@ namespace Noname.AvatarTools.Physics
             => ApplyAndCountChanges(context);
 
         internal static int ApplyAndCountChanges(BuildContext context)
+            => ApplyChanges(context).Count;
+
+        internal static OptimizationChanges ApplyChanges(BuildContext context)
         {
             try { return ApplyCore(context); }
             finally
@@ -90,37 +93,40 @@ namespace Noname.AvatarTools.Physics
                 var state = context.GetState<PhysBoneOptimizationState>();
                 if (state.Component != null && state.Component.BuildInputs.Length == state.Inputs.Count)
                     for (int i = 0; i < state.Inputs.Count; i++) state.Inputs[i] = (state.Component.BuildInputs[i], state.Inputs[i].Protected);
-                foreach (var component in context.AvatarRootObject.GetComponentsInChildren<ALTOTraceAndOptimizePhysBones>(true)) Object.DestroyImmediate(component);
+                var components = context.AvatarRootObject.GetComponentsInChildren<ALTOTraceAndOptimizePhysBones>(true);
+                foreach (var component in components) Object.DestroyImmediate(component);
+                if (components.Length != 0) context.GetState<OptimizationAnalysis>().Invalidate(AnalysisDomain.Hierarchy);
             }
         }
 
-        private static int ApplyCore(BuildContext context)
+        private static OptimizationChanges ApplyCore(BuildContext context)
         {
-            if (!context.GetState<PhysBoneOptimizationState>().Enabled) return 0;
+            if (!context.GetState<PhysBoneOptimizationState>().Enabled) return default;
             using var lease = OptimizationSession.Acquire(context); var services = lease.Services;
             var entries = services.ControllerContext.Controllers.Where(e => !(e.Key is Object owner) || owner != null).ToDictionary(e => e.Key, e => e.Value);
             return ApplyCore(context, entries, ParameterPolicyPass.Resolve(context, entries), services.ObjectPathRemapper.GetVirtualToRealPathMap(), services.ObjectPathRemapper);
         }
 
-        internal static int ApplyFinal(BuildContext context, IDictionary<object, VirtualAnimatorController> entries, ResolvedParameterPolicy policy)
+        internal static OptimizationChanges ApplyFinalChanges(BuildContext context, IDictionary<object, VirtualAnimatorController> entries, ResolvedParameterPolicy policy)
             => ApplyCore(context, entries, policy, null, null);
 
-        private static int ApplyCore(BuildContext context, IDictionary<object, VirtualAnimatorController> entries,
+        private static OptimizationChanges ApplyCore(BuildContext context, IDictionary<object, VirtualAnimatorController> entries,
             ResolvedParameterPolicy policy, IReadOnlyDictionary<string, string> paths, ObjectPathRemapper remapper)
         {
             var settings = context.GetState<PhysBoneOptimizationState>(); if (settings.Scope == null ||
-                (!settings.ShareColliders && !settings.OptimizeIsAnimated && !settings.ReplaceEndBones && !settings.MergeSimulations)) return 0;
+                (!settings.ShareColliders && !settings.OptimizeIsAnimated && !settings.ReplaceEndBones && !settings.MergeSimulations)) return default;
             var avatar = context.AvatarRootObject; var colliders = avatar.GetComponentsInChildren<VRCPhysBoneCollider>(true);
             var bones = avatar.GetComponentsInChildren<VRCPhysBone>(true);
-            if (colliders.Length < 2 && bones.Length == 0) return 0;
+            if (colliders.Length < 2 && bones.Length == 0) return default;
             var watch = Stopwatch.StartNew(); var report = context.GetState<OptimizationBuildReport>();
             report.Initialize(avatar, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
-            var animations = AvatarAnimationIndex.Create(avatar, entries, paths, policy.Preserved);
+            var facts = context.GetState<OptimizationAnalysis>().Avatar(avatar, entries, paths, policy.Preserved);
+            var animations = facts.Index;
             string issue = ObjectOptimizationSafety.UnsupportedRuntime(avatar) ?? animations.UnsafeReason;
             if (policy.Uncertain || issue != null)
-            { report.Messages.Add("PhysBone optimization retained inputs: " + (issue ?? "unverified Preserve mapping")); return 0; }
+            { report.Messages.Add("PhysBone optimization retained inputs: " + (issue ?? "unverified Preserve mapping")); return default; }
             var objects = context.GetState<ObjectOptimizationState>();
-            var records = new SerializedReferenceSnapshot();
+            var records = facts.References;
             var references = AvatarDependencyGraph.Create(avatar, animations, new ObjectOptimizationState
             { Scope = new OptimizationBuildScope { Root = avatar.transform }, RuntimeDependenciesOnly = objects.RuntimeDependenciesOnly }, false,
                 context.GetState<OptimizationAnalysis>().Shaders, records);
@@ -195,7 +201,9 @@ namespace Noname.AvatarTools.Physics
                 " ms; " + animatedFlags + " unused Is Animated flags disabled; " + endBones + " unused leaf transforms replaced with endpoints. " +
                 simulations + " compatible simulation components merged. " +
                 "Global collisions, animation, external readers and collision multiplicity retained.");
-            return replacements.Count + animatedFlags + endBones + simulations;
+            return OptimizationChanges.From(animatedFlags, AnalysisDomain.Physics) +
+                OptimizationChanges.From(replacements.Count + endBones, AnalysisDomain.Physics | AnalysisDomain.Hierarchy) +
+                OptimizationChanges.From(simulations, AnalysisDomain.Physics | AnalysisDomain.Hierarchy | AnalysisDomain.Animation);
         }
     }
 }

@@ -186,7 +186,11 @@ namespace Noname.AvatarTools.MaterialAtlas
                     var domain = plan.UvDomain;
                     mesh.uv = mesh.uv.Select(uv => new Vector2((uv.x - domain.x) / domain.width, (uv.y - domain.y) / domain.height)).ToArray();
                     ObjectRegistry.RegisterReplacedObject(current, mesh); context.AssetSaver.SaveAsset(mesh);
-                    if (plan.Renderer is SkinnedMeshRenderer skinned) skinned.sharedMesh = mesh;
+                    if (plan.Renderer is SkinnedMeshRenderer skinned)
+                    {
+                        context.GetState<BlendShapeOptimization.OptimizationState>().Provenance.RecordMeshRewrite(skinned, current, mesh);
+                        skinned.sharedMesh = mesh;
+                    }
                     else plan.Renderer.GetComponent<MeshFilter>().sharedMesh = mesh;
                 }
             }

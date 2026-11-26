@@ -32,10 +32,20 @@ namespace Noname.AvatarTools.Physics
                 if (animations.ForObject(collider).Any(u => !u.Complete || u.Binding.isPPtrCurve || u.Binding.propertyName != "m_Enabled")) continue;
                 if (references.ReferenceOwners.TryGetValue(collider, out var readers) && readers.Any(r => !(r is VRCPhysBone))) continue;
                 var original = collider.GetRootTransform(); var target = original;
+                var contributors = new HashSet<Transform> { original, collider.transform };
+                bool allowRounding = true;
                 var position = collider.position; var rotation = collider.rotation;
                 float radius = collider.radius, height = collider.height;
                 while (proof.CanSubstitute(target, settings.Scope) && SpatialFrameProof.UniformShapeScale(target, avatar.transform, proof.Mutations, out float scale))
                 {
+                    contributors.Add(target); contributors.Add(target.parent);
+                    allowRounding &= proof.AllowsRounding(NumericalOptimization.ComponentHoisting, collider.transform, target, target.parent);
+                    if (!allowRounding)
+                    {
+                        if (!StaticTransformProof.ExactLocalIdentity(target)) break;
+                        target = target.parent;
+                        continue;
+                    }
                     var nextPosition = StaticTransformProof.Local(target).MultiplyPoint3x4(position);
                     var nextRotation = target.localRotation * rotation;
                     if (!StaticTransformProof.Finite(nextPosition) || !StaticTransformProof.Finite(nextRotation) || !StaticTransformProof.Finite(radius * scale) ||
@@ -44,6 +54,7 @@ namespace Noname.AvatarTools.Physics
                     target = target.parent;
                 }
                 if (target == original) continue;
+                proof.NumericalPolicy?.InheritNumericalConstraints(collider.transform, contributors);
                 collider.rootTransform = target; collider.position = position; collider.rotation = rotation;
                 collider.radius = radius; collider.height = height;
                 changed++;

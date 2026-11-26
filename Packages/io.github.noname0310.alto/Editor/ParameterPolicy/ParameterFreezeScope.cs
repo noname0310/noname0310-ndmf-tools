@@ -38,7 +38,7 @@ namespace Noname.AvatarTools.ParameterPolicy
                     foreach (var clip in nodes.OfType<VirtualClip>())
                     {
                         var source = MotionAnalysis.Source(clip);
-                        if (clip.IsMarkerClip || source == null || source.humanMotion || source.events.Length > 0)
+                        if (clip.IsMarkerClip || source == null || source.humanMotion || AnimationEventEffects.MayInvokeCallback(source))
                             throw new InvalidOperationException("Cannot prove the scope of a frozen parameter's motion: " + clip.Name);
                         foreach (var binding in clip.GetFloatCurveBindings().Concat(clip.GetObjectCurveBindings()))
                         {

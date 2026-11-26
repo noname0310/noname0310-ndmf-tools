@@ -12,7 +12,7 @@ namespace Noname.AvatarTools.Analysis
     internal enum PpDialectEffects
     {
         None = 0, MultilineCall = 1, Variadic = 2, Conditional = 4,
-        LiteralStringification = 8, ArgumentPaste = 16, ArgumentSpacing = 32, Stringification = 64
+        LiteralStringification = 8, ArgumentPaste = 16, ArgumentSpacing = 32, Stringification = 64, ContinuedLineDirective = 128
     }
 
     // Immutable macro hide sets are shared by replacement tokens. The common

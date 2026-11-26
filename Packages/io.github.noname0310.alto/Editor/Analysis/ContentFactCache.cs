@@ -22,22 +22,27 @@ namespace Noname.AvatarTools.Analysis
         }
 
         internal static bool Enabled = true;
+        internal static Action<string, string, string[]> KeyObserver;
         internal static readonly ContentFactCache Shared = new(Path.GetFullPath("Library/ALTO/AnalysisFacts"),
-            typeof(ContentFactCache).Module.ModuleVersionId.ToString("N") + "/" +
-            typeof(UnityEditor.ShaderUtil).Module.ModuleVersionId + "/" + typeof(UnityEngine.Application).Module.ModuleVersionId);
+            typeof(UnityEditor.ShaderUtil).Module.ModuleVersionId + "/" + typeof(UnityEngine.Application).Module.ModuleVersionId,
+            AnalysisCacheContracts.Revision, AnalysisCacheDiskBudget.Shared);
         private const int Format = 1, MaximumRecord = 64 * 1024 * 1024;
-        private const long MaximumDisk = 256L * 1024 * 1024;
         private readonly string directory, revision;
+        private readonly Func<string, string> contractRevision;
+        private readonly AnalysisCacheDiskBudget diskBudget;
         private readonly object gate = new();
         private readonly BoundedAnalysisCache<string, byte[]> memory = new(1024, 32 * 1024 * 1024, StringComparer.Ordinal);
         private readonly Dictionary<string, Statistics> statistics = new(StringComparer.Ordinal);
-        private int writes;
         private sealed class DigestValue { internal string Value; }
         private static ConditionalWeakTable<string, DigestValue> textDigests = new();
         internal static long TextHashTicks, TextHashBytes, TextHashCalls;
 
-        internal ContentFactCache(string directory, string revision)
-        { this.directory = Path.GetFullPath(directory); this.revision = revision; }
+        internal ContentFactCache(string directory, string revision, Func<string, string> contractRevision = null,
+            AnalysisCacheDiskBudget diskBudget = null)
+        {
+            this.directory = Path.GetFullPath(directory); this.revision = revision; this.contractRevision = contractRevision;
+            this.diskBudget = diskBudget ?? new AnalysisCacheDiskBudget(new[] { this.directory });
+        }
 
         // Strings are immutable. A weak identity memo avoids re-reading a large
         // source for each query without keeping shaders or avatars alive.
@@ -71,15 +76,18 @@ namespace Noname.AvatarTools.Analysis
         internal string Key(string kind, params string[] parts)
         {
             if (!Enabled) return null;
+            string contract = contractRevision?.Invoke(kind);
+            if (contractRevision != null && contract == null) return null;
             long start = Stopwatch.GetTimestamp();
             using var stream = new MemoryStream();
             using (var writer = new BinaryWriter(stream, Encoding.UTF8, true))
             {
-                writer.Write(Format); writer.Write(revision); writer.Write(kind); writer.Write(parts.Length);
+                writer.Write(Format); writer.Write(revision); writer.Write(kind); writer.Write(contract ?? ""); writer.Write(parts.Length);
                 foreach (string part in parts) { writer.Write(part != null); if (part != null) writer.Write(part); }
             }
             string key = ShaderAnalysisCache.Digest(stream.ToArray());
             lock (gate) Stats(kind).KeyMilliseconds += Elapsed(start);
+            KeyObserver?.Invoke(kind, key, parts);
             return key;
         }
 
@@ -112,6 +120,7 @@ namespace Noname.AvatarTools.Analysis
                 using var body = new BinaryReader(data, Encoding.UTF8);
                 result = read(body);
                 if (data.Position != data.Length) { result = default; return false; }
+                diskBudget.Used(PathFor(key));
                 return hit = true;
             }
             catch (Exception e) when (StorageFailure(e)) { result = default; return false; }
@@ -138,9 +147,10 @@ namespace Noname.AvatarTools.Analysis
                     using (var file = File.Create(temporary))
                     using (var writer = new BinaryWriter(file, Encoding.UTF8))
                     { writer.Write(Format); writer.Write(key); writer.Write(payload.Length); writer.Write(ContentDigest.Bytes(payload)); writer.Write(payload); }
-                    if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                    var previous = new FileInfo(path); long replacedBytes = previous.Exists ? previous.Length : 0;
+                    if (previous.Exists) File.Replace(temporary, path, null); else File.Move(temporary, path);
                     temporary = null; memory.Add(key, payload, payload.Length); Stats(kind).Writes++;
-                    if (++writes % 256 == 1) Trim();
+                    diskBudget.Stored(new FileInfo(path).Length, replacedBytes);
                 }
             }
             catch (Exception e) when (StorageFailure(e)) { }
@@ -174,6 +184,7 @@ namespace Noname.AvatarTools.Analysis
             {
                 memory.Clear(); textDigests = new();
                 if (Directory.Exists(directory)) foreach (string file in Directory.GetFiles(directory, "*.bin")) File.Delete(file);
+                diskBudget.InvalidateSize();
             }
         }
         private Statistics Stats(string kind)
@@ -182,12 +193,6 @@ namespace Noname.AvatarTools.Analysis
         {
             if (key.Length != 64 || key.Any(c => !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f'))) throw new ArgumentException("Invalid fact key");
             return Path.Combine(directory, key + ".bin");
-        }
-        private void Trim()
-        {
-            long total = 0; int count = 0;
-            foreach (var file in new DirectoryInfo(directory).GetFiles("*.bin").OrderByDescending(f => f.LastWriteTimeUtc))
-            { total += file.Length; if (++count > 8192 || total > MaximumDisk) try { file.Delete(); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
         }
         internal static int Count(BinaryReader reader, int maximum = 1000000)
         { int count = reader.ReadInt32(); if (count < 0 || count > maximum) throw new InvalidDataException(); return count; }

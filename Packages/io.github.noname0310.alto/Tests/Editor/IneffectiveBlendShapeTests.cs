@@ -147,6 +147,135 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(IneffectivePlan(Usage(AnimatedShapes(source)).usage, observeAllVertices: true).HasChanges, Is.False);
         }
 
+        [TestCase("None")] [TestCase("RendererAnimation")]
+        [TestCase("Particle")] [TestCase("AnimatedParticle")]
+        public void IneffectiveRemovalDistinguishesSkinningInputsFromExternalVertexReaders(string reader)
+        {
+            var source = renderer.sharedMesh = OcclusionMaskMesh();
+            source.SetIndices(Array.Empty<int>(), MeshTopology.Triangles, 0);
+            renderer.rootBone = root.transform; renderer.bones = new[] { root.transform };
+            source.bindposes = new[] { Matrix4x4.identity };
+            source.boneWeights = Enumerable.Repeat(new BoneWeight { boneIndex0 = 0, weight0 = 1 }, source.vertexCount).ToArray();
+            var clip = AnimatedShapes(source);
+            if (reader == "RendererAnimation")
+                AnimationUtility.SetObjectReferenceCurve(clip,
+                    EditorCurveBinding.PPtrCurve("", typeof(SkinnedMeshRenderer), "m_RootBone"),
+                    new[] { new ObjectReferenceKeyframe { time = 0, value = root.transform } });
+            if (reader == "Particle" || reader == "AnimatedParticle")
+            {
+                var emitter = PolicyChild("Emitter").AddComponent<ParticleSystem>();
+                var shape = emitter.shape; shape.shapeType = ParticleSystemShapeType.SkinnedMeshRenderer;
+                shape.skinnedMeshRenderer = reader == "Particle" ? renderer : null;
+                if (reader == "AnimatedParticle") AnimationUtility.SetObjectReferenceCurve(clip,
+                    EditorCurveBinding.PPtrCurve("Emitter", typeof(ParticleSystem), "ShapeModule.m_SkinnedMeshRenderer"),
+                    new[] { new ObjectReferenceKeyframe { time = 0, value = renderer } });
+            }
+            var readers = BlendShapeEffectAnalysis.FindFullVertexReaders(root, FrameIndex(clip));
+            bool observed = reader == "Particle" || reader == "AnimatedParticle";
+            Assert.That(readers.Contains(renderer), Is.EqualTo(observed),
+                "Native skinning references must not make the renderer an external reader of its own vertex buffer.");
+            var plan = IneffectivePlan(Usage(clip).usage, observeAllVertices: readers.Contains(renderer));
+            Assert.That(plan.Ineffective.Any(shape => shape.Name == "Region A"), Is.EqualTo(!observed));
+        }
+
+        [TestCase("Renderer", false)] [TestCase("Renderer", true)]
+        [TestCase("GameObject", false)] [TestCase("GameObject", true)]
+        [TestCase("Transform", false)] [TestCase("Transform", true)]
+        [TestCase("Asset", false)] [TestCase("Asset", true)]
+        public void IneffectiveRemovalPreservesIndirectAndAnimatedFullVertexReaders(string route, bool animated)
+        {
+            var source = renderer.sharedMesh = OcclusionMaskMesh();
+            for (int slot = 0; slot < source.subMeshCount; slot++) source.SetIndices(Array.Empty<int>(), MeshTopology.Triangles, slot);
+            renderer.rootBone = root.transform; renderer.bones = new[] { root.transform };
+            var clip = AnimatedShapes(source);
+            var consumer = PolicyChild("Consumer").AddComponent<RuntimeBlendShapeAccessFixture>();
+            UnityEngine.Object target = renderer;
+            if (route == "GameObject") target = root;
+            if (route == "Transform") target = root.transform;
+            if (route == "Asset")
+            {
+                var data = Track(ScriptableObject.CreateInstance<ConstantSerializedValueFixture>());
+                data.Reference = root; target = data;
+            }
+            if (animated) AnimationUtility.SetObjectReferenceCurve(clip,
+                    EditorCurveBinding.PPtrCurve("Consumer", typeof(RuntimeBlendShapeAccessFixture), "Asset"),
+                new[] { new ObjectReferenceKeyframe { time = 0, value = target } });
+            else consumer.Asset = target;
+            var index = FrameIndex(clip);
+            var readers = BlendShapeEffectAnalysis.FindFullVertexReaders(root, index);
+            Assert.That(readers, Does.Contain(renderer));
+            var usage = Usage(clip).usage;
+            Assert.That(IneffectivePlan(usage).Ineffective, Is.Not.Empty,
+                "The unindexed-only shapes must be removable when no vertex-buffer reader exists.");
+            Assert.That(IneffectivePlan(usage, observeAllVertices: readers.Contains(renderer)).HasChanges, Is.False);
+        }
+
+        [TestCase(false, false)] [TestCase(true, false)] [TestCase(false, true)] [TestCase(true, true)]
+        public void ParticleSimulationFrameDoesNotReadDescendantVertices(bool animated, bool unknownReader)
+        {
+            renderer.sharedMesh = OcclusionMaskMesh();
+            var particle = PolicyChild("Particle").AddComponent<ParticleSystem>();
+            var clip = Clip();
+            var main = particle.main; main.simulationSpace = ParticleSystemSimulationSpace.Custom;
+            if (animated) AnimationUtility.SetObjectReferenceCurve(clip,
+                EditorCurveBinding.PPtrCurve("Particle", typeof(ParticleSystem), "moveWithCustomTransform"),
+                new[] { new ObjectReferenceKeyframe { time = 0, value = root.transform } });
+            else main.customSimulationSpace = root.transform;
+            if (unknownReader)
+            {
+                // Unknown code can follow the ParticleSystem's frame reference
+                // and search that hierarchy. Do not weaken that transitive rule.
+                var consumer = PolicyChild("Consumer").AddComponent<RuntimeBlendShapeAccessFixture>();
+                consumer.Asset = particle;
+                if (animated) consumer.Asset = root.transform;
+            }
+            Assert.That(BlendShapeEffectAnalysis.FindFullVertexReaders(root, FrameIndex(clip)).Contains(renderer),
+                Is.EqualTo(unknownReader));
+        }
+
+        [Test]
+        public void BuildOnlySettingsDoNotReadRuntimeVertexBuffers()
+        {
+            renderer.sharedMesh = OcclusionMaskMesh();
+            var settings = PolicyChild("Editor settings").AddComponent<SharedShaderReferenceFixture>();
+            settings.Asset = root;
+            Assert.That(BlendShapeEffectAnalysis.FindFullVertexReaders(root).Contains(renderer), Is.False);
+        }
+
+        [TestCase("Empty")] [TestCase("Unanimated")] [TestCase("ZeroReset")] [TestCase("Constant")]
+        public void BlendShapeBuildPassPreservesUnindexedRuntimeAccess(string candidate)
+        {
+            var source = Mesh();
+            Frame(source, "First", 100, candidate == "Empty" ? Vector3.zero : Vector3.right);
+            Frame(source, "Second", 100, candidate == "Empty" ? Vector3.zero : Vector3.up);
+            var descriptor = root.AddComponent<VRCAvatarDescriptor>(); root.AddComponent<Animator>();
+            var consumer = root.AddComponent<RuntimeBlendShapeAccessFixture>();
+            var optimizer = root.AddComponent<ALTOTraceAndOptimizeBlendShapes>();
+            optimizer.FreezeConstantAnimatedBlendShapes = true;
+            root.AddComponent<ALTOOptimizationPolicy>();
+            var clip = Clip();
+            if (candidate != "Unanimated") foreach (var name in new[] { "First", "Second" })
+                AnimationUtility.SetEditorCurve(clip, Binding(name),
+                    candidate == "Empty" ? AnimationCurve.Linear(0, 0, 1, 100) :
+                    AnimationCurve.Constant(0, 1, candidate == "ZeroReset" ? 0 : 70));
+            var controller = Controller(clip);
+            descriptor.baseAnimationLayers = new[] { new VRCAvatarDescriptor.CustomAnimLayer {
+                type = VRCAvatarDescriptor.AnimLayerType.FX, animatorController = controller } };
+            descriptor.specialAnimationLayers = Array.Empty<VRCAvatarDescriptor.CustomAnimLayer>();
+            consumer.SetWeight(0, 20); consumer.SetWeight(1, 30);
+            var context = new BuildContext(root, null);
+            OptimizationPolicy.Capture(context); ALTOPlugin.Capture(context); ALTOPlugin.Apply(context);
+            Track(renderer.sharedMesh);
+            Assert.That(consumer.ShapeCount, Is.EqualTo(2));
+            Assert.That(consumer.ShapeName(0), Is.EqualTo("First"));
+            Assert.That(consumer.ShapeName(1), Is.EqualTo("Second"));
+            consumer.SetWeight(0, 81); consumer.SetWeight(1, 19);
+            Assert.That(consumer.GetWeight(0), Is.EqualTo(81));
+            Assert.That(consumer.GetWeight(1), Is.EqualTo(19));
+            Assert.That(context.GetState<OptimizationBuildReport>().Messages,
+                Has.Some.Contains("unsupported runtime component"));
+        }
+
         [TestCase(false)] [TestCase(true)]
         public void IneffectiveBuildPassHonorsProtectionAndRemapsEyelidIndices(bool enabled)
         {

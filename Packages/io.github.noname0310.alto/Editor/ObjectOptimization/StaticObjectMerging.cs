@@ -32,26 +32,29 @@ namespace Noname.AvatarTools.ObjectOptimization
                     keys.Contains(frame) || keys.Contains(frame.gameObject)) continue;
                 var children = frame.Cast<Transform>().ToArray();
                 if (!relocation.RedundantGate(frame, frame.parent)) continue;
-                bool identity = StaticTransformProof.Near(StaticTransformProof.Local(frame), Matrix4x4.identity);
-                var poses = new List<(Transform Child, Vector3 Position, Quaternion Rotation, Vector3 Scale, Action Edit)>();
+                var poses = new List<(Transform Child, Vector3 Position, Quaternion Rotation, Vector3 Scale, Action Edit, bool Identity)>();
                 foreach (var child in children)
                 {
                     if (!settings.Scope.Contains(child) || settings.Protected(child)) continue;
                     // Keep ambiguous original paths; destination collisions are
                     // resolved by the checked relocation plan before any edits.
                     if (children.Count(c => c.name == child.name) != 1) continue;
+                    bool allowRounding = proof.AllowsRounding(NumericalOptimization.TransformMerging, frame, frame.parent) &&
+                        proof.AllowsSubtreeRounding(child, NumericalOptimization.TransformMerging);
+                    bool identity = allowRounding ? StaticTransformProof.Near(StaticTransformProof.Local(frame), Matrix4x4.identity,
+                        !proof.HasStatefulReaders(frame)) : StaticTransformProof.ExactLocalIdentity(frame);
                     // Preserve local-space writers/readers when a nonidentity frame
                     // would change the coordinate values they observe. Identity
                     // containers can surround arbitrarily animated descendants.
                     Action edit = null;
-                    bool physBoneFrame = !identity && PhysBoneRootRelocation.CanRebase(frame, child, animations, proof.Mutations);
-                    if (!identity && (HasLocalReader(child, references, frame, physBoneFrame) ||
+                    bool physBoneFrame = !identity && PhysBoneRootRelocation.CanRebase(frame, child, animations, proof.Mutations, allowRounding);
+                    if (!identity && (HasLocalReader(child, references, frame, physBoneFrame, allowRounding) ||
                         proof.Mutations.Mutable.Contains(child) && !physBoneFrame &&
-                        !StaticChildRelocation.TryPlan(frame, child, animations, proof.Mutations, out edit))) continue;
+                        !StaticChildRelocation.TryPlan(frame, child, animations, proof.Mutations, out edit, allowRounding))) continue;
                     if (!identity && child.GetComponents<Component>().Any(c => c is ParticleSystem || c is Rigidbody ||
                         c is ArticulationBody || c is Animator || c is UnityEngine.Animations.IConstraint)) continue;
-                    if (!StaticTransformProof.TryCompose(frame, child, out var position, out var rotation, out var scale)) continue;
-                    poses.Add((child, position, rotation, scale, edit));
+                    if (!StaticTransformProof.TryCompose(frame, child, out var position, out var rotation, out var scale, allowRounding)) continue;
+                    poses.Add((child, position, rotation, scale, edit, identity));
                 }
                 if (poses.Count == 0) continue;
                 bool removeFrame = poses.Count == children.Length;
@@ -76,12 +79,14 @@ namespace Noname.AvatarTools.ObjectOptimization
                 int suffixCount = 0;
                 foreach (var pose in poses)
                 {
+                    foreach (var output in pose.Child.GetComponentsInChildren<Transform>(true))
+                        proof.NumericalPolicy?.InheritNumericalConstraints(output, new[] { frame });
                     if (plan.Names.TryGetValue(pose.Child, out var relocatedName)) pose.Child.name = relocatedName;
                     pose.Child.SetParent(parent, false);
                     pose.Child.SetSiblingIndex(frame.GetSiblingIndex() +
                         (removeFrame || prefix.Contains(pose.Child) ? 0 : 1 + suffixCount++));
                     // Do not perturb an animated child's defaults for numerical noise.
-                    if (identity) continue;
+                    if (pose.Identity) continue;
                     pose.Child.localPosition = pose.Position; pose.Child.localRotation = pose.Rotation; pose.Child.localScale = pose.Scale;
                 }
                 string name = frame.name;
@@ -105,13 +110,13 @@ namespace Noname.AvatarTools.ObjectOptimization
             return changed;
         }
 
-        private static bool HasLocalReader(Transform child, AvatarDependencyGraph references, Transform frame, bool physBoneFrame) =>
+        private static bool HasLocalReader(Transform child, AvatarDependencyGraph references, Transform frame, bool physBoneFrame, bool allowRounding) =>
             references.ReferenceOwners.TryGetValue(child, out var readers) && readers.Any(r => !(r is SkinnedMeshRenderer) &&
                 !(physBoneFrame && r != null && r.GetType() == typeof(VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone) &&
                   ((VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone)r).GetRootTransform() == child) &&
                 !(r is VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBoneCollider) &&
                 !(r is VRC.SDK3.Dynamics.Contact.Components.VRCContactSender) && !(r is VRC.SDK3.Dynamics.Contact.Components.VRCContactReceiver) &&
-                !(SpatialFrameProof.TranslationOnly(frame) && r != null &&
+                !(SpatialFrameProof.TranslationOnly(frame, allowRounding) && r != null &&
                   (r.GetType() == typeof(VRC.SDK3.Dynamics.Constraint.Components.VRCRotationConstraint) ||
                    r.GetType() == typeof(VRC.SDK3.Dynamics.Constraint.Components.VRCScaleConstraint))));
     }

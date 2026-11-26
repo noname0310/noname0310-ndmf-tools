@@ -109,20 +109,21 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(ShaderMeshInputs.SourceIssue(proof, ShaderInputQuery.Uniform("_Target")), Is.Not.Null);
         }
 
-        [Test]
-        public void ShaderUniformCacheKeepsCoverageAndRechecksChangedConstantsAcrossSnapshots()
+        [TestCase(false)] [TestCase(true)]
+        public void ShaderUniformCacheKeepsCoverageAndRechecksChangedConstantsAcrossSnapshots(bool completeCoverage)
         {
+            ShaderMeshInputs.CacheCompleteCoverage = completeCoverage;
             RequireD3DAnalysis(); var pair = MergePair(); var material = UniformProofMaterial(pair.First);
             var first = new ShaderPropertyUsage(); var second = new ShaderPropertyUsage();
             var index = FrameIndex(); var changed = new HashSet<string> { "_Target" };
             Assert.That(first.MayRead(material, pair.First, index, "_Target", changed, BuildTarget.StandaloneWindows64), Is.False);
             long hits = ShaderAnalysisCache.Shared.Hits, misses = ShaderAnalysisCache.Shared.Misses;
             Assert.That(second.MayRead(material, pair.First, index, "_Target", changed, BuildTarget.StandaloneWindows64), Is.False);
-            Assert.That(ShaderAnalysisCache.Shared.Hits, Is.GreaterThan(hits));
+            Assert.That(second.MeshInputs.CoverageCacheHits, Is.EqualTo(completeCoverage ? 1 : 0));
+            Assert.That(ShaderAnalysisCache.Shared.Hits, completeCoverage ? Is.EqualTo(hits) : Is.GreaterThan(hits));
             Assert.That(ShaderAnalysisCache.Shared.Misses, Is.EqualTo(misses));
-            Assert.That(second.MeshInputs.UnitDiagnostics, Is.EqualTo(first.MeshInputs.UnitDiagnostics));
-            Assert.That(second.MeshInputs.CompileCalls, Is.EqualTo(first.MeshInputs.CompileCalls));
-            Assert.That(second.MeshInputs.PreprocessCalls, Is.EqualTo(first.MeshInputs.PreprocessCalls));
+            Assert.That(second.MeshInputs.CompileCalls, Is.EqualTo(completeCoverage ? 0 : first.MeshInputs.CompileCalls));
+            Assert.That(second.MeshInputs.PreprocessCalls, Is.EqualTo(completeCoverage ? 0 : first.MeshInputs.PreprocessCalls));
             material.SetFloat("_Gate", 1);
             Assert.That(second.MayRead(material, pair.First, FrameIndex(), "_Target", changed, BuildTarget.StandaloneWindows64), Is.True);
         }

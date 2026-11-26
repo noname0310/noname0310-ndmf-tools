@@ -13,10 +13,10 @@ namespace Noname.AvatarTools.ObjectOptimization
     internal static class PhysBoneRootRelocation
     {
         internal static bool CanRebase(Transform frame, Transform child, AvatarAnimationIndex animations,
-            TransformMutationAnalysis mutations)
+            TransformMutationAnalysis mutations, bool allowSmallDifferences = true)
         {
             var offset = frame.localPosition;
-            if (!SpatialFrameProof.UniformPositiveScale(frame.localScale) ||
+            if (!allowSmallDifferences || !SpatialFrameProof.UniformPositiveScale(frame.localScale, allowSmallDifferences) ||
                 offset.x != 0 || offset.y != 0 || offset.z != 0) return false;
             var writers = mutations.WritersOf(child).ToArray();
             if (writers.Length == 0 || writers.Any(w => w == null || w.GetType() != typeof(VRCPhysBone))) return false;

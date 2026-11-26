@@ -1,12 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using nadena.dev.ndmf;
 using nadena.dev.ndmf.animator;
 using Noname.AvatarTools.Analysis;
 using Noname.AvatarTools.Build;
 using UnityEditor;
 using UnityEngine;
 using VRC.SDK3.Dynamics.Constraint.Components;
+using VRC.SDKBase;
 
 namespace Noname.AvatarTools.ObjectOptimization
 {
@@ -16,22 +18,21 @@ namespace Noname.AvatarTools.ObjectOptimization
     // the SDK offset does not scale with the avatar as a Transform child offset does.
     internal static class ParentConstraintOptimization
     {
-        private const float ReconstructionTolerance = 0.000001f;
-
         internal static int Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
             IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders = null,
-            ObjectAnalysisSnapshot snapshot = null)
+            ObjectAnalysisSnapshot snapshot = null, bool commitNativePaths = false, OptimizationPolicy numericPolicy = null)
         {
             snapshot ??= new ObjectAnalysisSnapshot(avatar, controllers, paths, settings, preservedParameters, shaders);
-            return snapshot.Rewrite(() => ApplyCore(avatar, controllers, paths, settings, preservedParameters, messages, shaders, snapshot));
+            return snapshot.Rewrite(() => ApplyCore(avatar, controllers, paths, settings, preservedParameters, messages, shaders, snapshot, commitNativePaths, numericPolicy));
         }
 
         private static int ApplyCore(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings,
             IEnumerable<string> preservedParameters, ICollection<string> messages, ShaderPropertyUsage shaders,
-            ObjectAnalysisSnapshot snapshot)
+            ObjectAnalysisSnapshot snapshot, bool commitNativePaths, OptimizationPolicy numericPolicy)
         {
+            using var cost = AnalysisCost.Measure("Constant output consumer/parent constraints");
             var index = snapshot.Index;
             var mutation = snapshot.Mutations;
             var analysis = index.Reachability;
@@ -42,8 +43,23 @@ namespace Noname.AvatarTools.ObjectOptimization
             var nativeVisibility = VisibilityMutationAnalysis.NativeWriters(avatar);
             var objectKeys = new HashSet<UnityEngine.Object>(index.Bindings.SelectMany(u =>
                 u.ObjectKeys ?? Array.Empty<ObjectReferenceKeyframe>()).Select(k => k.value));
-            var proof = new InvariantComponentSettings(index, analysis, controllers);
+            InitialPoseReaders.Inputs roundingReaders = null;
+            var roundingOutputs = new Dictionary<VRCParentConstraint, bool>();
+            var proof = new InvariantComponentSettings(index, analysis, controllers, numericPolicy,
+                NumericalOptimization.Constraints, (component, property) =>
+                {
+                    if (component is not VRCParentConstraint parent ||
+                        !ConstantConstraintSettings.ContinuousConfigurationProperty(parent, property)) return false;
+                    if (!roundingOutputs.TryGetValue(parent, out bool allowed))
+                    {
+                        roundingReaders ??= InitialPoseReaders.Analyze(avatar, animations: index);
+                        roundingOutputs.Add(parent, allowed = CanRoundConfiguration(parent, avatar, settings,
+                            graph, mutation, roundingReaders, numericPolicy));
+                    }
+                    return allowed;
+                });
             int removed = 0;
+            var appliedProofs = new AppliedProofReport();
             foreach (var constraint in avatar.GetComponentsInChildren<VRCParentConstraint>(true))
             {
                 if (constraint.GetType() != typeof(VRCParentConstraint) || !settings.Scope.Contains(constraint.transform) ||
@@ -53,16 +69,21 @@ namespace Noname.AvatarTools.ObjectOptimization
                 if (target == avatar.transform || !settings.Scope.Contains(target) || settings.Protected(target) ||
                     !constraint.Locked || constraint.FreezeToWorld || constraint.SmoothingFactor != 0 ||
                     mutation.WrittenByOther(target, constraint) ||
-                    !proof.IsConstant(constraint)) continue;
+                    !proof.IsConstant(constraint, out var consumed)) continue;
                 string path = AnimationUtility.CalculateTransformPath(constraint.transform, avatar.transform);
                 var position = target.localPosition; var rotation = target.localRotation; var scale = target.localScale;
-                if (constraint.GlobalWeight == 0 && RestMatches(constraint, target))
+                bool allowRounding = StaticTransformProof.AllowsRounding(numericPolicy, NumericalOptimization.Constraints, constraint.transform, target.parent) &&
+                    StaticTransformProof.AllowsSubtreeRounding(numericPolicy, target, NumericalOptimization.Constraints);
+                if (constraint.GlobalWeight == 0 && RestMatches(constraint, target, allowRounding))
                 {
+                    bool roundedPose = allowRounding && !RestMatches(constraint, target, false);
                     var removeCurves = proof.PrepareConstantCurveRemoval(constraint);
+                    InheritPolicy(numericPolicy, target, constraint.transform);
                     if (!settings.TryDestroy(constraint)) continue;
                     removeCurves();
                     target.localPosition = position; target.localRotation = rotation; target.localScale = scale;
                     messages.Add("Redundant parent constraint at rest: " + path + "; existing local pose preserved.");
+                    appliedProofs.Record(consumed | (roundedPose ? NumericalOptimization.Constraints : NumericalOptimization.None));
                     removed++; continue;
                 }
                 if (!constraint.enabled || !constraint.IsActive || constraint.GlobalWeight != 1 || constraint.SolveInLocalSpace ||
@@ -74,38 +95,99 @@ namespace Noname.AvatarTools.ObjectOptimization
                     graph.DependsOn(parent, target) ||
                     !settings.Scope.Contains(parent) || source.Weight != 1 || !source.ParentPositionOffset.Equals(Vector3.zero) ||
                     parent.Cast<Transform>().Any(t => t != target && t.name == target.name)) continue;
+                allowRounding &= StaticTransformProof.AllowsRounding(numericPolicy, NumericalOptimization.Constraints, parent);
                 var common = CommonAncestor(parent, target.parent);
                 if (common == null || !UniformScaleTo(parent, common, mutation, out float parentScale) ||
                     !UniformScaleTo(target.parent, common, mutation, out float previousScale) ||
                     !AlwaysActive(parent, common, index, nativeVisibility)) continue;
                 var localRotation = Quaternion.Euler(source.ParentRotationOffset);
                 var localScale = scale * (previousScale / parentScale);
+                if (!allowRounding && (!StaticTransformProof.ExactChannels(source.ParentRotationOffset, Vector3.zero) ||
+                    !NumericalEquivalence.Same(parentScale, 1, false) ||
+                    !NumericalEquivalence.Same(previousScale, 1, false))) continue;
                 var expected = RelativeMatrix(parent, common) * Matrix4x4.TRS(Vector3.zero, localRotation, localScale);
-                if (!Near(expected, RelativeMatrix(target, common))) continue;
+                if (!StaticTransformProof.Near(expected, RelativeMatrix(target, common), allowRounding)) continue;
+                bool roundedParenting = allowRounding &&
+                    (!StaticTransformProof.ExactChannels(source.ParentRotationOffset, Vector3.zero) ||
+                     !NumericalEquivalence.Same(parentScale, 1, false) || !NumericalEquivalence.Same(previousScale, 1, false) ||
+                     !StaticTransformProof.Near(expected, RelativeMatrix(target, common), false));
+                Dictionary<string, string> relocatedPaths = null;
+                if (commitNativePaths && !new HierarchyRelocation(index).CanReparent(target, parent, out relocatedPaths)) continue;
                 // The animation service owns path remapping for the moved subtree.
+                // At the SDK boundary the checked transaction above owns it instead.
                 // Existing animation of the target itself was rejected above; child
                 // animations and skinning references retain their local coordinates.
                 var removeFollowingCurves = proof.PrepareConstantCurveRemoval(constraint);
+                InheritPolicy(numericPolicy, target, constraint.transform, parent, target.parent);
                 if (!settings.TryDestroy(constraint)) continue;
                 removeFollowingCurves();
                 target.SetParent(parent, false);
                 target.localPosition = Vector3.zero; target.localRotation = localRotation; target.localScale = localScale;
                 messages.Add("Parent constraint replaced with hierarchy parenting: " + path + " -> " +
                     AnimationUtility.CalculateTransformPath(parent, avatar.transform) + ".");
+                appliedProofs.Record(consumed | (roundedParenting ? NumericalOptimization.Constraints : NumericalOptimization.None));
                 removed++;
+                if (commitNativePaths)
+                {
+                    HierarchyRelocation.CommitNativePaths(index, relocatedPaths);
+                    // A second move must not reuse pre-move paths, writer roots or
+                    // dependency facts. The outer worklist rebuilds the snapshot.
+                    appliedProofs.AppendTo(messages, "parent constraints");
+                    return removed;
+                }
             }
+            appliedProofs.AppendTo(messages, "parent constraints");
             return removed;
         }
 
         private static bool AllAxes(VRCParentConstraint c) => c.AffectsPositionX && c.AffectsPositionY && c.AffectsPositionZ &&
             c.AffectsRotationX && c.AffectsRotationY && c.AffectsRotationZ;
 
-        private static bool RestMatches(VRCParentConstraint c, Transform target)
+        private static bool CanRoundConfiguration(VRCParentConstraint constraint, GameObject avatar,
+            ObjectOptimizationState settings, AvatarDependencyGraph graph, TransformMutationAnalysis mutations,
+            InitialPoseReaders.Inputs readers, OptimizationPolicy policy)
+        {
+            var target = constraint.TargetTransform != null ? constraint.TargetTransform : constraint.transform;
+            if (!constraint.enabled || !constraint.IsActive || !constraint.Locked || constraint.FreezeToWorld ||
+                constraint.SmoothingFactor != 0 || constraint.SolveInLocalSpace || !AllAxes(constraint) ||
+                graph.UnsafeReason != null || mutations.Uncertain != null || mutations.WrittenByOther(target, constraint) ||
+                graph.ReferenceOwners.ContainsKey(constraint) || readers.CullingFrames.Contains(target) ||
+                !StaticTransformProof.AllowsRounding(policy, NumericalOptimization.Constraints, constraint.transform, target.parent) ||
+                !StaticTransformProof.AllowsSubtreeRounding(policy, target, NumericalOptimization.Constraints)) return false;
+            foreach (var source in constraint.Sources)
+                if (source.SourceTransform == null || !source.SourceTransform.IsChildOf(avatar.transform) ||
+                    graph.DependsOn(source.SourceTransform, target) ||
+                    !StaticTransformProof.AllowsRounding(policy, NumericalOptimization.Constraints, source.SourceTransform)) return false;
+            // A numerical configuration proof is appropriate for a stateless visual
+            // solve. The solver's own reference is expected; other solvers, sensors,
+            // simulations and unknown native readers retain the Animator writes.
+            // DependsOn also includes future animated object-reference targets.
+            foreach (var component in graph.Components)
+            {
+                if (component == constraint || component is Transform || component is INDMFEditorOnly || component is IEditorOnly ||
+                    ObjectOptimizationSafety.IsParentChangeDetector(component)) continue;
+                bool preserved = settings.Protected(component) || !settings.Scope.Contains(component.transform);
+                if (!preserved && (component is Renderer || component is MeshFilter || component is Light)) continue;
+                if (graph.DependsOn(component, target)) return false;
+            }
+            return true;
+        }
+
+        private static void InheritPolicy(OptimizationPolicy policy, Transform target, params Transform[] sources)
+        {
+            if (policy == null) return;
+            foreach (var output in target.GetComponentsInChildren<Transform>(true))
+                policy.InheritNumericalConstraints(output, sources);
+        }
+
+        private static bool RestMatches(VRCParentConstraint c, Transform target, bool allowRounding)
         {
             // Weight zero selects At Rest; it is not equivalent to disabling the component.
             if (!AllAxes(c)) return false;
-            return Near(Matrix4x4.TRS(c.PositionAtRest, Quaternion.Euler(c.RotationAtRest), target.localScale),
-                Matrix4x4.TRS(target.localPosition, target.localRotation, target.localScale));
+            if (!allowRounding) return StaticTransformProof.ExactChannels(c.PositionAtRest, target.localPosition) &&
+                StaticTransformProof.ExactChannels(Quaternion.Euler(c.RotationAtRest), target.localRotation);
+            return StaticTransformProof.Near(Matrix4x4.TRS(c.PositionAtRest, Quaternion.Euler(c.RotationAtRest), target.localScale),
+                Matrix4x4.TRS(target.localPosition, target.localRotation, target.localScale), allowRounding);
         }
 
         private static bool AlwaysActive(Transform target, Transform stop, AvatarAnimationIndex index,
@@ -145,14 +227,6 @@ namespace Noname.AvatarTools.ObjectOptimization
                 if (!MotionAnalysis.Finite(product) || product <= 0) return false;
             }
             return node == ancestor;
-        }
-
-        private static bool Near(Matrix4x4 a, Matrix4x4 b)
-        {
-            for (int i = 0; i < 16; i++)
-                if (!MotionAnalysis.Finite(a[i]) || !MotionAnalysis.Finite(b[i]) ||
-                    Math.Abs(a[i] - b[i]) > ReconstructionTolerance * Math.Max(1, Math.Max(Math.Abs(a[i]), Math.Abs(b[i])))) return false;
-            return true;
         }
 
     }

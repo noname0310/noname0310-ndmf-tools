@@ -2,72 +2,78 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using nadena.dev.ndmf.animator;
+using Noname.AvatarTools.Build;
 using UnityEditor;
-using UnityEditor.Animations;
 using UnityEngine;
-using VRC.SDK3.Avatars.Components;
 
 namespace Noname.AvatarTools.Analysis
 {
     internal sealed class InvariantComponentSettings
     {
         private readonly AvatarAnimationIndex index;
-        private readonly AnimatorReachability analysis;
-        private readonly Dictionary<VirtualClip, HashSet<VirtualLayer>> contexts = new();
-        private readonly HashSet<VirtualLayer> additiveLayers;
+        private readonly ConstantPropertyAnalysis constants;
+        private readonly OptimizationPolicy numericalPolicy;
+        private readonly NumericalOptimization numericalFeature;
+        private readonly Func<Component, string, bool> permitsRoundoff;
 
         internal InvariantComponentSettings(AvatarAnimationIndex index, AnimatorReachability analysis,
-            IDictionary<object, VirtualAnimatorController> controllers)
+            IDictionary<object, VirtualAnimatorController> controllers, OptimizationPolicy numericalPolicy = null,
+            NumericalOptimization numericalFeature = NumericalOptimization.None,
+            Func<Component, string, bool> permitsRoundoff = null, ConstantPropertyAnalysis sharedConstants = null)
         {
-            this.index = index; this.analysis = analysis;
-            additiveLayers = controllers.Where(e => e.Key is VRCAvatarDescriptor.AnimLayerType type &&
-                    type == VRCAvatarDescriptor.AnimLayerType.Additive).SelectMany(e => e.Value.Layers).ToHashSet();
-            foreach (var controller in index.Controllers)
-            foreach (var layer in controller.Layers)
-            foreach (var clip in layer.AllReachableNodes().OfType<VirtualClip>())
-            {
-                if (!contexts.TryGetValue(clip, out var layers)) contexts.Add(clip, layers = new());
-                layers.Add(layer);
-            }
+            this.index = index;
+            // Sharing is opt-in at a read-only planning boundary. A different
+            // reachability result must never borrow another parameter domain.
+            constants = sharedConstants?.MatchesSnapshot(index, analysis) == true
+                ? sharedConstants : new ConstantPropertyAnalysis(index, analysis, reuseLayerFacts: false);
+            this.numericalPolicy = numericalPolicy;
+            this.numericalFeature = numericalFeature;
+            this.permitsRoundoff = permitsRoundoff;
         }
 
         internal bool IsConstant(Component component)
-            => IsConstant(component, index.ForObject(component));
+            => IsConstant(component, out _);
+
+        internal bool IsConstant(Component component, out NumericalOptimization consumed)
+            => IsConstant(component, index.ForObject(component), out consumed);
 
         internal bool IsConstantProperty(Component component, string propertyName)
-            => IsConstant(component, index.ForObject(component).Where(u => u.Binding.propertyName == propertyName).ToArray());
+            => IsConstant(component, index.ForObject(component).Where(u => u.Binding.propertyName == propertyName).ToArray(), out _);
 
-        private bool IsConstant(Component component, IReadOnlyList<AvatarAnimationIndex.BindingUse> uses)
+        private bool IsConstant(Component component, IReadOnlyList<AvatarAnimationIndex.BindingUse> uses, out NumericalOptimization consumed)
         {
+            using var cost = AnalysisCost.Measure("Invariant component configuration query");
+            consumed = NumericalOptimization.None;
+            bool rounded = false;
             if (uses.Count == 0) return true;
-            if (uses.Any(u => u.Immutable || !u.Complete || u.Binding.isPPtrCurve ||
-                u.Objects().Count() != 1 || u.Objects().Single() != component)) return false;
+            foreach (var use in uses)
+            {
+                if (use.Immutable || !use.Complete || use.Binding.isPPtrCurve) return false;
+                // Resolve once per query, never across component moves/deletions.
+                using var objects = use.Objects().GetEnumerator();
+                if (!objects.MoveNext() || objects.Current != component || objects.MoveNext()) return false;
+            }
             using var serialized = new SerializedObject(component);
-            var bindings = new Dictionary<VirtualMotion, HashSet<EditorCurveBinding>>();
             foreach (var group in uses.GroupBy(u => u.Binding.propertyName))
             {
                 if (group.Select(u => u.Binding).Distinct().Count() != 1) return false;
                 var property = serialized.FindProperty(group.Key);
-                if (property == null) return false;
-                float initial;
-                switch (property.propertyType)
-                {
-                    case SerializedPropertyType.Boolean: initial = property.boolValue ? 1 : 0; break;
-                    case SerializedPropertyType.Float: initial = property.floatValue; break;
-                    case SerializedPropertyType.Integer: case SerializedPropertyType.Enum: initial = property.intValue; break;
-                    default: return false;
-                }
-                if (!MotionAnalysis.Finite(initial)) return false;
-                var cache = new Dictionary<VirtualMotion, bool>();
-                foreach (var layer in group.SelectMany(u => contexts[u.Clip]).Distinct())
-                {
-                    if (layer.AvatarMask != null || layer.SyncedLayerIndex != -1 || additiveLayers.Contains(layer) ||
-                        layer.BlendingMode != AnimatorLayerBlendingMode.Override) return false;
-                    var states = layer.AllReachableNodes().OfType<VirtualState>().Where(analysis.IsReachable).ToArray();
-                    if (states.Length == 0 || states.Any(s => !ConstantPropertyOutput.Matches(s.Motion, group.First().Binding,
-                        initial, true, analysis, bindings, cache, new(), property.propertyType == SerializedPropertyType.Float))) return false;
-                }
+                if (!ConstantOutputValue.TryRead(property, out var initial) || initial.Kind == ConstantOutputKind.ObjectReference) return false;
+                var writers = group.ToArray();
+                if (constants.MatchesInitialValue(component, writers, initial.Number,
+                    initial.Kind == ConstantOutputKind.Scalar, initial.Kind)) continue;
+                // Equality used for a source-count, activation or shader/control
+                // decision stays exact. A consumer must identify its own feature
+                // and attest the continuous property and affected output readers.
+                // Its policy can add a roundoff proof, never disable an exact one.
+                if (initial.Kind != ConstantOutputKind.Scalar || numericalFeature == NumericalOptimization.None ||
+                    numericalPolicy?.AllowsSmallNumericalDifferences(component.transform, numericalFeature) == false ||
+                    permitsRoundoff?.Invoke(component, group.Key) != true || writers.Any(w => w.PreservedInput) ||
+                    !constants.MatchesInitialValue(component, writers, initial.Number, true, initial.Kind,
+                        allowSmallNumericalDifferences: true)) return false;
+                rounded = true;
             }
+            if (rounded) consumed = numericalFeature;
             return true;
         }
 

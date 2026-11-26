@@ -42,7 +42,7 @@ namespace Noname.AvatarTools.ParameterLayout
                 if (asset is AnimatorController controller) observed.UnionWith(controller.parameters.Select(p => p.name));
                 if (asset is AnimationClip clip)
                 {
-                    if (clip.events.Length != 0) uncertain = true;
+                    if (AnimationEventEffects.MayInvokeCallback(clip)) uncertain = true;
                     observed.UnionWith(AnimationUtility.GetCurveBindings(clip).Concat(AnimationUtility.GetObjectReferenceCurveBindings(clip))
                         .Where(b => b.type == typeof(Animator)).Select(b => b.propertyName));
                 }

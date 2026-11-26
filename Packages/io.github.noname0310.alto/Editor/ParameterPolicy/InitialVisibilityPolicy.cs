@@ -86,7 +86,7 @@ namespace Noname.AvatarTools.ParameterPolicy
                 // coverage. Their curve values are not possible outputs. Pick a candidate
                 // from a live clip, then prove it against every reachable writer state below.
                 var live = uses.FirstOrDefault(u => liveClips.Contains(u.Clip));
-                if (live == null || !MotionAnalysis.Constant(live.Curve, out float value) || value != 0 && value != 1 ||
+                if (live == null || !MotionAnalysis.Constant(live.Curve, out float value, preserveZeroSign: false) || value != 0 && value != 1 ||
                     initial == (value == 1)) continue;
                 if (transform == avatar.transform || !scope.Contains(transform) ||
                     preservation?.Protected(transform) == true || target is Component component && preservation?.Protected(component) == true) continue;
@@ -102,7 +102,7 @@ namespace Noname.AvatarTools.ParameterPolicy
                 if (reason == null && writers.Any(c => !IsFx(c.Owner))) reason = "visibility is not exclusively controlled by FX";
                 if (reason == null)
                 {
-                    var cache = new Dictionary<VirtualMotion, bool>();
+                    var caches = new[] { new Dictionary<VirtualMotion, bool>(), new Dictionary<VirtualMotion, bool>() };
                     foreach (var writer in writers.GroupBy(c => (c.Controller, c.Layer)).Select(g => g.First()))
                     {
                         var layer = writer.Layer;
@@ -118,7 +118,8 @@ namespace Noname.AvatarTools.ParameterPolicy
                         { reason = "an SDK behaviour can change the FX playable or writer layer weight"; break; }
                         var states = layer.AllReachableNodes().OfType<VirtualState>().Where(analysis.IsReachable).ToArray();
                         if (states.Length == 0 || states.Any(s => !ConstantPropertyOutput.Matches(s.Motion, first.Binding, value,
-                            false, analysis, bindingCache, cache, new())))
+                            false, analysis, bindingCache, caches[s.WriteDefaultValues ? 1 : 0], new(),
+                            writeDefaults: s.WriteDefaultValues, kind: ConstantOutputKind.Discrete)))
                         { reason = "a reachable state or motion does not guarantee the constant output"; break; }
                     }
                 }

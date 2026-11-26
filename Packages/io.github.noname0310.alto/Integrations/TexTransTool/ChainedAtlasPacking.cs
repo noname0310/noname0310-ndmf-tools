@@ -77,7 +77,11 @@ namespace Noname.AvatarTools.MaterialAtlas
                     { regions[slot] = input.Region; materials[slot] = input.Output; }
                 var mesh = AtlasMeshRemap.Apply(plan.Mesh, regions, plan.UvDomain);
                 context.AssetSaver.SaveAsset(mesh); ObjectRegistry.RegisterReplacedObject(plan.Mesh, mesh);
-                if (plan.Renderer is SkinnedMeshRenderer skinned) skinned.sharedMesh = mesh;
+                if (plan.Renderer is SkinnedMeshRenderer skinned)
+                {
+                    context.GetState<BlendShapeOptimization.OptimizationState>().Provenance.RecordMeshRewrite(skinned, plan.Mesh, mesh);
+                    skinned.sharedMesh = mesh;
+                }
                 else plan.Renderer.GetComponent<MeshFilter>().sharedMesh = mesh;
                 // Do not replace material provenance globally: unselected consumers
                 // can still use the same source material with its original UVs.

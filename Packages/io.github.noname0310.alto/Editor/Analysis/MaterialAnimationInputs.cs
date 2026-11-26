@@ -22,7 +22,9 @@ namespace Noname.AvatarTools.Analysis
         private readonly Dictionary<(Renderer, string), Defaults> defaults = new();
         private readonly Dictionary<(Renderer, Material, ColorSpace), IReadOnlyDictionary<string, float>> uniforms = new();
         private readonly Dictionary<(Renderer, string), bool> fullOutputs = new();
+        private readonly Dictionary<VirtualMotion, HashSet<EditorCurveBinding>> motionBindings = new();
         private AnimatorReachability reachability;
+        private FxPropertyOutput layerFacts;
 
         private sealed class Defaults
         {
@@ -108,7 +110,7 @@ namespace Noname.AvatarTools.Analysis
                 if (!b.Groups.TryGetValue(group.Key, out var channels) || !channels.SequenceEqual(group.Value) ||
                     a.Types[group.Key] != b.Types[group.Key]) return "different material animation interfaces: " + group.Key;
                 var names = a.Values.Keys.Where(n => PropertyName(n) == group.Key).ToArray();
-                var changed = names.Where(n => !b.Values.TryGetValue(n, out float other) || a.Values[n] != other).ToArray();
+                var changed = names.Where(n => !b.Values.TryGetValue(n, out float other) || !SameBits(a.Values[n], other)).ToArray();
                 if (changed.Length == 0) continue;
                 if (FullyDriven(first, group.Key, group.Value) && FullyDriven(second, group.Key, channels)) continue;
                 // The caller must still prove identical writers and evaluation.
@@ -126,7 +128,7 @@ namespace Noname.AvatarTools.Analysis
             var a = Read(destination, channels); var b = Read(source, channels);
             if (a.Uncertain != null || b.Uncertain != null) return a.Uncertain ?? b.Uncertain;
             if (a.Types[property] != b.Types[property]) return "different material animation interfaces: " + property;
-            var changed = b.Values.Keys.Where(n => a.Values[n] != b.Values[n]).ToArray();
+            var changed = b.Values.Keys.Where(n => !SameBits(a.Values[n], b.Values[n])).ToArray();
             if (changed.Length == 0) return null;
             // The chosen producer retains its original controller/layer/state
             // coverage after path relocation. An unused destination writer is
@@ -145,7 +147,7 @@ namespace Noname.AvatarTools.Analysis
             if (FullyDriven(source, property, channels) &&
                 (!matchingDestinationWriters || FullyDriven(destination, property, channels))) yield break;
             foreach (string binding in channels)
-                if (a.Values[binding] != b.Values[binding]) yield return (binding, b.Values[binding], a.Values[binding]);
+                if (!SameBits(a.Values[binding], b.Values[binding])) yield return (binding, b.Values[binding], a.Values[binding]);
         }
 
         internal IEnumerable<(string Property, float Previous, float Retained)> DefaultChanges(Renderer destination, Renderer source)
@@ -155,12 +157,17 @@ namespace Noname.AvatarTools.Analysis
             {
                 if (FullyDriven(destination, group.Key, group.Value) && FullyDriven(source, group.Key, b.Groups[group.Key])) continue;
                 foreach (string binding in group.Value)
-                    if (a.Values[binding] != b.Values[binding])
+                    if (!SameBits(a.Values[binding], b.Values[binding]))
                         yield return (binding, b.Values[binding], a.Values[binding]);
             }
         }
 
-        private bool FullyDriven(Renderer renderer, string name, string[] channels)
+        private static bool SameBits(float first, float second) =>
+            ConstantOutputValue.Scalar(first).Equals(ConstantOutputValue.Scalar(second));
+
+        // Material-slot baking uses the same coverage proof as renderer relocation:
+        // both can change the defaults captured by the native material animator.
+        internal bool FullyDriven(Renderer renderer, string name, string[] channels)
         {
             var key = (renderer, name);
             if (fullOutputs.TryGetValue(key, out bool cached)) return cached;
@@ -187,18 +194,22 @@ namespace Noname.AvatarTools.Analysis
                 if (writer == null || layers[0].AvatarMask != null || writer.AvatarMask != null || writer.SyncedLayerIndex != -1 ||
                     writer.BlendingMode != AnimatorLayerBlendingMode.Override || writer != layers[0] && writer.DefaultWeight != 1) return false;
                 reachability ??= index.Reachability;
-                if (reachability.FallbackReason != null || FxPropertyOutput.WeightCanChange(index.ControllerEntries, controller, writer, reachability)) return false;
+                if (reachability.FallbackReason != null) return false;
+                layerFacts ??= new FxPropertyOutput(index.ControllerEntries, reachability);
+                if (layerFacts.WeightCanChange(controller, writer)) return false;
                 // A later Write Defaults layer may expose the original value even
                 // without a matching explicit curve. Do not infer global coverage.
                 if (layers.Skip(Array.IndexOf(layers, writer) + 1).Any(l =>
-                    l.AllReachableNodes().OfType<VirtualState>().Any(s => reachability.IsReachable(s) && s.WriteDefaultValues))) return false;
+                    layerFacts.ReachableStates(l).Any(s => s.WriteDefaultValues))) return false;
                 var states = FxPropertyOutput.OutputStates(writer, reachability);
-                return states.Length > 0 && states.All(s => MotionCovers(s.Motion, bindings, name, new HashSet<VirtualMotion>()));
+                return states.Length > 0 && states.All(s => MotionCovers(s.Motion, bindings, name,
+                    new HashSet<VirtualMotion>(), s.WriteDefaultValues));
             }
             return fullOutputs[key] = Inspect();
         }
 
-        private bool MotionCovers(VirtualMotion motion, EditorCurveBinding[] bindings, string name, HashSet<VirtualMotion> stack)
+        private bool MotionCovers(VirtualMotion motion, EditorCurveBinding[] bindings, string name, HashSet<VirtualMotion> stack,
+            bool writeDefaults)
         {
             if (motion == null || !stack.Add(motion)) return false;
             bool result = false;
@@ -215,14 +226,16 @@ namespace Noname.AvatarTools.Analysis
                 if (tree.BlendType == BlendTreeType.Simple1D && tree.Children.All(c => MotionAnalysis.Finite(c.Threshold)) &&
                     tree.Children.Select(c => c.Threshold).Distinct().Count() == tree.Children.Count)
                     result = (MotionAnalysis.Constant1DChildren(tree, reachability) ?? tree.Children.ToArray())
-                        .All(c => MotionCovers(c.Motion, bindings, name, stack));
-                else if (tree.BlendType == BlendTreeType.Direct && !tree.NormalizedBlendValues)
+                        .All(c => MotionCovers(c.Motion, bindings, name, stack, writeDefaults));
+                else if (tree.BlendType == BlendTreeType.Direct && !tree.NormalizedBlendValues &&
+                    (writeDefaults || !bindings.Any(binding => ConstantMotionOutput.DirectReadsRetainedValue(
+                        tree, binding, reachability, motionBindings))))
                 {
                     var writers = tree.Children.Where(c => c.Motion != null && MotionAnalysis.Bindings(c.Motion).Any(b =>
                         b.path == bindings[0].path && b.type == bindings[0].type && PropertyName(b.propertyName) == name) &&
                         (!reachability.Values(c.DirectBlendParameter).TryGetConstant(out float w) || w != 0)).ToArray();
                     result = writers.Length == 1 && reachability.Values(writers[0].DirectBlendParameter).TryGetConstant(out float weight) &&
-                        weight == 1 && MotionCovers(writers[0].Motion, bindings, name, stack);
+                        weight == 1 && MotionCovers(writers[0].Motion, bindings, name, stack, writeDefaults);
                 }
             }
             stack.Remove(motion); return result;
@@ -239,7 +252,7 @@ namespace Noname.AvatarTools.Analysis
             if (uses.Any(u => !u.Complete || u.Binding.isPPtrCurve ||
                 u.Binding.propertyName.StartsWith("material.", StringComparison.Ordinal) && PropertyName(u.Binding.propertyName) == null)) return result;
             var changed = uses.Select(u => PropertyName(u.Binding.propertyName)).Where(n => n != null).ToHashSet();
-            foreach (var receiver in ContactOutputs.Writers(index.Avatar, renderer)) changed.UnionWith(ContactOutputs.Properties(receiver));
+            foreach (var receiver in ContactOutputs.Writers(index.Avatar, renderer, index)) changed.UnionWith(ContactOutputs.Properties(receiver));
             var declared = new HashSet<string>(StringComparer.Ordinal);
             for (int i = 0; i < material.shader.GetPropertyCount(); i++)
             {

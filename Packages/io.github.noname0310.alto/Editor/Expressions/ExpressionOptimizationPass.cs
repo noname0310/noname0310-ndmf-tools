@@ -59,7 +59,7 @@ namespace Noname.AvatarTools.Expressions
                 ApplyToAvatar(context.AvatarRootObject, settings, policy, frozen, entries,
                     services.ObjectPathRemapper.GetVirtualToRealPathMap(), buildReport, context.AssetSaver.SaveAsset, null,
                     context.GetState<ObjectOptimizationState>(), context.GetState<AnimatorOptimizationState>().Settings,
-                    context.GetState<OptimizationAnalysis>().Shaders);
+                    context.GetState<OptimizationAnalysis>().Shaders, context.GetState<OptimizationPolicy>(), context.GetState<OptimizationAnalysis>());
             }
             finally
             {
@@ -70,16 +70,18 @@ namespace Noname.AvatarTools.Expressions
         internal static int ApplyToAvatar(GameObject avatar, ExpressionSettings settings, ResolvedParameterPolicy policy,
             ISet<string> frozen, IDictionary<object, VirtualAnimatorController> entries, IReadOnlyDictionary<string, string> paths,
             OptimizationBuildReport buildReport, Action<Object> save, ISet<string> localCandidates = null,
-            ObjectOptimizationState objects = null, AnimatorOptimizationSettings animator = null, ShaderPropertyUsage shaders = null)
+            ObjectOptimizationState objects = null, AnimatorOptimizationSettings animator = null, ShaderPropertyUsage shaders = null,
+            OptimizationPolicy numericPolicy = null, OptimizationAnalysis facts = null)
         {
             shaders ??= new ShaderPropertyUsage();
+            facts ??= new OptimizationAnalysis();
             var reports = new List<ExpressionOptimizationReport>();
             int changes, iterations = 0, total = 0;
             do
             {
                 iterations++;
                 changes = ApplyIteration(avatar, settings, policy, frozen, entries, paths, buildReport, save,
-                    localCandidates, objects, animator, shaders);
+                    localCandidates, objects, animator, shaders, numericPolicy, facts);
                 reports.Add(buildReport.Expressions);
                 total += changes;
             } while (changes != 0);
@@ -106,7 +108,8 @@ namespace Noname.AvatarTools.Expressions
         private static int ApplyIteration(GameObject avatar, ExpressionSettings settings, ResolvedParameterPolicy policy,
             ISet<string> frozen, IDictionary<object, VirtualAnimatorController> entries, IReadOnlyDictionary<string, string> paths,
             OptimizationBuildReport buildReport, Action<Object> save, ISet<string> localCandidates,
-            ObjectOptimizationState objects, AnimatorOptimizationSettings animator, ShaderPropertyUsage shaders)
+            ObjectOptimizationState objects, AnimatorOptimizationSettings animator, ShaderPropertyUsage shaders, OptimizationPolicy numericPolicy,
+            OptimizationAnalysis facts)
         {
             var watch = Stopwatch.StartNew();
             var report = new ExpressionOptimizationReport(); buildReport.Expressions = report;
@@ -128,10 +131,11 @@ namespace Noname.AvatarTools.Expressions
                 if (reason == null && external.Uncertain) reason = string.Join("; ", external.Diagnostics);
                 if (reason == null && settings.Protected.Any(k => !present.Contains(k)))
                     reason = "a preserved source control could not be matched after menu generation";
-                var analysis = reason == null ? AnimatorReachability.Analyze(avatar, controllers, policy.Preserved) : null;
+                AvatarAnalysisSnapshot Read() => facts.Avatar(avatar, entries, paths, policy.Preserved);
+                var analysis = reason == null ? Read().Reachability : null;
                 if (analysis != null) reason = analysis.FallbackReason;
                 if (reason == null && controllers.SelectMany(c => c.AllReachableNodes()).OfType<VirtualClip>()
-                    .Any(c => MotionAnalysis.Source(c)?.events.Length > 0)) reason = "animation events may consume parameters outside the indexed graph";
+                    .Any(c => AnimationEventEffects.MayInvokeCallback(MotionAnalysis.Source(c)))) reason = "animation events may consume parameters outside the indexed graph";
                 if (reason != null)
                 {
                     report.SkippedReason = reason;
@@ -140,7 +144,7 @@ namespace Noname.AvatarTools.Expressions
                 }
 
                 var outputs = new ExpressionOutputUsage(avatar, entries, paths);
-                var graph = AnimatorParameterDependencies.Collect(avatar, controllers, true, outputs.IsObservable, analysis, entries);
+                var graph = Read().Dependencies(true, outputs.IsObservable, analysis);
                 var roots = new HashSet<string>(StringComparer.Ordinal);
                 roots.UnionWith(policy.Roots);
                 roots.UnionWith(controls.Where(c => settings.Protected.Contains(ExpressionSettings.Key(c))).SelectMany(ExpressionMenuOptimizer.Parameters));
@@ -151,6 +155,8 @@ namespace Noname.AvatarTools.Expressions
                 var live = graph.ExpandObservable(roots);
                 descriptor.expressionsMenu = ExpressionMenuOptimizer.Optimize(descriptor.expressionsMenu, settings, live, frozen, report,
                     save, (source, copy) => ObjectRegistry.RegisterReplacedObject(source, copy));
+                if (report.InputControls != report.OutputControls || report.InputMenus != report.OutputMenus)
+                    facts.Invalidate(AnalysisDomain.ExternalInputs);
 
                 int changes = 0;
                 if (settings.LocalParameters && descriptor.expressionParameters != null)
@@ -162,9 +168,11 @@ namespace Noname.AvatarTools.Expressions
                         var locals = new HashSet<string>((descriptor.expressionParameters.parameters ?? Array.Empty<VRCExpressionParameters.Parameter>())
                             .Where(p => p != null && !p.networkSynced && !keep.Contains(p.name) &&
                                 (localCandidates == null || localCandidates.Contains(p.name))).Select(p => p.name), StringComparer.Ordinal);
-                        changes += SensorParameterPruning.Apply(avatar, controllers, objects, policy.Preserved, external,
+                        var sensors = SensorParameterPruning.ApplyChanges(avatar, controllers, objects, policy.Preserved, external,
                             buildReport.Messages, locals, frozen);
-                        var snapshot = new ObjectAnalysisSnapshot(avatar, entries, paths, objects, policy.Preserved, shaders);
+                        changes += sensors.Count;
+                        facts.Invalidate(sensors.Domains);
+                        var snapshot = new ObjectAnalysisSnapshot(avatar, entries, paths, objects, policy.Preserved, shaders, Read());
                         if (objects.RemoveUnusedTransforms)
                             changes += UnusedTransformOutputs.Apply(avatar, entries, paths, objects, policy.Preserved, buildReport.Messages, shaders, snapshot);
                         if (objects.RemoveUnusedObjects)
@@ -174,10 +182,13 @@ namespace Noname.AvatarTools.Expressions
                             var additive = new HashSet<VirtualAnimatorController>(entries.Where(e =>
                                 e.Key is VRCAvatarDescriptor.AnimLayerType type && type == VRCAvatarDescriptor.AnimLayerType.Additive).Select(e => e.Value));
                             var hierarchy = new ExpressionOutputUsage(avatar, entries, paths);
+                            var rounding = new AnimationOutputRounding(avatar, entries, paths, numericPolicy, policy.Preserved);
                             var optimized = AnimatorOptimizer.Optimize(avatar, controllers, animator, additive,
-                                AnimatorReachability.Analyze(avatar, controllers, policy.Preserved), policy.Preserved,
-                                animator.StateLogic ? hierarchy.IsObservable : null, policy.Roots, entries);
+                                Read().Reachability, policy.Preserved,
+                                animator.StateLogic ? hierarchy.IsObservable : null, policy.Roots, entries,
+                                allowNumericalDifferences: rounding.Allows);
                             changes += optimized.Changes;
+                            if (optimized.Changes != 0) facts.Invalidate(AnalysisDomain.Animation);
                             buildReport.Messages.Add("Animator after expression cleanup: " + optimized);
                         }
                     }
@@ -185,6 +196,7 @@ namespace Noname.AvatarTools.Expressions
                     // consumers, protected components and declarations exposed by late builders.
                     keep.UnionWith(AvatarParameterInputs.Sensors(avatar).Select(s => s.Name));
                     PruneLocalParameters(descriptor, keep, report, save, localCandidates);
+                    if (report.RemovedLocalParameters.Count != 0) facts.Invalidate(AnalysisDomain.ExternalInputs);
                 }
                 report.Applied = true;
                 // Menu and declaration removal can release consumers in the next graph.
@@ -192,6 +204,7 @@ namespace Noname.AvatarTools.Expressions
                 return changes + report.InputControls - report.OutputControls +
                     report.InputMenus - report.OutputMenus + report.RemovedLocalParameters.Count;
             }
+            catch { facts.Invalidate(AnalysisDomain.All); throw; }
             finally
             {
                 report.Milliseconds = watch.ElapsedMilliseconds;

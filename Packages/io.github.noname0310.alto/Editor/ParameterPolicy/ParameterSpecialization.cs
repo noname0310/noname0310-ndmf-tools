@@ -172,7 +172,7 @@ namespace Noname.AvatarTools.ParameterPolicy
             foreach (var clip in nodes.OfType<VirtualClip>())
             {
                 var source = MotionAnalysis.Source(clip);
-                if (source != null && source.events.Length > 0)
+                if (AnimationEventEffects.MayInvokeCallback(source))
                     throw new InvalidOperationException("Parameter freezing cannot prove animation event side effects: " + clip.Name);
             }
         }

@@ -52,8 +52,9 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var descriptor = root.GetComponent<VRCAvatarDescriptor>();
             // The constraint may move to an equivalent owner; its output target
             // and surviving source contract, rather than component identity, matter.
-            constraint = root.GetComponentsInChildren<VRCParentConstraint>(true).Single(c => c.TargetTransform == target);
-            Assert.That(constraint != null, Is.True); Assert.That(constraint.Sources.Count, Is.EqualTo(1));
+            constraint = root.GetComponentsInChildren<VRCParentConstraint>(true).SingleOrDefault(c => c.TargetTransform == target);
+            Assert.That(constraint == null || constraint.Sources.Count == 1, Is.True,
+                "Source pruning can also expose exact hierarchy parenting; the native output comparison below covers either representation");
             Assert.That(unused == null, Is.True, "Preserving an input does not keep its unobserved former output");
             Assert.That(descriptor.expressionsMenu.controls.Select(c => c.name),
                 Is.EqualTo(preserveInput ? new[] { "Unused", "Face" } : new[] { "Face" }));

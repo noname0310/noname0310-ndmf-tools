@@ -163,8 +163,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 1c0eb3277edbe2a47a67221f476311d2, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
+  m_Name:
+  m_EditorClassIdentifier:
   ScopeRoot: {fileID: 0}
   ApplyOnPlatforms: 6
   AllowCoordinateSpaceChanges: 1
@@ -334,6 +334,7 @@ GameObject:
   m_Component:
   - component: {fileID: 5194118094593274324}
   - component: {fileID: 8398744095273954990}
+  - component: {fileID: 7828077819503909541}
   m_Layer: 0
   m_Name: Policies
   m_TagString: Untagged
@@ -376,6 +377,23 @@ MonoBehaviour:
   AllowShaderIndexChanges: 0
   AllowAnimatedMaterialDefaultChanges: 0
   AllowMaterialSlotReordering: 0
+--- !u!114 &7828077819503909541
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4810802898665486145}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 800dcc5c47db8754aa3b3c54a17002c6, type: 3}
+  m_Name:
+  m_EditorClassIdentifier:
+  ScopeRoot: {fileID: 0}
+  ApplyOnPlatforms: 7
+  AllowInitialValueChanges: 1
+  AllowShaderConstantFolding: 1
+  AllowedNumericalDifferences: 127
 --- !u!1 &4995780524018215138
 GameObject:
   m_ObjectHideFlags: 0
@@ -433,6 +451,7 @@ MonoBehaviour:
   SimplifyConstantBlendTrees: 1
   MergeSameWeightClips: 1
   BakeConstantMaterialProperties: 1
+  BakeConstantMaterialSlots: 1
   RemoveUnusedMaterialProperties: 1
 --- !u!114 &7641424979332644373
 MonoBehaviour:
@@ -450,6 +469,7 @@ MonoBehaviour:
   PruneUnusedSensorParameters: 1
   BakeConstantVisibility: 1
   BakeConstantTransforms: 1
+  BakeConstantComponentProperties: 1
   RemoveUnusedTransformOutputs: 1
   RemoveRedundantConstraints: 1
   MergeStaticObjects: 1
@@ -487,6 +507,7 @@ MonoBehaviour:
   ScopeRoot: {fileID: 0}
   PreserveMmdBlendShapes: 1
   RemoveIneffectiveBlendShapes: 1
+  FreezeConstantAnimatedBlendShapes: 1
   OptimizeZeroResetAnimations: 1
   IgnoreUnreachableStates: 1
   ExcludedAnimations: []
@@ -504,6 +525,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   ScopeRoot: {fileID: 0}
   BakeLilToonMainTextures: 0
+  BakeConstantShaderInputs: 0
   RemoveUnusedSavedProperties: 1
   ShareEquivalentMaterials: 1
   PreserveMaterials: []
@@ -544,6 +566,7 @@ MonoBehaviour:
   ExpandBounds: 1
   MergeIdenticalMaterialSlots: 1
   RemoveUnusedMeshData: 1
+  RemovePermanentlyHiddenGeometry: 1
   PreserveVertexIds: 1
   VertexIdUniformThreshold: 3
   PreserveParticleRandomSequence: 0

@@ -15,8 +15,9 @@ namespace Noname.AvatarTools.Analysis
     {
         private sealed class Certificate
         {
-            internal string Demand, File;
-            internal int LineOffset, Work;
+            internal string Demand, ProjectionRoot;
+            internal PpLocations Locations;
+            internal int Work;
             internal KeyValuePair<string, PpBinding>[] Reads;
         }
 
@@ -24,11 +25,12 @@ namespace Noname.AvatarTools.Analysis
         // source-header facts across pass contexts without retaining an avatar,
         // material or an entire interpreter environment.
         private readonly List<Certificate> certificates = new(4);
-        internal bool TrySkip(string demand, string file, PpState state)
+        internal bool TrySkip(string demand, PpState state, string defaultFile = null)
         {
             foreach (var certificate in certificates)
             {
-                if (certificate.Demand != demand || certificate.File != file || certificate.LineOffset != state.LineOffset ||
+                if (certificate.Demand != demand || !certificate.Locations.Same(state.Locations) ||
+                    certificate.ProjectionRoot != state.Locations.ProjectionRoot(defaultFile) ||
                     state.Budget.Remaining < certificate.Work) continue;
                 bool matches = true;
                 foreach (var read in certificate.Reads)
@@ -55,14 +57,15 @@ namespace Noname.AvatarTools.Analysis
             return true;
         }
 
-        internal void Add(string demand, string file, int lineOffset, Dictionary<string, PpBinding> reads, int work)
+        internal void Add(string demand, PpLocations locations, Dictionary<string, PpBinding> reads, int work, string defaultFile = null)
         {
             if (reads.Count > 1024) return;
             var captured = new KeyValuePair<string, PpBinding>[reads.Count];
             int index = 0;
             foreach (var read in reads) captured[index++] = read;
             if (certificates.Count == 4) certificates.RemoveAt(0);
-            certificates.Add(new Certificate { Demand = demand, File = file, LineOffset = lineOffset, Reads = captured, Work = work });
+            certificates.Add(new Certificate { Demand = demand, Locations = locations, ProjectionRoot = locations.ProjectionRoot(defaultFile),
+                Reads = captured, Work = work });
         }
     }
 }

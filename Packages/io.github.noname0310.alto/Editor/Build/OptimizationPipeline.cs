@@ -19,6 +19,8 @@ namespace Noname.AvatarTools.Build
     {
         internal static void BeforeAtlas(BuildContext context) => OptimizationSession.RunBoundary(context, "before atlas", () =>
         {
+            using var shapeBoundary = context.GetState<OptimizationState>().Provenance.BeginBoundary();
+            OptimizationSession.Step(context, "BlendShape input provenance", AnalysisDomain.None, ALTOPlugin.PrepareInputs);
             OptimizationSession.Step(context, "converted material provenance", AnalysisDomain.None, MaterialAtlasPass.RegisterEarlyCopies);
             OptimizationSession.Step(context, "explicit BlendShape region exclusions", AnalysisDomain.Meshes, BlendShapeExclusionPass.Apply);
             OptimizationSession.Step(context, "rendering exclusions", AnalysisDomain.Hierarchy | AnalysisDomain.Meshes | AnalysisDomain.Materials | AnalysisDomain.Animation,
@@ -29,7 +31,7 @@ namespace Noname.AvatarTools.Build
             OptimizationSession.Step(context, "Contact filtering", AnalysisDomain.ExternalInputs | AnalysisDomain.Hierarchy | AnalysisDomain.Animation, ContactFilterPass.Apply);
             OptimizationSession.Step(context, "Animator simplification", AnalysisDomain.Animation | AnalysisDomain.Materials, AnimatorOptimizationPass.Apply);
             OptimizationSession.Step(context, "initial visibility policy", AnalysisDomain.Animation | AnalysisDomain.Hierarchy, InitialVisibilityPolicy.Apply);
-            OptimizationSession.Step(context, "object simplification", AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Physics, ObjectOptimizationPass.Apply);
+            OptimizationSession.Step(context, "object simplification", AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Physics | AnalysisDomain.Meshes, ObjectOptimizationPass.Apply);
             OcclusionPass.ChooseStage(context);
             if (!context.GetState<OcclusionBuildState>().AfterMaterialConversion)
             {
@@ -42,12 +44,14 @@ namespace Noname.AvatarTools.Build
 
         internal static void AfterAtlas(BuildContext context) => OptimizationSession.RunBoundary(context, "after atlas", () =>
         {
+            using var shapeBoundary = context.GetState<OptimizationState>().Provenance.BeginBoundary();
             OptimizationSession.Step(context, "atlas material finalization", AnalysisDomain.Hierarchy | AnalysisDomain.Materials | AnalysisDomain.Meshes, MaterialAtlasPass.Finish);
+            OptimizationSession.Step(context, "converted BlendShape input provenance", AnalysisDomain.None, ALTOPlugin.PrepareInputs);
             if (context.GetState<MaterialAtlasState>().Prepared)
             {
                 OptimizationSession.Step(context, "material output simplification", AnalysisDomain.Animation | AnalysisDomain.Materials, AnimatorOptimizationPass.ApplyAfterMaterials);
                 OptimizationSession.Step(context, "initial visibility after materials", AnalysisDomain.Animation | AnalysisDomain.Hierarchy, InitialVisibilityPolicy.Apply);
-                OptimizationSession.Step(context, "object simplification after materials", AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Physics, ObjectOptimizationPass.Apply);
+                OptimizationSession.Step(context, "object simplification after materials", AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Physics | AnalysisDomain.Meshes, ObjectOptimizationPass.Apply);
             }
             if (context.GetState<OcclusionBuildState>().AfterMaterialConversion)
             {
@@ -75,7 +79,8 @@ namespace Noname.AvatarTools.Build
 
         internal static void AfterMeshes(BuildContext context) => OptimizationSession.RunBoundary(context, "after meshes", () =>
         {
-            if (context.GetState<MeshOptimizationState>().Enabled || StaticTransformOptimizationPass.Enabled(context))
+            if (context.GetState<MeshOptimizationState>().Enabled || StaticTransformOptimizationPass.Enabled(context) ||
+                context.GetState<OptimizationState>().Scopes.Count != 0)
             {
                 OptimizationFixedPoint.Apply(context, includeMeshes: true);
             }

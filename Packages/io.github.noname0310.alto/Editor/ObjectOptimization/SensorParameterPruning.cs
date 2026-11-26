@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using nadena.dev.ndmf.animator;
 using Noname.AvatarTools.Analysis;
+using Noname.AvatarTools.Build;
 using Noname.AvatarTools.ParameterPolicy;
 using UnityEditor;
 using UnityEngine;
@@ -41,6 +42,11 @@ namespace Noname.AvatarTools.ObjectOptimization
         internal static int Apply(GameObject avatar, VirtualAnimatorController[] controllers, ObjectOptimizationState state,
             ISet<string> preserved, ExternalParameterAccess external, ICollection<string> messages,
             ISet<string> removableLocals = null, ISet<string> frozenInputs = null)
+            => ApplyChanges(avatar, controllers, state, preserved, external, messages, removableLocals, frozenInputs).Count;
+
+        internal static OptimizationChanges ApplyChanges(GameObject avatar, VirtualAnimatorController[] controllers, ObjectOptimizationState state,
+            ISet<string> preserved, ExternalParameterAccess external, ICollection<string> messages,
+            ISet<string> removableLocals = null, ISet<string> frozenInputs = null)
         {
             var used = Referenced(controllers);
             used.UnionWith(preserved);
@@ -50,6 +56,7 @@ namespace Noname.AvatarTools.ObjectOptimization
             if (expressions?.parameters != null) used.UnionWith(expressions.parameters
                 .Where(p => p != null && (p.networkSynced || removableLocals == null || !removableLocals.Contains(p.name))).Select(p => p.name));
             int declarations = 0, names = 0, proofs = 0;
+            bool revoked = false;
             foreach (var group in AvatarParameterInputs.Sensors(avatar).GroupBy(s => s.Name))
             {
                 string name = group.Key;
@@ -61,7 +68,7 @@ namespace Noname.AvatarTools.ObjectOptimization
                 {
                     // A late builder may add an observer after the earlier proof. If the
                     // producer still exists, collection must use the current graph.
-                    state.PrunedSensorInputs.Remove(name);
+                    revoked |= state.PrunedSensorInputs.Remove(name);
                     continue;
                 }
                 int count = 0;
@@ -79,7 +86,9 @@ namespace Noname.AvatarTools.ObjectOptimization
                 messages.Add("Unobserved sensor input: " + name + " (removed " + count + " controller declarations; no reader, writer, network, menu or external observer).");
             }
             messages.Add("Pruned " + declarations + " sensor parameter declarations for " + names + " unobserved inputs.");
-            return declarations + proofs;
+            return new OptimizationChanges(declarations + proofs,
+                (declarations != 0 ? AnalysisDomain.Animation | AnalysisDomain.ExternalInputs : AnalysisDomain.None) |
+                (proofs != 0 || revoked ? AnalysisDomain.ExternalInputs : AnalysisDomain.None));
         }
     }
 }

@@ -4,6 +4,7 @@ using System.Linq;
 using nadena.dev.ndmf;
 using nadena.dev.ndmf.animator;
 using Noname.AvatarTools.Analysis;
+using Noname.AvatarTools.Build;
 using UnityEditor;
 using UnityEditor.Animations;
 using UnityEngine;
@@ -38,8 +39,9 @@ namespace Noname.AvatarTools.ObjectOptimization
 
         internal static void Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings, AnimatorReachability analysis,
-            ICollection<string> messages)
+            ICollection<string> messages, OptimizationPolicy numericPolicy = null, AvatarAnimationIndex animations = null)
         {
+            using var cost = AnalysisCost.Measure("Constant output consumer/invariant object curves");
             var uses = new List<Use>();
             var roots = new Dictionary<VirtualClip, Transform>();
             var ambiguous = new HashSet<VirtualClip>();
@@ -87,10 +89,23 @@ namespace Noname.AvatarTools.ObjectOptimization
             var removals = new Dictionary<VirtualClip, HashSet<EditorCurveBinding>>();
             var bindings = new Dictionary<VirtualMotion, HashSet<EditorCurveBinding>>();
             var fxOutputs = new FxPropertyOutput(controllers, analysis);
+            var appliedProofs = new AppliedProofReport();
+            InitialPoseReaders.Inputs initialReaders = null;
             int targets = 0;
             foreach (var group in uses.GroupBy(u => (u.Target, u.Group)))
             {
                 var first = group.First();
+                bool allowRounding = first.Target is Transform && first.Group is "m_LocalPosition" or "m_LocalScale" &&
+                    numericPolicy?.AllowsSmallNumericalDifferences(first.Transform, NumericalOptimization.AnimationOutputs) == true &&
+                    StaticTransformProof.AllowsSubtreeRounding(numericPolicy, first.Transform, NumericalOptimization.AnimationOutputs) &&
+                    ObjectOptimizationSafety.UnsupportedRuntime(avatar) == null;
+                if (allowRounding)
+                {
+                    initialReaders ??= InitialPoseReaders.Analyze(avatar,
+                        animations: animations ?? AvatarAnimationIndex.Create(avatar, controllers, paths));
+                    allowRounding = !initialReaders.Frames.Contains(first.Transform) &&
+                        !initialReaders.CullingFrames.Contains(first.Transform);
+                }
                 if (unsafeVisibility.Contains(first.Target)) continue;
                 if (first.Target is Transform && (unsafeTransforms.Contains(first.Transform) ||
                     !TransformGroups[first.Group].All(p => group.Any(u => u.Binding.propertyName == p)))) continue;
@@ -103,23 +118,40 @@ namespace Noname.AvatarTools.ObjectOptimization
                     u.Layer.BlendingMode == AnimatorLayerBlendingMode.Additive || u.Layer.AvatarMask != null ||
                     u.Layer.SyncedLayerIndex != -1 ||
                     u.Owner is VRCAvatarDescriptor.AnimLayerType type && type == VRCAvatarDescriptor.AnimLayerType.Additive)) continue;
-                bool proven = true;
+                bool proven = true, usedRounding = false;
                 foreach (var channel in group.GroupBy(u => u.Binding.propertyName))
                 {
                     // A property reached through aliases or different Animator roots is left intact.
                     if (channel.Select(u => u.Binding).Distinct().Count() != 1) { proven = false; break; }
                     var use = channel.First();
+                    var kind = first.Target is Transform ? ConstantOutputKind.Scalar : ConstantOutputKind.Discrete;
                     if (!(first.Target is Transform) && fxOutputs.MatchesFinalOverride(
-                        channel.Select(u => (u.Owner, u.Layer)), use.Binding, use.Initial, bindings)) continue;
-                    var cache = new Dictionary<VirtualMotion, bool>();
+                        channel.Select(u => (u.Owner, u.Layer)), use.Binding, use.Initial, bindings, kind)) continue;
                     foreach (var layer in channel.Select(u => u.Layer).Distinct())
                     {
-                        var states = layer.AllReachableNodes().OfType<VirtualState>().Where(analysis.IsReachable).ToArray();
-                        if (states.Length == 0 || states.Any(s =>
-                            !ConstantPropertyOutput.Matches(s.Motion, use.Binding, use.Initial,
-                                true, analysis, bindings, cache, new(),
-                                first.Target is Transform && first.Group is "m_LocalPosition" or "m_LocalScale")))
-                        { proven = false; break; }
+                        // Numerical permission adds a proof; its extra mixer premises
+                        // must not invalidate an already exact initial-value invariant.
+                        // Each query owns its caches because the motion alone does not
+                        // identify the exact/roundoff or Write Defaults contract.
+                        bool MatchesLayer(bool rounded)
+                        {
+                            if (kind == ConstantOutputKind.Scalar && !rounded && MotionAnalysis.NegativeZero(use.Initial) &&
+                                fxOutputs.CanBlendStates(layer)) return false;
+                            if (rounded && (!fxOutputs.HasFiniteTransitions(layer) ||
+                                !MotionAnalysis.Finite(layer.DefaultWeight) || layer.DefaultWeight < 0 || layer.DefaultWeight > 1 ||
+                                channel.Where(u => u.Layer == layer).Any(u => fxOutputs.WeightCanChange(controllers[u.Owner], layer)))) return false;
+                            var caches = new[] { new Dictionary<VirtualMotion, bool>(), new Dictionary<VirtualMotion, bool>() };
+                            var states = fxOutputs.ReachableStates(layer);
+                            return states.Length != 0 && states.All(s =>
+                                ConstantPropertyOutput.Matches(s.Motion, use.Binding, use.Initial,
+                                    true, analysis, bindings, caches[s.WriteDefaultValues ? 1 : 0], new(),
+                                    first.Target is Transform && first.Group is "m_LocalPosition" or "m_LocalScale", s.WriteDefaultValues, kind, rounded));
+                        }
+                        if (!MatchesLayer(false))
+                        {
+                            if (!allowRounding || !MatchesLayer(true)) { proven = false; break; }
+                            usedRounding = true;
+                        }
                     }
                     if (!proven) break;
                 }
@@ -130,12 +162,14 @@ namespace Noname.AvatarTools.ObjectOptimization
                     removed.Add(use.Binding);
                 }
                 targets++;
+                appliedProofs.Record(usedRounding ? NumericalOptimization.AnimationOutputs : NumericalOptimization.None);
                 messages.Add("Invariant object output: " + AnimationUtility.CalculateTransformPath(first.Transform, avatar.transform) +
                     " / " + first.Group + " (all outputs equal the initial value).");
             }
             foreach (var pair in removals) MotionAnalysis.RemoveCurves(pair.Key, pair.Value);
             messages.Add("Removed " + removals.Sum(p => p.Value.Count) + " invariant object curves in " + targets +
                 " property groups; initial visibility and transforms were unchanged.");
+            appliedProofs.AppendTo(messages, "invariant object outputs");
         }
 
         private static Transform Resolve(Transform root, Transform avatar, string path, IReadOnlyDictionary<string, string> paths)

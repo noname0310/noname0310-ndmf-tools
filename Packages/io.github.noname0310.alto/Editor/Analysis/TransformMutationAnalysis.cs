@@ -82,11 +82,14 @@ namespace Noname.AvatarTools.Analysis
             return result;
         }
 
-        internal static HashSet<Transform> NativeWriters(GameObject avatar) => NativeWriterIndex(avatar).Mutable;
+        internal static HashSet<Transform> NativeWriters(GameObject avatar, SerializedReferenceSnapshot references = null) =>
+            NativeWriterIndex(avatar, references: references).Mutable;
 
         private static TransformMutationAnalysis NativeWriterIndex(GameObject avatar, AvatarAnimationIndex animations = null,
             bool assumeFixedHumanoidBoneScale = false, SerializedReferenceSnapshot references = null)
         {
+            using var cost = AnalysisCost.Measure("Native transform writer index");
+            AnalysisCost.Count(references == null ? "Native transform writer index/own references" : "Native transform writer index/shared references");
             var result = new TransformMutationAnalysis();
             result.Add(avatar.transform, avatar, false);
             foreach (var animator in avatar.GetComponentsInChildren<Animator>(true))

@@ -97,6 +97,8 @@ namespace Noname.AvatarTools.Meshes
             }
             string Unsupported()
             {
+                if (ContactOutputs.Writers(avatar, renderer, animations).Any(c => !ContactOutputs.FixedMaterialConfiguration(c, animations)))
+                    return "animated or unresolved Contact material target coverage";
                 if (renderer.rootBone == null && policy?.AllowsCoordinates(renderer) != true) return "no explicit root bone";
                 if (renderer.updateWhenOffscreen && policy?.ExpandBounds != true) return "per-frame bounds depend on the original skinned vertex set";
                 if (renderer.HasPropertyBlock()) return "a material property block requires separate drawing";
@@ -262,7 +264,7 @@ namespace Noname.AvatarTools.Meshes
             => Incompatibility(a, b, policy) == null;
 
         internal static string Incompatibility(MeshMergeCandidate a, MeshMergeCandidate b, MeshMergePolicy policy = null,
-            bool compareMaterialAnimations = true)
+            bool compareMaterialAnimations = true, MeshMergePlanning planning = null)
         {
             var x = a.Renderer; var y = b.Renderer;
             if ((a.ParticleBindings.Count != 0 || b.ParticleBindings.Count != 0) &&
@@ -310,7 +312,7 @@ namespace Noname.AvatarTools.Meshes
             if (!a.UpdateWhenOffscreen.Equals(b.UpdateWhenOffscreen)) return "different offscreen-update animation signals";
             if (compareMaterialAnimations)
             {
-                string materialIssue = MeshMaterialAnimationPlan.Create(new[] { a, b }, policy).Issue;
+                string materialIssue = (planning?.Plan(new[] { a, b }) ?? MeshMaterialAnimationPlan.Create(new[] { a, b }, policy)).Issue;
                 if (materialIssue != null) return materialIssue;
             }
             if (!(policy?.CoordinatesMatch(a, b) ?? MeshMergePolicy.CoordinateRoot(x) == MeshMergePolicy.CoordinateRoot(y)))
@@ -410,8 +412,10 @@ namespace Noname.AvatarTools.Meshes
             return string.Join(";", profiles);
         }
 
-        internal static List<List<MeshMergeCandidate>> Group(IEnumerable<MeshMergeCandidate> candidates, bool mergeRenderers, MeshMergePolicy policy = null)
+        internal static List<List<MeshMergeCandidate>> Group(IEnumerable<MeshMergeCandidate> candidates, bool mergeRenderers, MeshMergePolicy policy = null,
+            MeshMergePlanning planning = null)
         {
+            planning ??= new MeshMergePlanning(policy);
             var groups = new List<List<MeshMergeCandidate>>();
             // Pin the external interface first. Its morph names, indices and object remain.
             foreach (var candidate in candidates.OrderByDescending(c => c.Pinned))
@@ -420,8 +424,8 @@ namespace Noname.AvatarTools.Meshes
                 // arbitrary pair of sources. Validate one complete output contract
                 // after checking the pairwise structural/visibility constraints.
                 var group = mergeRenderers ? groups.FirstOrDefault(g =>
-                    g.All(c => Incompatibility(c, candidate, policy, compareMaterialAnimations: false) == null) &&
-                    MeshMaterialAnimationPlan.Create(g.Append(candidate).ToArray(), policy).Issue == null) : null;
+                    g.All(c => planning.Incompatibility(c, candidate, materialAnimations: false) == null) &&
+                    planning.Plan(g.Append(candidate).ToArray()).Issue == null) : null;
                 if (group == null) groups.Add(group = new());
                 group.Add(candidate);
             }

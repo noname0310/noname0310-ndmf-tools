@@ -23,7 +23,7 @@ namespace Noname.AvatarTools.Analysis
         internal static HashSet<EditorCurveBinding> Bindings(VirtualMotion motion)
             => new(Clips(motion).SelectMany(c => c.GetFloatCurveBindings().Concat(c.GetObjectCurveBindings())));
 
-        internal static bool Constant(AnimationCurve curve, out float value)
+        internal static bool Constant(AnimationCurve curve, out float value, bool preserveZeroSign = true)
         {
             value = 0;
             if (curve == null || curve.length == 0) return false;
@@ -33,7 +33,8 @@ namespace Noname.AvatarTools.Analysis
             for (int i = 0; i < keys.Length; i++)
             {
                 var key = keys[i];
-                if (!Finite(key.time) || key.value != value || float.IsNaN(key.inTangent) || float.IsNaN(key.outTangent) ||
+                if (!Finite(key.time) || (preserveZeroSign ? !Same(key.value, value) : key.value != value) ||
+                    float.IsNaN(key.inTangent) || float.IsNaN(key.outTangent) ||
                     !Finite(key.inWeight) || !Finite(key.outWeight) || key.inWeight < 0 || key.inWeight > 1 ||
                     key.outWeight < 0 || key.outWeight > 1) return false;
                 if (i == 0) continue;
@@ -46,6 +47,12 @@ namespace Noname.AvatarTools.Analysis
         }
 
         internal static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
+
+        // Material uniforms can observe the sign of zero. A constant-output
+        // proof preserves the stored value, not only numeric comparison results.
+        internal static bool Same(float left, float right) =>
+            BitConverter.SingleToInt32Bits(left) == BitConverter.SingleToInt32Bits(right);
+        internal static bool NegativeZero(float value) => BitConverter.SingleToInt32Bits(value) == int.MinValue;
 
         // A fixed 1D input selects an endpoint, an exact threshold, or its two
         // adjacent motions. This proves zero influence without evaluating a
@@ -70,7 +77,10 @@ namespace Noname.AvatarTools.Analysis
 
         internal static float EndTime(VirtualClip clip)
             => clip.GetFloatCurveBindings().SelectMany(b => clip.GetFloatCurve(b)?.keys ?? Array.Empty<Keyframe>()).Select(k => k.time)
-                .Concat(clip.GetObjectCurveBindings().SelectMany(b => clip.GetObjectCurve(b) ?? Array.Empty<ObjectReferenceKeyframe>()).Select(k => k.time))
+                // Object-reference keys occupy one complete frame, unlike scalar keys.
+                // Retain that final frame when the last PPtr track is removed.
+                .Concat(clip.GetObjectCurveBindings().SelectMany(b => clip.GetObjectCurve(b) ?? Array.Empty<ObjectReferenceKeyframe>())
+                    .Select(k => k.time + 1f / clip.FrameRate))
                 .DefaultIfEmpty(0).Max();
 
         // Restrict structural rewrites to zero-duration clips. Changing a tree's duration changes
@@ -81,23 +91,30 @@ namespace Noname.AvatarTools.Analysis
         // Constancy of the pose is distinct from constancy of the motion's duration.
         // A caller must separately prove that changing duration cannot be observed.
         internal static bool ConstantPoseClip(VirtualClip clip)
+            => ConstantPoseClip(clip, true);
+
+        // Ignoring zero sign is a consumer-owned numerical contract. The ordinary
+        // motion/parameter queries continue to use the exact overload above.
+        internal static bool ConstantPoseClip(VirtualClip clip, bool preserveZeroSign)
             => !clip.IsMarkerClip && !clip.Legacy && clip.AdditiveReferencePoseClip == null &&
                Source(clip) is AnimationClip source && !source.humanMotion && source.events.Length == 0 &&
                !clip.GetObjectCurveBindings().Any() && clip.GetFloatCurveBindings().All(b =>
-                   !b.isDiscreteCurve && Constant(clip.GetFloatCurve(b), out _));
+                   !b.isDiscreteCurve && Constant(clip.GetFloatCurve(b), out _, preserveZeroSign));
 
         internal static void RemoveCurves(VirtualClip clip, IEnumerable<EditorCurveBinding> bindings)
         {
             float end = EndTime(clip);
-            foreach (var binding in bindings.ToArray()) clip.SetFloatCurve(binding, null);
+            foreach (var binding in bindings.ToArray())
+                if (binding.isPPtrCurve) clip.SetObjectCurve(binding, null);
+                else clip.SetFloatCurve(binding, null);
             PreserveDuration(clip, end);
         }
 
         internal static void PreserveDuration(VirtualClip clip, float end)
         {
-            if (EndTime(clip) < end)
+            if (EndTime(clip) < end || !clip.GetFloatCurveBindings().Any() && !clip.GetObjectCurveBindings().Any())
                 clip.SetFloatCurve(EditorCurveBinding.FloatCurve("__advanced_optimizer_duration_" + Guid.NewGuid().ToString("N"),
-                    typeof(GameObject), "m_IsActive"), AnimationCurve.Constant(0, end, 0));
+                    typeof(GameObject), "m_IsActive"), end == 0 ? new AnimationCurve(new Keyframe(0, 0)) : AnimationCurve.Constant(0, end, 0));
         }
     }
 }

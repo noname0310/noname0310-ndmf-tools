@@ -40,7 +40,18 @@ namespace Noname.AvatarTools.ObjectOptimization
                     // ParentConstraint offsets ignore source scale. A translated
                     // helper cannot be folded into a constant offset when avatar
                     // scaling may change; zero translation has no such dependency.
-                    if (parentConstraint && frame.localPosition != Vector3.zero) continue;
+                    if (parentConstraint && !frame.localPosition.Equals(Vector3.zero)) continue;
+                    bool allowRounding = proof.AllowsRounding(NumericalOptimization.Constraints, constraint.transform, frame, frame.parent) &&
+                        proof.AllowsSubtreeRounding(target, NumericalOptimization.Constraints);
+                    if (!allowRounding)
+                    {
+                        if (!StaticTransformProof.ExactLocalIdentity(frame)) continue;
+                        // Preserve the authored Euler/offset values: converting
+                        // even an identity quaternion through Euler can round.
+                        source.SourceTransform = frame.parent;
+                        sources[i] = source; changed = true; changes++;
+                        continue;
+                    }
                     var offset = frame.localRotation * source.ParentPositionOffset;
                     var rotation = frame.localRotation * Quaternion.Euler(parentConstraint ? source.ParentRotationOffset : ((VRCRotationConstraint)constraint).RotationOffset);
                     if (!StaticTransformProof.Finite(offset) || !StaticTransformProof.Finite(rotation)) continue;
@@ -50,6 +61,10 @@ namespace Noname.AvatarTools.ObjectOptimization
                     sources[i] = source; changed = true; changes++;
                 }
                 if (!changed) continue;
+                var inputFrames = constraint.Sources.Select(s => s.SourceTransform).Append(constraint.transform).ToArray();
+                foreach (var output in target.GetComponentsInChildren<Transform>(true))
+                    proof.NumericalPolicy?.InheritNumericalConstraints(output, inputFrames);
+                proof.NumericalPolicy?.InheritNumericalConstraints(constraint.transform, inputFrames);
                 // Preserve slots, weights, normalization and their order.
                 constraint.Sources = new VRCConstraintSourceKeyableList(sources);
                 constraint.ApplyConfigurationChanges();

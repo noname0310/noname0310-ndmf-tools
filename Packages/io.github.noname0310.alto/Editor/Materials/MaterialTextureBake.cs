@@ -52,7 +52,7 @@ namespace Noname.AvatarTools.Materials
             {
                 var properties = animations.ForObject(renderer).Select(b => Property(b.Binding))
                     .Where(p => p != null).Concat(unresolved)
-                    .Concat(animations.Avatar != null ? ContactOutputs.Writers(animations.Avatar, renderer).SelectMany(ContactOutputs.Properties) : Array.Empty<string>()).ToArray();
+                    .Concat(animations.Avatar != null ? ContactOutputs.Writers(animations.Avatar, renderer, animations).SelectMany(ContactOutputs.Properties) : Array.Empty<string>()).ToArray();
                 var materials = renderer.sharedMaterials.Concat(swaps.Where(b => b.Objects().Contains(renderer))
                     .SelectMany(b => b.ObjectKeys.Select(k => k.value).OfType<Material>()));
                 foreach (var material in materials.Where(m => m != null).Distinct())

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -64,6 +65,24 @@ namespace Noname.AvatarTools.Analysis
 
         internal static string Normalize(string source) => ScanDirectives(ShaderPropertyUsage.StripComments(source), true);
 
+        // Unity can retain diagnostics directives from includes while removing
+        // the same directives after inlining. They do not affect generated code.
+        // Preserve all other pragmas, and preserve offsets for declaration spans.
+        internal static string WithoutDiagnosticPragmas(string source)
+        {
+            var tokens = PpLexer.Lex(source, trackOffsets: true); char[] result = null;
+            for (int i = 0; i + 2 < tokens.Count; i++)
+            {
+                if (tokens[i].Text != "#" || tokens[i + 1].Text != "pragma" || tokens[i + 2].Text != "warning") continue;
+                int end = i + 3; while (end < tokens.Count && tokens[end].Kind != PpTokenKind.Newline) end++;
+                int stop = tokens[end - 1].Offset + tokens[end - 1].Length;
+                result ??= source.ToCharArray();
+                for (int p = tokens[i].Offset; p < stop; p++) if (result[p] != '\r' && result[p] != '\n') result[p] = ' ';
+                i = end;
+            }
+            return result == null ? source : new string(result);
+        }
+
         // The former multiline ^\s* expression rescanned long whitespace runs at
         // every line start, especially after comments had been blanked. Visit each
         // run once while retaining its cross-line whitespace and CR/LF semantics.
@@ -124,22 +143,65 @@ namespace Noname.AvatarTools.Analysis
             internal readonly List<(int Start, int Length, string Type, string Name)> Declarations = new();
             internal string[] UniformNames;
             internal Plan(string source) { Source = new ShaderTextKey(source).Text; }
-            internal string Apply(IReadOnlyDictionary<string, float> constants, out int specialized)
+            internal string Apply(IReadOnlyDictionary<string, float> constants, out int specialized, bool floatingPointOnly = false,
+                ISet<string> specializedNames = null, ISet<string> readOnlyNames = null, ISet<string> remainingNames = null)
             {
                 specialized = 0;
                 if (constants == null || constants.Count == 0) return Source;
                 StringBuilder output = null; int cursor = 0;
                 foreach (var declaration in Declarations)
                 {
-                    if (!constants.TryGetValue(declaration.Name, out float value) || !MotionAnalysis.Finite(value) ||
-                        !Literal(declaration.Type, value, out string literal)) continue;
+                    if (floatingPointOnly && declaration.Type != "float" && declaration.Type != "half" ||
+                        !constants.TryGetValue(declaration.Name, out float value) || !MotionAnalysis.Finite(value) ||
+                        !Literal(declaration.Type, value, out string literal))
+                    {
+                        if (!floatingPointOnly || declaration.Type == "float" || declaration.Type == "half")
+                            remainingNames?.Add(declaration.Name);
+                        continue;
+                    }
                     output ??= new StringBuilder(Source.Length);
                     output.Append(Source, cursor, declaration.Start - cursor);
-                    output.Append("static const ").Append(declaration.Type).Append(' ').Append(declaration.Name)
+                    output.Append(readOnlyNames == null || readOnlyNames.Contains(declaration.Name) ? "static const " : "static ")
+                        .Append(declaration.Type).Append(' ').Append(declaration.Name)
                         .Append(" = ").Append(literal).Append(';');
                     cursor = declaration.Start + declaration.Length; specialized++;
+                    specializedNames?.Add(declaration.Name);
                 }
                 return output == null ? Source : output.Append(Source, cursor, Source.Length - cursor).ToString();
+            }
+
+            // A shared imported pass may specialize fewer inputs than its caller:
+            // all callers of that pass contribute to its constant intersection.
+            // Accept only an exact subset of the authorized declaration edits.
+            // Every other token, including control flow and shader pragmas, stays
+            // identical. This is a source certificate, not a numeric proof.
+            internal bool MatchesSpecialization(string candidate, IReadOnlyDictionary<string, float> constants,
+                out int specialized)
+            {
+                specialized = 0;
+                var original = PpLexer.Lex(WithoutDiagnosticPragmas(Source), trackOffsets: true).Where(t => t.Kind != PpTokenKind.Newline).ToArray();
+                var actual = PpLexer.Lex(WithoutDiagnosticPragmas(Normalize(candidate))).Where(t => t.Kind != PpTokenKind.Newline).ToArray();
+                int first = 0, second = 0;
+                bool SameUntil(int end)
+                {
+                    while (first < original.Length && original[first].Offset < end)
+                        if (second >= actual.Length || original[first++].Text != actual[second++].Text) return false;
+                    return true;
+                }
+                foreach (var declaration in Declarations)
+                {
+                    if (!SameUntil(declaration.Start)) return false;
+                    if ((declaration.Type != "float" && declaration.Type != "half") || constants == null ||
+                        !constants.TryGetValue(declaration.Name, out float value) || !MotionAnalysis.Finite(value) ||
+                        !Literal(declaration.Type, value, out string literal)) continue;
+                    var replacement = PpLexer.Lex("static const " + declaration.Type + " " + declaration.Name + " = " + literal + ";");
+                    bool matches = second + replacement.Count <= actual.Length;
+                    for (int i = 0; matches && i < replacement.Count; i++) matches = replacement[i].Text == actual[second + i].Text;
+                    if (!matches) continue;
+                    while (first < original.Length && original[first].Offset < declaration.Start + declaration.Length) first++;
+                    second += replacement.Count; specialized++;
+                }
+                return SameUntil(int.MaxValue) && second == actual.Length;
             }
         }
 
@@ -186,12 +248,16 @@ namespace Noname.AvatarTools.Analysis
             string scan = ScanDirectives(source, false);
             var tokens = Tokenize(scan);
             var assignedNames = new HashSet<string>(StringComparer.Ordinal);
-            for (int i = 0; i + 2 < tokens.Count; i++)
+            // Literal assignment targets inside a macro body are writes too.
+            // Stripping all directives here hid writes supplied by custom shader
+            // hooks. Macro-generated names still require native certification.
+            var assignmentTokens = Tokenize(source);
+            for (int i = 0; i + 2 < assignmentTokens.Count; i++)
             {
-                string next = tokens[i + 1].Text, after = tokens[i + 2].Text;
+                string next = assignmentTokens[i + 1].Text, after = assignmentTokens[i + 2].Text;
                 if (next == "=" && after != "=" || "+-*/%&|^".Contains(next) && after == "=" ||
-                    (next == "+" || next == "-") && after == next) assignedNames.Add(tokens[i].Text);
-                if ((tokens[i].Text == "+" || tokens[i].Text == "-") && next == tokens[i].Text)
+                    (next == "+" || next == "-") && after == next) assignedNames.Add(assignmentTokens[i].Text);
+                if ((assignmentTokens[i].Text == "+" || assignmentTokens[i].Text == "-") && next == assignmentTokens[i].Text)
                     assignedNames.Add(after);
             }
             int braces = 0, parentheses = 0, statement = 0;
@@ -233,7 +299,13 @@ namespace Noname.AvatarTools.Analysis
             literal = null;
             if (type == "float" || type == "half")
             {
-                string number = value == 0 && float.IsNegativeInfinity(1 / value) ? "-0.0" : value.ToString("R", CultureInfo.InvariantCulture);
+                // Native HLSL constant folding canonicalizes negative zero and
+                // flushes subnormal literals. Even an asfloat initializer loses
+                // negative zero. Runtime uniforms preserve those observable bits.
+                int bits = BitConverter.SingleToInt32Bits(value);
+                if ((bits & 0x7fffffff) < 0x00800000 && bits != 0)
+                    return false;
+                string number = value.ToString("R", CultureInfo.InvariantCulture);
                 if (!number.Contains(".") && !number.Contains("E") && !number.Contains("e")) number += ".0";
                 literal = number + "f"; return true;
             }

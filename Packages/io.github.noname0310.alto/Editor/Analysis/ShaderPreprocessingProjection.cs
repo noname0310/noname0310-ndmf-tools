@@ -11,32 +11,57 @@ namespace Noname.AvatarTools.Analysis
     {
         private readonly PpState state;
         private readonly ShaderInputDemand demand;
-        private readonly Func<PpToken, PpToken> location;
+        private readonly PpLocations locations;
+        private readonly string defaultFile;
         private readonly Dictionary<(string Token, string Next, string File, int Line), bool> cache = new();
         private readonly HashSet<string> recursion = new(StringComparer.Ordinal);
         private PpToken invocation;
-        internal PpProjection(PpState state, ShaderInputDemand demand, Func<PpToken, PpToken> location = null)
-        { this.state = state; this.demand = demand; this.location = location; }
+        internal PpProjection(PpState state, ShaderInputDemand demand, PpLocations locations = null, string defaultFile = null)
+        { this.state = state; this.demand = demand; this.locations = locations; this.defaultFile = defaultFile; }
 
         internal bool MayContribute(PpToken token, PpToken following = null)
         {
-            // Ordinary non-macro tokens dominate HLSL text. Reject these without
-            // allocating an expansion array, recursion set or source-location key.
-            var located = location == null ? token : location(token);
-            if (demand.Matches(located, following, located)) return true;
-            if (token.Text == "_Pragma" || token.Text == "__pragma" || token.Text == "__COUNTER__") return true;
-            if (token.Kind != PpTokenKind.Identifier || state.Get(token.Text).Presence == false) return false;
-            return MayContribute(new[] { token }, following);
+            if (locations == null || !demand.UsesLocations) return MayContributeAt(token, following);
+            if (locations.Mappings == null) return true;
+            foreach (var mapping in locations.Mappings)
+            {
+                state.Budget.Charge();
+                var located = mapping.Locate(token, defaultFile);
+                if (located == null || MayContributeAt(located, following)) return true;
+            }
+            return false;
         }
 
         internal bool MayContribute(PpToken[] tokens, PpToken following = null)
         {
-            if (location != null)
+            if (locations == null || !demand.UsesLocations) return MayContributeAt(tokens, following);
+            if (locations.Mappings == null) return true;
+            // A slice may refer to only one conditional logical location. Reject
+            // text only when every paired mapping proves it irrelevant. Unknown
+            // or unrepresentable locations retain text instead of guessing a map.
+            foreach (var mapping in locations.Mappings)
             {
+                state.Budget.Charge(tokens.Length);
                 var located = new PpToken[tokens.Length];
-                for (int i = 0; i < tokens.Length; i++) located[i] = location(tokens[i]);
-                tokens = located;
+                for (int i = 0; i < tokens.Length; i++)
+                    if ((located[i] = mapping.Locate(tokens[i], defaultFile)) == null) return true;
+                if (MayContributeAt(located, following)) return true;
             }
+            return false;
+        }
+
+        private bool MayContributeAt(PpToken token, PpToken following)
+        {
+            // Ordinary non-macro tokens dominate HLSL text. Reject these without
+            // allocating an expansion array, recursion set or source-location key.
+            if (demand.Matches(token, following, token)) return true;
+            if (token.Text == "_Pragma" || token.Text == "__pragma" || token.Text == "__COUNTER__") return true;
+            if (token.Kind != PpTokenKind.Identifier || state.Get(token.Text).Presence == false) return false;
+            return MayContributeAt(new[] { token }, following);
+        }
+
+        private bool MayContributeAt(PpToken[] tokens, PpToken following)
+        {
             invocation = tokens.Length == 0 ? null : tokens[0];
             // Macro arguments are observed after substitution. An unused argument,
             // or an aggregate substituted into a member access, is not a whole read.
@@ -165,6 +190,10 @@ namespace Noname.AvatarTools.Analysis
         {
             state.Budget.Charge();
             if (depth > 32 || token.Kind == PpTokenKind.Symbol) return null;
+            // Builtin expansion can create a numeric/string paste operand. Its
+            // identifier spelling is not an exhaustive set of expanded atoms.
+            if (!state.Macros.ContainsKey(token.Text) &&
+                (token.Text == "__LINE__" || token.Text == "__FILE__" || token.Text == "__COUNTER__")) return null;
             var result = new HashSet<string>(StringComparer.Ordinal) { token.Text };
             if (token.Kind != PpTokenKind.Identifier) return result;
             var binding = state.Get(token.Text);

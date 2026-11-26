@@ -24,6 +24,35 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         }
 
         [Test]
+        public void ShaderInputUseSliceRecoversReadOnlyStaticInitializerInArray()
+        {
+            RequireD3DAnalysis();
+            const string source = "#line 1 \"query.hlsl\"\nstatic float gain=0;\n" +
+                "struct V { float4 p:POSITION; uint value:CUSTOM3; };\n" +
+                "float Consume(uint value, float flags[2]) { return value * flags[0] + value * flags[1]; }\n" +
+                "float4 vert(V v):SV_POSITION { float flags[2]={0,gain}; return v.p+Consume(v.value,flags); }";
+            var slice = InputUseSlice(source);
+            Assert.That(slice.Complete, Is.True, slice.Issue);
+            Assert.That(slice.Names, Does.Contain("gain"));
+            Assert.That(slice.Cuts, Is.EqualTo(1));
+        }
+
+        [TestCase("gain=1;")]
+        [TestCase("gain.x+=1;")]
+        [TestCase("++gain;")]
+        [TestCase("(gain)=1;")]
+        [TestCase("Change(gain);")]
+        [TestCase("Unknown(gain);")]
+        [TestCase("sincos(0,gain,temporary);")]
+        public void ShaderInputProgramKeepsMutatedOrEscapingStaticInitializer(string statement)
+        {
+            var program = new ShaderInputProgram("static float gain=0; void Change(inout float target){target=1;} " +
+                "float4 vert(float4 p:POSITION):SV_POSITION { float temporary=0; " + statement + " return p*gain; }");
+            Assert.That(program.Issue, Is.Null);
+            Assert.That(program.ScalarConstants.ContainsKey("gain"), Is.False);
+        }
+
+        [Test]
         public void ShaderInputUseSliceCutsPureConsumersAfterLocalCopies()
         {
             RequireD3DAnalysis();

@@ -19,6 +19,9 @@ namespace Noname.AvatarTools
         [Tooltip("Remove BlendShapes whose position, normal and tangent deltas are exactly zero on every vertex used by any submesh, in every frame. Includes empty separators and shapes left ineffective by geometry removal. Protected shapes are retained.")]
         public bool RemoveIneffectiveBlendShapes = true;
 
+        [Tooltip("Bake BlendShapes whose final animation output is provably constant, including nonzero values and fixed Blend Tree results. Changing authored starting weights requires Optimization Policy permission. Protected shapes and runtime-driven outputs remain intact.")]
+        public bool FreezeConstantAnimatedBlendShapes = true;
+
         [Tooltip("Combine shapes whose animation curves are always zero and whose animation usage is identical. Current weights are baked into a group shape with a default weight of 100.")]
         public bool OptimizeZeroResetAnimations = true;
 

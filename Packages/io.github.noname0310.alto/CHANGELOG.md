@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.20
+
+- Share constant-output analysis across material slots and properties, BlendShapes, transforms and supported component settings. Bake proven final outputs into build defaults while preserving Write Defaults history, partial blending, animation events, native writers and stateful initialization.
+- Add ALTO Optimization Policy with per-feature numerical tolerance, permission to change initial visual values, and shader constant-folding permission. Keep parameter decisions, control flow, indices and invalid values exact.
+- Remove geometry proven unable to render through every remaining animation, deformation and shader pass. Preserve external mesh readers, geometry-generating shaders, culling effects, skinning and shader index contracts.
+- Add opt-in shared shader constant baking. Substitute values before compilation only when all uses agree, preserve dynamic inputs and ShaderLab render state, and support verified imported shader programs and UsePass dependencies. Keep mobile shader allowlists protected and leave shader replacement disabled in the default template.
+- Extend persistent shader analysis caching across source preprocessing, imported programs and constant specialization, with a shared 100 GB disk budget. Validate source dependencies and compiler inputs before reuse without reducing variant coverage or proof limits.
+- Reuse mesh merge planning, native shader discovery and serialized reference layouts. Invalidate only affected analysis facts after known rewrites, retain full invalidation at external mutation boundaries, and refresh Native Face Tracking output liveness when mesh contents change.
+- Remove Inspector Analyze and preview actions that no longer represent the final build pipeline, together with their unused preview code.
+
 ## 0.0.19
 
 - Reduce repeated shader inspection across optimization stages. Reuse immutable declaration, specialization and lexical facts, memoize long-source lookup hashes, and reuse Unity preprocessing only after checking source dependencies and live compiler settings. Keep material assumptions, variant coverage and logical analysis budgets separate.

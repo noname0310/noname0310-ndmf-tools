@@ -20,7 +20,7 @@ using Object = UnityEngine.Object;
 
 namespace Noname.AvatarTools.ModularAvatarIntegration.Tests
 {
-    public sealed class GeneratedOutputTests
+    public sealed partial class GeneratedOutputTests
     {
         private Scene scene;
         private string outputRoot;

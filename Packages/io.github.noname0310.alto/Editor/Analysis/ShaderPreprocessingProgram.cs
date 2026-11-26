@@ -48,8 +48,7 @@ namespace Noname.AvatarTools.Analysis
         internal PpEnvironment Macros;
         internal Dictionary<string, PpValue> Once;
         internal PpValue Counter;
-        internal int LineOffset;
-        internal string LogicalFile;
+        internal PpLocations Locations = PpLocations.Start(null);
         internal PpBudget Budget;
         internal Func<string, bool, PpBinding> InitialInput;
         internal Func<string, PpBinding> PeekInitialInput;
@@ -59,7 +58,7 @@ namespace Noname.AvatarTools.Analysis
         {
             Budget = source.Budget; Macros = source.Macros.Fork();
             Once = new Dictionary<string, PpValue>(source.Once, StringComparer.Ordinal);
-            Counter = source.Counter; LineOffset = source.LineOffset; LogicalFile = source.LogicalFile; InitialInput = source.InitialInput;
+            Counter = source.Counter; Locations = source.Locations; InitialInput = source.InitialInput;
             ObserveMacroRead = source.ObserveMacroRead;
             PeekInitialInput = source.PeekInitialInput;
         }
@@ -87,9 +86,7 @@ namespace Noname.AvatarTools.Analysis
             foreach (var pair in b.Once)
                 if (!Once.ContainsKey(pair.Key)) Once.Add(pair.Key, JoinValue(new PpValue(0), pair.Value, guard));
             Counter = JoinValue(a.Counter, b.Counter, guard);
-            if (a.LineOffset != b.LineOffset || a.LogicalFile != b.LogicalFile)
-                throw new PpException("Conditional #line state cannot be represented by one source location");
-            LineOffset = a.LineOffset; LogicalFile = a.LogicalFile;
+            Locations = PpLocations.Join(a.Locations, b.Locations, guard);
             Budget.JoinTicks += System.Diagnostics.Stopwatch.GetTimestamp() - started;
         }
         private static PpValue JoinValue(PpValue a, PpValue b, BigInteger guard) => new(a.Bits == b.Bits ? a.Bits : null,

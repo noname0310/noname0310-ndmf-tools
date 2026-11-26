@@ -108,16 +108,20 @@ namespace Noname.AvatarTools.AnimatorOptimization
                     observable = (clip, binding) => !finalHierarchy &&
                         !(binding.path ?? "").StartsWith("__advanced_optimizer_duration_", StringComparison.Ordinal) || hierarchy.IsObservable(clip, binding);
                 }
-                var report = AnimatorOptimizer.Optimize(context.AvatarRootObject, controllers, state.Settings, additive, analysis, policy.Preserved, observable, policy.Roots, ownership);
+                var rounding = new AnimationOutputRounding(context.AvatarRootObject, ownership,
+                    services.ObjectPathRemapper.GetVirtualToRealPathMap(), context.GetState<OptimizationPolicy>(), policy.Preserved);
+                var report = AnimatorOptimizer.Optimize(context.AvatarRootObject, controllers, state.Settings, additive, analysis, policy.Preserved,
+                    observable, policy.Roots, ownership, allowNumericalDifferences: rounding.Allows);
                 if (materialReport != null && materialReport.SkippedReason == null)
                 {
                     materialReport.RemovedParameterCurves = report.ParameterCurves;
                     materialReport.RemovedDriverOperations = report.DriverOperations;
                     materialReport.RemovedBranches = report.Branches;
                 }
-                if (state.Settings.Materials && report.Fallback == null)
-                    MaterialConstants.Optimize(context.AvatarRootObject, entries.ToDictionary(e => e.Key, e => e.Value),
-                        services.ObjectPathRemapper.GetVirtualToRealPathMap(), material => context.AssetSaver.SaveAsset(material), report, analysis);
+                BakeMaterialOutputs(context.AvatarRootObject, ownership, services.ObjectPathRemapper.GetVirtualToRealPathMap(),
+                    policy.Preserved, state.Settings, report, context.GetState<OptimizationPolicy>(),
+                    context.GetState<ObjectOptimization.ObjectOptimizationState>(), context.GetState<Materials.MaterialOptimizationState>(),
+                    material => context.AssetSaver.SaveAsset(material));
                 state.Reports.Add(report);
                 context.GetState<OptimizationBuildReport>().Messages.Add("Animator graph optimization: " + report + "; " + watch.ElapsedMilliseconds + " ms.");
                 UnityEngine.Debug.Log($"[ALTO] Animator: {report}; {watch.ElapsedMilliseconds} ms.", context.AvatarRootObject);
@@ -127,6 +131,27 @@ namespace Noname.AvatarTools.AnimatorOptimization
             {
                 animationLease.Dispose();
             }
+        }
+
+        internal static void BakeMaterialOutputs(GameObject avatar, IDictionary<object, VirtualAnimatorController> entries,
+            IReadOnlyDictionary<string, string> paths, IEnumerable<string> preservedInputs,
+            AnimatorOptimizationSettings settings, AnimatorOptimizationReport report, OptimizationPolicy initialization,
+            ObjectOptimization.ObjectOptimizationState objects, Materials.MaterialOptimizationState materials,
+            Action<Material> save)
+        {
+            if (report.Fallback != null) return;
+            bool Allow(Renderer renderer) => initialization?.AllowsInitialValueChanges(renderer.transform) == true;
+            bool Preserved(Renderer renderer) => objects?.Protected(renderer) == true;
+            if (settings.MaterialSlots)
+            {
+                var index = AvatarAnimationIndex.Create(avatar, entries, paths, preservedInputs);
+                ConstantMaterialSlots.Apply(index, Allow, Preserved, report);
+            }
+            // The graph and material set may have changed above or in AnimatorOptimizer.
+            // MaterialConstants takes a fresh snapshot instead of reusing stale reachability.
+            if (settings.Materials)
+                MaterialConstants.Optimize(avatar, entries, paths, save, report, null, Allow, Preserved,
+                    m => materials?.Preserved.Contains(ObjectRegistry.GetReference(m)) == true, preservedInputs);
         }
     }
 }

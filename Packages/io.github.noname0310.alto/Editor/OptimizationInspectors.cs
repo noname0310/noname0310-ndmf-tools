@@ -15,6 +15,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             EditorGUILayout.PropertyField(serializedObject.FindProperty("ScopeRoot"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("PreserveMmdBlendShapes"), new GUIContent("Preserve MMD BlendShapes"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("RemoveIneffectiveBlendShapes"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("FreezeConstantAnimatedBlendShapes"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("OptimizeZeroResetAnimations"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("IgnoreUnreachableStates"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("ExcludedAnimations"), true);

@@ -1,7 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using Noname.AvatarTools.Build;
 using Noname.AvatarTools.Meshes;
 using UnityEditor;
 using UnityEngine;
@@ -40,19 +36,8 @@ namespace Noname.AvatarTools.Occlusion
                 "Every region must be covered and hidden in every sampled pose and view. " +
                 "Automatic occluders require opaque ShaderLab metadata and unambiguous culling/stencil state; shader displacement and arbitrary alpha programs are not simulated. " +
                 "Additional poses reduce motion-related holes but cannot prove visibility for all runtime motion.", MessageType.Warning);
-            EditorGUILayout.HelpBox("An empty Reference Pose uses the current build pose. Pose clip paths are relative to the avatar root. " +
-                "Current Setup Preview does not run generators or evaluate Animator state machines. Analyze Build runs an isolated build for the active platform and writes the final report.", MessageType.None);
+            EditorGUILayout.HelpBox("An empty Reference Pose uses the current build pose. Pose clip paths are relative to the avatar root.", MessageType.None);
             if (avatar == null) EditorGUILayout.HelpBox("Place this component inside an avatar with a VRC Avatar Descriptor.", MessageType.Error);
-            using (new EditorGUI.DisabledScope(avatar == null || EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isCompiling))
-            {
-                if (GUILayout.Button("Analyze / Preview Current Setup"))
-                    OcclusionPreviewWindow.Open(settings);
-                if (GUILayout.Button("Analyze Build (Active Platform)"))
-                {
-                    var obj = avatar.gameObject;
-                    EditorApplication.delayCall += () => { if (obj != null) AvatarBuildAnalysis.Analyze(obj); };
-                }
-            }
         }
     }
 

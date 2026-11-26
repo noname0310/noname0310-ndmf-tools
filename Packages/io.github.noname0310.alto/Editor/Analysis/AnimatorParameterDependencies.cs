@@ -113,7 +113,7 @@ namespace Noname.AvatarTools.Analysis
                     foreach (var binding in clip.GetObjectCurveBindings())
                         if (observable == null || observable(clip, binding)) { output = true; break; }
                 var source = MotionAnalysis.Source(clip);
-                output |= clip.IsMarkerClip || source == null || source.humanMotion || source.events.Length > 0;
+                output |= clip.IsMarkerClip || source == null || source.humanMotion || AnimationEventEffects.MayInvokeCallback(source);
                 var result = new ClipOutputs(parameters.ToArray(), output);
                 clipOutputs.Add(clip, result); return result;
             }
@@ -232,10 +232,11 @@ namespace Noname.AvatarTools.Analysis
 
         internal static AnimatorParameterDependencies Collect(GameObject avatar, VirtualAnimatorController[] controllers,
             bool forExpressions = false, Func<VirtualClip, EditorCurveBinding, bool> observableBinding = null,
-            AnimatorReachability analysis = null, IDictionary<object, VirtualAnimatorController> controllerEntries = null)
+            AnimatorReachability analysis = null, IDictionary<object, VirtualAnimatorController> controllerEntries = null,
+            Func<AnimatorInstanceContexts.Context[]> instanceContexts = null)
         {
             using var cost = AnalysisCost.Measure("Parameter dependencies");
-            var contexts = AnimatorInstanceContexts.Analyze(avatar, controllers, controllerEntries);
+            var contexts = instanceContexts == null ? AnimatorInstanceContexts.Analyze(avatar, controllers, controllerEntries) : instanceContexts();
             var facts = new Facts(controllers, observableBinding);
             if (contexts == null) return CollectInstance(avatar, controllers, forExpressions, observableBinding, analysis, facts);
             var parts = new AnimatorParameterDependencies[contexts.Length];

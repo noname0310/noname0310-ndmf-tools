@@ -5,6 +5,7 @@ using System.Linq;
 using nadena.dev.ndmf;
 using nadena.dev.ndmf.animator;
 using Noname.AvatarTools.Analysis;
+using UnityEngine;
 
 namespace Noname.AvatarTools.Build
 {
@@ -19,6 +20,9 @@ namespace Noname.AvatarTools.Build
     // an external-plugin boundary. A failed pass invalidates its possible writes too.
     internal sealed class OptimizationAnalysis
     {
+        // Differential validation only. The exhaustive path computes the same
+        // fixed point while discarding every live-avatar fact at each mutation.
+        internal static bool ExhaustiveInvalidation;
         private sealed class Entry
         {
             internal AnalysisDomain Dependencies;
@@ -26,6 +30,25 @@ namespace Noname.AvatarTools.Build
         }
         private readonly Dictionary<object, Entry> entries = new();
         private readonly ShaderAnalysisArtifacts shaderArtifacts = new();
+        private readonly List<AvatarAnalysisSnapshot> avatars = new();
+        private readonly HashSet<string> queryPreserved = new(StringComparer.Ordinal);
+        private SerializedReferenceSnapshot references;
+
+        internal AvatarAnalysisSnapshot Avatar(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> paths, IEnumerable<string> preserved)
+        {
+            using var cost = AnalysisCost.Measure("Avatar snapshot/context lookup");
+            queryPreserved.Clear();
+            if (preserved != null) queryPreserved.UnionWith(preserved);
+            foreach (var snapshot in avatars)
+                if (snapshot.Matches(avatar, controllers, paths, queryPreserved))
+                { AnalysisCost.Count("Avatar snapshot/reused"); return snapshot; }
+            var result = new AvatarAnalysisSnapshot(avatar, controllers, paths, queryPreserved,
+                Invalidate, () => references ??= new SerializedReferenceSnapshot());
+            avatars.Add(result);
+            AnalysisCost.Count("Avatar snapshot/created");
+            return result;
+        }
         internal T Get<T>(object key, AnalysisDomain dependencies, Func<T> create)
         {
             if (entries.TryGetValue(key, out var entry))
@@ -36,7 +59,26 @@ namespace Noname.AvatarTools.Build
             var value = create(); entries.Add(key, new Entry { Dependencies = dependencies, Value = value }); return value;
         }
         internal void Invalidate(AnalysisDomain changed)
+            => Invalidate(new OptimizationChanges(0, changed));
+
+        internal void Invalidate(OptimizationChanges mutation)
         {
+            var changed = mutation.Domains;
+            if (changed == AnalysisDomain.None) return;
+            if (ExhaustiveInvalidation || changed == AnalysisDomain.All)
+            {
+                foreach (var snapshot in avatars) snapshot.Reset();
+                avatars.Clear(); references = null;
+            }
+            else
+            {
+                foreach (var snapshot in avatars) snapshot.Invalidate(changed);
+                if (references != null)
+                {
+                    if (mutation.ReferenceOwners == null) references.Invalidate(changed);
+                    else foreach (var owner in mutation.ReferenceOwners) references.Invalidate(owner);
+                }
+            }
             foreach (var key in entries.Where(p => (p.Value.Dependencies & changed) != 0).Select(p => p.Key).ToArray()) entries.Remove(key);
         }
         internal ShaderPropertyUsage Shaders => Get(typeof(ShaderPropertyUsage), AnalysisDomain.ShaderSources,

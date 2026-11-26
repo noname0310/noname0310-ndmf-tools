@@ -14,24 +14,28 @@ namespace Noname.AvatarTools.AnimatorOptimization
 {
     internal sealed class AnimatorOptimizationSettings
     {
-        internal bool Unreachable, UnusedParameters, ConstantTrees, MergeClips, Materials, MaterialOutputs, StateLogic, ParameterDeclarations;
-        internal bool Enabled => Unreachable || UnusedParameters || ConstantTrees || MergeClips || Materials || MaterialOutputs || StateLogic || ParameterDeclarations;
+        internal bool Unreachable, UnusedParameters, ConstantTrees, MergeClips, Materials, MaterialSlots, MaterialOutputs, StateLogic, ParameterDeclarations;
+        internal bool Enabled => Unreachable || UnusedParameters || ConstantTrees || MergeClips || Materials || MaterialSlots || MaterialOutputs || StateLogic || ParameterDeclarations;
         internal static AnimatorOptimizationSettings From(ALTOTraceAndOptimizeAnimator component) => new() {
             Unreachable = component.RemoveUnreachableStates, UnusedParameters = component.RemoveUnusedParameterCurves,
             ConstantTrees = component.SimplifyConstantBlendTrees, MergeClips = component.MergeSameWeightClips,
             Materials = component.BakeConstantMaterialProperties, MaterialOutputs = component.RemoveUnusedMaterialProperties,
+            MaterialSlots = component.BakeConstantMaterialSlots,
             StateLogic = component.SimplifyUnusedStateLogic, ParameterDeclarations = component.RemoveUnusedParameterDeclarations };
-        internal bool Same(AnimatorOptimizationSettings other) => (Unreachable, UnusedParameters, ConstantTrees, MergeClips, Materials, MaterialOutputs, StateLogic, ParameterDeclarations)
-            == (other.Unreachable, other.UnusedParameters, other.ConstantTrees, other.MergeClips, other.Materials, other.MaterialOutputs, other.StateLogic, other.ParameterDeclarations);
+        internal bool Same(AnimatorOptimizationSettings other) => (Unreachable, UnusedParameters, ConstantTrees, MergeClips, Materials, MaterialSlots, MaterialOutputs, StateLogic, ParameterDeclarations)
+            == (other.Unreachable, other.UnusedParameters, other.ConstantTrees, other.MergeClips, other.Materials, other.MaterialSlots, other.MaterialOutputs, other.StateLogic, other.ParameterDeclarations);
     }
 
     internal sealed class AnimatorOptimizationReport
     {
-        internal int Layers, States, Transitions, ParameterCurves, DriverOperations, NativeFaceOperations, Behaviours, Branches, Trees, MergedClips, MaterialCurves, StateMachines, ParameterDeclarations, MissingBindings;
-        internal int Changes => Layers + States + Transitions + ParameterCurves + DriverOperations + NativeFaceOperations + Behaviours + Branches + Trees + MergedClips + MaterialCurves + StateMachines + ParameterDeclarations + MissingBindings;
+        internal int Layers, States, Transitions, ParameterCurves, DriverOperations, NativeFaceOperations, Behaviours, Branches, Trees, MergedClips, MaterialCurves, MaterialSlotCurves, InitialOutputs, StateMachines, ParameterDeclarations, MissingBindings;
+        internal int Changes => Layers + States + Transitions + ParameterCurves + DriverOperations + NativeFaceOperations + Behaviours + Branches + Trees + MergedClips + MaterialCurves + MaterialSlotCurves + StateMachines + ParameterDeclarations + MissingBindings;
         internal string Fallback;
+        internal readonly AppliedProofReport ConstantOutputProofs = new();
         public override string ToString() => $"removed {States} states, {Transitions} transitions, {ParameterCurves} unused parameter curves, " +
             $"{Layers} unused layers, {ParameterDeclarations} unused parameter declarations, {DriverOperations} unused Driver operations, {NativeFaceOperations} unused native FT operations, {Behaviours} empty behaviours, {Branches} empty branches, {MissingBindings} missing-target curves; simplified {StateMachines} unused state machines and {Trees} trees; merged {MergedClips} clips; baked {MaterialCurves} material curves" +
+            $" and {MaterialSlotCurves} material-slot curves ({InitialOutputs} changed initial outputs)" +
+            (ConstantOutputProofs.HasApplications ? "; constant-output proof assumptions: " + ConstantOutputProofs : "") +
             (Fallback == null ? "" : "; conservative fallback: " + Fallback);
     }
 
@@ -41,7 +45,8 @@ namespace Noname.AvatarTools.AnimatorOptimization
             AnimatorOptimizationSettings settings, ISet<VirtualAnimatorController> additiveControllers = null,
             AnimatorReachability analysis = null, IEnumerable<string> preservedParameters = null,
             Func<VirtualClip, EditorCurveBinding, bool> observableBinding = null, IEnumerable<string> dependencyRoots = null,
-            IDictionary<object, VirtualAnimatorController> controllerEntries = null, bool finalParameterDeclarations = false)
+            IDictionary<object, VirtualAnimatorController> controllerEntries = null, bool finalParameterDeclarations = false,
+            Func<VirtualClip, EditorCurveBinding, bool> allowNumericalDifferences = null)
         {
             using var cost = AnalysisCost.Measure("Animator optimization");
             analysis ??= AnimatorReachability.Analyze(avatar, controllers, preservedParameters);
@@ -55,7 +60,7 @@ namespace Noname.AvatarTools.AnimatorOptimization
                 removeDeadDriverOperations: settings.StateLogic || settings.MaterialOutputs && observableBinding != null,
                 followStateOutputs: settings.StateLogic, analysis: analysis, dependencyRoots: dependencyRoots, controllerEntries: controllerEntries);
             if (settings.StateLogic) UnusedStateLogic.Apply(controllers, report, observableBinding);
-            RewriteTrees(controllers, analysis, settings, report, additiveControllers, observableBinding);
+            RewriteTrees(controllers, analysis, settings, report, additiveControllers, observableBinding, allowNumericalDifferences);
             if (settings.StateLogic && finalParameterDeclarations)
                 UnusedLayers.Apply(controllers.Where(c => additiveControllers?.Contains(c) != true).ToArray(), report, observableBinding, controllerEntries);
             // Late SDK generators may still read declarations/defaults that currently have
@@ -128,7 +133,8 @@ namespace Noname.AvatarTools.AnimatorOptimization
 
         private static void RewriteTrees(VirtualAnimatorController[] controllers, AnimatorReachability analysis,
             AnimatorOptimizationSettings settings, AnimatorOptimizationReport report, ISet<VirtualAnimatorController> additive,
-            Func<VirtualClip, EditorCurveBinding, bool> observableBinding)
+            Func<VirtualClip, EditorCurveBinding, bool> observableBinding,
+            Func<VirtualClip, EditorCurveBinding, bool> allowNumericalDifferences)
         {
             using var cost = AnalysisCost.Measure("Animator tree rewrites");
             // Existing clips are not mutated by this rewrite. Merging builds a
@@ -136,10 +142,32 @@ namespace Noname.AvatarTools.AnimatorOptimization
             // queries once per clip, including clips shared by several trees.
             var constantClips = new Dictionary<VirtualClip, bool>();
             var staticClips = new Dictionary<VirtualClip, bool>();
+            var negativeZeroClips = new Dictionary<VirtualClip, bool>();
+            var roundedClips = new Dictionary<VirtualClip, bool>();
+            var roundingSources = new Dictionary<VirtualClip, VirtualClip[]>();
+            bool CanRoundClip(VirtualClip clip)
+            {
+                if (!roundedClips.TryGetValue(clip, out bool result))
+                    roundedClips.Add(clip, result = roundingSources.TryGetValue(clip, out var sources) ? sources.All(CanRoundClip) :
+                        allowNumericalDifferences != null &&
+                        clip.GetFloatCurveBindings().Concat(clip.GetObjectCurveBindings()).All(binding =>
+                            settings.StateLogic && observableBinding?.Invoke(clip, binding) == false ||
+                            allowNumericalDifferences(clip, binding)));
+                return result;
+            }
+            bool HasNegativeZero(VirtualClip clip)
+            {
+                if (!negativeZeroClips.TryGetValue(clip, out bool result))
+                    negativeZeroClips.Add(clip, result = clip.GetFloatCurveBindings().Any(binding =>
+                        MotionAnalysis.Constant(clip.GetFloatCurve(binding), out float value, preserveZeroSign: false) && value == 0 &&
+                        clip.GetFloatCurve(binding).keys.Any(k => MotionAnalysis.NegativeZero(k.value))));
+                return result;
+            }
             bool ConstantPose(VirtualClip clip)
             {
                 if (!constantClips.TryGetValue(clip, out bool result))
-                    constantClips.Add(clip, result = MotionAnalysis.ConstantPoseClip(clip));
+                    constantClips.Add(clip, result = MotionAnalysis.ConstantPoseClip(clip) ||
+                        MotionAnalysis.ConstantPoseClip(clip, preserveZeroSign: false) && CanRoundClip(clip));
                 return result;
             }
             bool StaticClip(VirtualClip clip)
@@ -148,6 +176,32 @@ namespace Noname.AvatarTools.AnimatorOptimization
                     staticClips.Add(clip, result = ConstantPose(clip) && clip.Settings.stopTime == 0 && MotionAnalysis.EndTime(clip) == 0);
                 return result;
             }
+            bool FiniteInputs(VirtualMotion motion)
+            {
+                foreach (var tree in motion.AllReachableNodes().OfType<VirtualBlendTree>())
+                {
+                    bool FiniteParameter(string name)
+                    {
+                        var values = analysis.Values(name);
+                        return MotionAnalysis.Finite((float)values.Min) && MotionAnalysis.Finite((float)values.Max);
+                    }
+                    if (tree.BlendType == BlendTreeType.Direct)
+                    { if (tree.Children.Any(c => !FiniteParameter(c.DirectBlendParameter))) return false; }
+                    else if (tree.BlendType == BlendTreeType.Simple1D)
+                    {
+                        if (!FiniteParameter(tree.BlendParameter) || tree.Children.Count == 0) return false;
+                        var values = analysis.Values(tree.BlendParameter);
+                        foreach (var child in tree.Children)
+                            if (!MotionAnalysis.Finite(child.Threshold) ||
+                                !MotionAnalysis.Finite((float)(values.Min - child.Threshold)) ||
+                                !MotionAnalysis.Finite((float)(values.Max - child.Threshold))) return false;
+                        if (!MotionAnalysis.Finite(tree.Children.Max(c => c.Threshold) - tree.Children.Min(c => c.Threshold))) return false;
+                    }
+                    else if (!ConstantMotionOutput.WellFormedTwoDimensional(tree, analysis)) return false;
+                }
+                return true;
+            }
+            bool CanRoundMotion(VirtualMotion motion) => FiniteInputs(motion) && MotionAnalysis.Clips(motion).All(CanRoundClip);
             var blocked = new HashSet<VirtualMotion>();
             foreach (var controller in controllers)
             foreach (var layer in controller.Layers)
@@ -160,7 +214,7 @@ namespace Noname.AvatarTools.AnimatorOptimization
             var visiting = new HashSet<VirtualMotion>();
             var outputs = new StaticMotionOutputs(settings.StateLogic ? observableBinding : null);
             var timeIndependentOutputs = new StaticMotionOutputs(settings.StateLogic ? observableBinding : null, ConstantPose);
-            var timing = new MotionTimeAnalysis(controllers);
+            var timing = new MotionTimeAnalysis(controllers, ConstantPose);
             VirtualMotion Rewrite(VirtualMotion motion)
             {
                 if (!(motion is VirtualBlendTree tree) || blocked.Contains(motion)) return motion;
@@ -174,7 +228,10 @@ namespace Noname.AvatarTools.AnimatorOptimization
                 if (tree.BlendType == BlendTreeType.Direct && !tree.NormalizedBlendValues &&
                     MotionAnalysis.Clips(tree).All(safeClip))
                 {
-                    if (settings.UnusedParameters)
+                    // Missing children can affect the sign of a zero result even
+                    // when their own tracks are unobserved. Native Direct blending
+                    // is not bit-equivalent to a standalone negative-zero clip.
+                    if (settings.UnusedParameters && (!MotionAnalysis.Clips(tree).Any(HasNegativeZero) || CanRoundMotion(tree)))
                         report.Branches += children.RemoveAll(c => Identity(c) && safeOutputs.IsUnobserved(c.Motion));
                     if (settings.MergeClips)
                     {
@@ -183,18 +240,30 @@ namespace Noname.AvatarTools.AnimatorOptimization
                             if (!(children[i].Motion is VirtualClip first) || !safeClip(first) || !Identity(children[i])) continue;
                             var bindings = MotionAnalysis.Bindings(first);
                             VirtualClip merged = null;
+                            bool negativeZero = HasNegativeZero(first);
+                            var mergedSources = new List<VirtualClip> { first };
                             for (int j = i + 1; j < children.Count; j++)
                             {
                                 var child = children[j];
                                 if (child.DirectBlendParameter != children[i].DirectBlendParameter || !Identity(child) ||
                                     !(child.Motion is VirtualClip next) || !safeClip(next)) continue;
+                                bool nextNegativeZero = HasNegativeZero(next);
+                                if ((negativeZero || nextNegativeZero) &&
+                                    !(mergedSources.All(CanRoundClip) && CanRoundClip(next) && FiniteInputs(tree))) continue;
                                 var other = MotionAnalysis.Bindings(next);
                                 if (bindings.Overlaps(other)) continue;
                                 if (merged == null) { merged = first.Clone(); merged.Name = first.Name + " (merged)"; }
                                 foreach (var binding in next.GetFloatCurveBindings()) merged.SetFloatCurve(binding, next.GetFloatCurve(binding));
                                 bindings.UnionWith(other); children.RemoveAt(j--); report.MergedClips++;
+                                negativeZero |= nextNegativeZero; mergedSources.Add(next);
                             }
-                            if (merged != null) children[i] = Copy(children[i], merged);
+                            if (merged != null)
+                            {
+                                // A fresh merged clip is absent from the caller's
+                                // snapshot. Retain the meet of its source permissions.
+                                roundingSources[merged] = mergedSources.ToArray(); negativeZeroClips[merged] = negativeZero;
+                                children[i] = Copy(children[i], merged);
+                            }
                         }
                     }
                 }
@@ -212,13 +281,15 @@ namespace Noname.AvatarTools.AnimatorOptimization
                     // the leaf (and its zero-valued writes), not an empty motion. Direct
                     // trees and nested calculations need different equivalence proofs.
                     if (tree.BlendType == BlendTreeType.Simple1D && children[0].Motion is VirtualClip shared &&
+                        (!HasNegativeZero(shared) || CanRoundMotion(tree)) &&
                         children.All(c => c.Motion == shared && MotionAnalysis.Finite(c.Threshold)) &&
                         children.Zip(children.Skip(1), (a, b) => a.Threshold < b.Threshold).All(ordered => ordered))
                         selected = shared;
                     if (tree.BlendType == BlendTreeType.Direct && children.All(c => analysis.Values(c.DirectBlendParameter).TryGetConstant(out _)))
                     {
                         var active = children.Where(c => { analysis.Values(c.DirectBlendParameter).TryGetConstant(out float w); return w != 0; }).ToArray();
-                        if (active.Length == 1 && analysis.Values(active[0].DirectBlendParameter).TryGetConstant(out float weight) && weight == 1)
+                        if (active.Length == 1 && analysis.Values(active[0].DirectBlendParameter).TryGetConstant(out float weight) && weight == 1 &&
+                            (!MotionAnalysis.Clips(tree).Any(HasNegativeZero) || CanRoundMotion(tree)))
                             selected = active[0].Motion;
                     }
                     if (selected != null && MotionAnalysis.Bindings(selected).SetEquals(MotionAnalysis.Bindings(tree)))

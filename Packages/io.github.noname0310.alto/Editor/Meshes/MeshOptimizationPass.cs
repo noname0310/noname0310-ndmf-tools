@@ -19,6 +19,7 @@ namespace Noname.AvatarTools.Meshes
         internal ALTOTraceAndOptimizeMeshes Component;
         internal OptimizationBuildScope Scope;
         internal bool MergeRenderers, MergeSlots, RemoveUnusedData, RebindStaticBones;
+        internal bool RemoveHiddenGeometry;
         internal bool ExpandBounds;
         internal bool PreserveVertexIds;
         internal int VertexIdUniformThreshold = 3;
@@ -31,7 +32,7 @@ namespace Noname.AvatarTools.Meshes
         internal readonly List<MeshOptimizationPermissions> InputPermissions = new();
         internal readonly List<ObjectReference> InputReferences = new();
         private readonly Dictionary<ObjectReference, MeshOptimizationPermissions> rewrittenPermissions = new();
-        internal bool Enabled => Scope != null && (MergeRenderers || MergeSlots || RemoveUnusedData || RebindStaticBones);
+        internal bool Enabled => Scope != null && (MergeRenderers || MergeSlots || RemoveUnusedData || RebindStaticBones || RemoveHiddenGeometry);
 
         internal Renderer MappedInput(int index) => Component != null && Component.BuildInputRenderers.Length == Inputs.Count
             ? Component.BuildInputRenderers[index] : Inputs[index].Original;
@@ -75,6 +76,7 @@ namespace Noname.AvatarTools.Meshes
                 state.Scope = OptimizationBuildScope.Capture(component, context.AvatarRootObject);
                 state.MergeRenderers = component.MergeCompatibleSkinnedMeshes; state.MergeSlots = component.MergeIdenticalMaterialSlots;
                 state.RemoveUnusedData = component.RemoveUnusedMeshData;
+                state.RemoveHiddenGeometry = component.RemovePermanentlyHiddenGeometry;
                 state.RebindStaticBones = component.RebindStaticBones;
                 state.ExpandBounds = component.ExpandBounds;
                 state.PreserveVertexIds = component.PreserveVertexIds;
@@ -173,6 +175,7 @@ namespace Noname.AvatarTools.Meshes
             var phaseWatch = Stopwatch.StartNew();
             var shaderSources = context.GetState<OptimizationAnalysis>().Shaders;
             var shaderInputs = shaderSources.MeshInputs;
+            int shaderDiagnosticsBefore = shaderInputs.UnitDiagnostics.Count;
             double preprocessingBefore = shaderSources.PreprocessorGraphMilliseconds;
             double nativePreprocessBefore = shaderInputs.NativePreprocessMilliseconds;
             int nativePreprocessHitsBefore = shaderInputs.NativePreprocessCacheHits;
@@ -182,7 +185,8 @@ namespace Noname.AvatarTools.Meshes
             double specializationBefore = shaderInputs.SpecializationMilliseconds;
             double keywordsBefore = shaderInputs.KeywordPlanMilliseconds;
             double inspectedProgramsBefore = shaderInputs.PreprocessedInspectionMilliseconds;
-            var animations = AvatarAnimationIndex.Create(avatar, entries, paths, policy.Preserved);
+            var sharedFacts = context.GetState<OptimizationAnalysis>().Avatar(avatar, entries, paths, policy.Preserved);
+            var animations = sharedFacts.Index;
             double indexMilliseconds = phaseWatch.Elapsed.TotalMilliseconds;
             phaseWatch.Restart();
             string unsupported = ObjectOptimizationSafety.UnsupportedRuntime(avatar) ?? animations.UnsafeReason;
@@ -195,7 +199,7 @@ namespace Noname.AvatarTools.Meshes
             { Scope = new OptimizationBuildScope { Root = avatar.transform }, RuntimeDependenciesOnly = runtimeDependenciesOnly };
             referenceSettings.ProtectedComponents.UnionWith(objectSettings.ProtectedComponents);
             referenceSettings.ProtectedSubtrees.AddRange(objectSettings.ProtectedSubtrees);
-            var records = new SerializedReferenceSnapshot();
+            var records = sharedFacts.References;
             var references = AvatarDependencyGraph.Create(avatar, animations, referenceSettings, collectObjects: false,
                 shaders: context.GetState<OptimizationAnalysis>().Shaders, references: records);
             int converted = 0, weighted = 0;
@@ -210,7 +214,8 @@ namespace Noname.AvatarTools.Meshes
                         context.GetState<OptimizationAnalysis>().Shaders, true,
                         (permissions & MeshOptimizationPermissions.TransparentSortingChanges) != 0,
                         context.GetState<OptimizationBuildEnvironment>().Target,
-                        (permissions & MeshOptimizationPermissions.ShaderIndexChanges) != 0);
+                        (permissions & MeshOptimizationPermissions.ShaderIndexChanges) != 0,
+                        context.GetState<OptimizationPolicy>().AllowsSmallNumericalDifferences(renderer.transform, NumericalOptimization.Skinning));
                     if (issue != null) { report.Messages.Add("Rigid renderer retained '" + renderer.name + "': " + issue + "."); continue; }
                     var convertedRenderer = RigidMeshConversion.Convert(renderer, animations, save);
                     settings.RecordPermissions(convertedRenderer, permissions); converted++;
@@ -225,16 +230,25 @@ namespace Noname.AvatarTools.Meshes
                     renderers = avatar.GetComponentsInChildren<SkinnedMeshRenderer>(true).Where(r => settings.Scope.Contains(r.transform)).ToArray();
                 }
             }
-            var staticProof = new StaticTransformProof(avatar, animations, objectSettings, records);
+            var staticProof = new StaticTransformProof(avatar, animations, objectSettings, records, context.GetState<OptimizationPolicy>());
             var mutations = staticProof.Mutations;
+            var shapeProvenance = context.GetState<BlendShapeOptimization.OptimizationState>().Provenance;
+            // SDK callbacks can still add vertex deformation after NDMF. Manual
+            // bakes use the completed NDMF graph; SDK builds wait for its finalizer.
+            bool finalGeometry = runtimeDependenciesOnly || !AvatarOutputSdkFinalizer.HasSession(context);
+            int hiddenTriangles = finalGeometry ? PermanentlyHiddenGeometry.Apply(avatar, renderers, settings,
+                objectSettings, animations, references, shaderSources, context.GetState<OptimizationBuildEnvironment>().Target,
+                save, report.Messages, shapeProvenance, context.GetState<OptimizationPolicy>().AllowsInitialValueChanges) : 0;
+            if (hiddenTriangles != 0) settings.Changed = true;
             double dependencyMilliseconds = phaseWatch.Elapsed.TotalMilliseconds;
             phaseWatch.Restart();
             int independentlyRebound = StaticSkinningOptimization.Apply(avatar, settings, objectSettings,
-                animations, references, staticProof, save);
+                animations, references, staticProof, save, shapeProvenance);
             double skinningMilliseconds = phaseWatch.Elapsed.TotalMilliseconds;
             phaseWatch.Restart();
             var permissionsByRenderer = renderers.ToDictionary(r => (Renderer)r, settings.PermissionsFor);
             var mergePolicy = new MeshMergePolicy { ExpandBounds = settings.ExpandBounds,
+                NumericalPolicy = context.GetState<OptimizationPolicy>(),
                 Target = context.GetState<OptimizationBuildEnvironment>().Target,
                 PreserveVertexIds = settings.PreserveVertexIds && runtimeDependenciesOnly,
                 PreserveParticleRandomSequence = settings.PreserveParticleRandomSequence,
@@ -252,7 +266,7 @@ namespace Noname.AvatarTools.Meshes
                 if (candidate != null)
                 {
                     if (mergePolicy.ConvertsRigid(renderer) && RigidMeshConversion.Unweighted(renderer.sharedMesh))
-                    { RigidMeshConversion.WeightUnweighted(renderer, save); weighted++; settings.Changed = true; }
+                    { RigidMeshConversion.WeightUnweighted(renderer, save, shapeProvenance); weighted++; settings.Changed = true; }
                     candidates.Add(candidate);
                     if (candidate.Pinned) report.Messages.Add("Mesh interface retained '" + renderer.name + "': " +
                         string.Join("; ", candidate.PinReasons.Take(5)) + ".");
@@ -263,11 +277,12 @@ namespace Noname.AvatarTools.Meshes
             phaseWatch.Restart();
             var skinning = new Dictionary<SkinnedMeshRenderer, StaticSkinningPlan>();
             int removed = 0, slots = 0, groups = 0, vertices = 0, palette = 0, rebound = independentlyRebound, equivalentVisibility = 0;
-            var partitions = MeshMergeAnalysis.Group(candidates, settings.MergeRenderers, mergePolicy);
+            var planning = new MeshMergePlanning(mergePolicy);
+            var partitions = MeshMergeAnalysis.Group(candidates, settings.MergeRenderers, mergePolicy, planning);
             foreach (var partition in partitions.Skip(1))
             {
                 var conflict = partitions[0].SelectMany(first => partition.Select(second => new
-                    { First = first, Second = second, Reason = MeshMergeAnalysis.Incompatibility(first, second, mergePolicy) }))
+                    { First = first, Second = second, Reason = planning.Incompatibility(first, second) }))
                     .FirstOrDefault(pair => pair.Reason != null);
                 if (conflict != null) report.Messages.Add("Mesh group '" + partition[0].Renderer.name + "' (" + partition.Count +
                     " inputs) remains separate from '" + partitions[0][0].Renderer.name + "': " + conflict.Reason +
@@ -290,7 +305,7 @@ namespace Noname.AvatarTools.Meshes
                     continue;
                 }
                 var destination = group[0].Renderer;
-                var materialAnimations = MeshMaterialAnimationPlan.Create(group, mergePolicy);
+                var materialAnimations = planning.Plan(group);
                 if (materialAnimations.Issue != null)
                 { report.Messages.Add("Mesh group retained: " + materialAnimations.Issue); continue; }
                 foreach (var change in materialAnimations.DefaultChanges)
@@ -317,7 +332,9 @@ namespace Noname.AvatarTools.Meshes
                     }
                     string firstVertexInput = vertexIds?.VertexOrder[0].name;
                     Merge(group, pathFor(destination.transform), settings.MergeSlots,
-                        save, settings.RemoveUnusedData, skinning, settings.ExpandBounds, reorderSlots, vertexIds, saveOther, materialAnimations);
+                        save, settings.RemoveUnusedData, skinning, settings.ExpandBounds, reorderSlots, vertexIds, saveOther, materialAnimations, shapeProvenance,
+                        context.GetState<OptimizationPolicy>());
+                    planning.Clear();
                     if (vertexIds != null) report.Messages.Add("Vertex-ID preservation for '" + destination.name + "': vertex buffer starts with '" +
                         firstVertexInput + "'; " + vertexIds.KeepVertices.Count + " original vertex layouts retained; " +
                         vertexIds.AttributeInputs.Count + " inputs use original-ID attributes; " + vertexIds.LiteralShaders + " literal and " +
@@ -344,6 +361,8 @@ namespace Noname.AvatarTools.Meshes
             report.Messages.Add("Shader preprocessing artifact hits: " + (shaderInputs.NativePreprocessCacheHits - nativePreprocessHitsBefore) +
                 "; " + shaderSources.Artifacts.NativeProgramCount + " programs for " + shaderSources.Artifacts.NativeVariantCount +
                 " variants, " + shaderSources.Artifacts.NativeProgramBytes + " source bytes retained.");
+            for (int i = shaderDiagnosticsBefore; i < shaderInputs.UnitDiagnostics.Count; i++)
+                report.Messages.Add("Shader input proof: " + shaderInputs.UnitDiagnostics[i]);
             report.Messages.Add((runtimeDependenciesOnly ? "Final runtime mesh optimization: " : "Mesh optimization: ") + removed + " renderers and " + slots + " material slots merged in " + groups + " groups; " +
                 vertices + " unused vertices and " + palette + " unused or duplicate bone-palette entries removed; " +
                 rebound + " static skin-bone entries rebound; " + converted + " rigid renderers converted and " + weighted +
@@ -351,12 +370,13 @@ namespace Noname.AvatarTools.Meshes
                 permissionsByRenderer.Values.Count(p => (p & MeshOptimizationPermissions.MaterialSlotReordering) != 0) + " inspected renderers" +
                 "; " + equivalentVisibility + " groups use equivalent Animator visibility outputs; " + watch.ElapsedMilliseconds + " ms.");
             context.GetState<OptimizationAnalysis>().Invalidate(AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Meshes);
-            return groups + converted + weighted + independentlyRebound;
+            return groups + converted + weighted + independentlyRebound + hiddenTriangles;
         }
 
         internal static void Merge(IReadOnlyList<MeshMergeCandidate> group, string destinationPath, bool mergeSlots, Action<Mesh> save, bool removeUnusedData = false,
             IReadOnlyDictionary<SkinnedMeshRenderer, StaticSkinningPlan> skinning = null, bool expandBounds = false, bool reorderMaterialSlots = false,
-            VertexIdMergePlan vertexIds = null, Action<Object> saveOther = null, MeshMaterialAnimationPlan materialAnimations = null)
+            VertexIdMergePlan vertexIds = null, Action<Object> saveOther = null, MeshMaterialAnimationPlan materialAnimations = null,
+            BlendShapeOptimization.BlendShapeProvenance shapeProvenance = null, OptimizationPolicy numericalPolicy = null)
         {
             var sources = group.Select(c => c.Renderer).ToArray(); var destination = sources[0];
             materialAnimations ??= MeshMaterialAnimationPlan.Create(group, validateDefaults: false);
@@ -452,6 +472,7 @@ namespace Noname.AvatarTools.Meshes
             ObjectRegistry.RegisterReplacedObject(destination.sharedMesh, assembly.Mesh);
             save?.Invoke(assembly.Mesh);
             vertexIds?.Save(saveOther);
+            shapeProvenance?.RecordMerge(destination, assembly.Mesh, assembly.ShapeNames);
             // Release the old native skinning layout before changing vertex channels
             // and palette size. Editor cameras can have rendered the input this frame.
             destination.sharedMesh = null;
@@ -480,6 +501,7 @@ namespace Noname.AvatarTools.Meshes
                 if (descriptor != null && descriptor.faceTrackingMeshes != null)
                     descriptor.faceTrackingMeshes = descriptor.faceTrackingMeshes.Select(r => r != null && sources.Contains(r) ? destination : r).Distinct().ToList();
             }
+            numericalPolicy?.InheritNumericalConstraints(destination.transform, sources.Select(source => source.transform));
             foreach (var source in sources.Skip(1)) Object.DestroyImmediate(source);
             assembly.Mesh = null;
         }

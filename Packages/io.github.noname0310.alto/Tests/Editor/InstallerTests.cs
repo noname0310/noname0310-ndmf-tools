@@ -44,6 +44,16 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(template.GetComponentsInChildren<VRCAvatarDescriptor>(true), Is.Empty);
             Assert.That(template.GetComponentsInChildren<ALTOOptimizationComponent>(true).All(c => c.ScopeRoot == null), Is.True);
             Assert.That(template.GetComponentInChildren<ALTOTraceAndOptimizeBlendShapes>().ScopeRoot, Is.Null);
+            Assert.That(template.GetComponentInChildren<ALTOTraceAndOptimizeBlendShapes>().FreezeConstantAnimatedBlendShapes, Is.True);
+            Assert.That(template.GetComponentInChildren<ALTOTraceAndOptimizeAnimator>().BakeConstantMaterialSlots, Is.True);
+            Assert.That(template.GetComponentInChildren<ALTOTraceAndOptimizeObjects>().BakeConstantComponentProperties, Is.True);
+            Assert.That(template.GetComponentInChildren<ALTOTraceAndOptimizeMeshes>().RemovePermanentlyHiddenGeometry, Is.True);
+            Assert.That(template.GetComponentInChildren<ALTOTraceAndOptimizeMaterials>().BakeConstantShaderInputs, Is.False);
+            var initialization = template.GetComponentInChildren<ALTOOptimizationPolicy>();
+            Assert.That(initialization.transform, Is.EqualTo(template.transform.Find("Common/Policies")));
+            Assert.That(initialization.ApplyOnPlatforms, Is.EqualTo(OptimizationPlatforms.All));
+            Assert.That(initialization.AllowInitialValueChanges, Is.True);
+            Assert.That(initialization.AllowedNumericalDifferences, Is.EqualTo(NumericalOptimization.All));
             Assert.That(template.GetComponentInChildren<ALTOOptimizationPlatformFilter>().enabled, Is.False);
             Assert.That(template.GetComponentInChildren<ALTOMaterialAtlas>().MergeGroups.Single().ReferenceMaterial,
                 Is.EqualTo(AssetDatabase.LoadAssetAtPath<Material>(ALTOInstallerWindow.MobileMaterialPath)));
@@ -114,6 +124,55 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(common.AllowShaderIndexChanges || common.AllowCoordinateSpaceChanges || common.AllowTransparentSortingChanges, Is.False);
             Assert.That(common.ApplyOnPlatforms, Is.EqualTo(OptimizationPlatforms.PC));
             Assert.That(mobile.AllowAnimatedMaterialDefaultChanges, Is.False);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void InstallerConstantOutputPolicyReachesTheAvatarAndHonorsCommonPlatformFiltering(bool mobileOnly)
+        {
+            var draft = InstallerChoices(true); draft.CommonMobileOnly = mobileOnly;
+            Assert.That(draft.AllowInitialValueChanges, Is.True);
+            InstallerSettings(draft);
+            var context = new BuildContext(root, null);
+            typeof(OptimizationBuildEnvironment).GetField("Target", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                .SetValue(context.GetState<OptimizationBuildEnvironment>(), BuildTarget.StandaloneWindows64);
+            OptimizationPolicy.Capture(context);
+            Assert.That(context.GetState<OptimizationPolicy>().AllowsInitialValueChanges(renderer.transform), Is.EqualTo(!mobileOnly));
+        }
+
+        [Test, Combinatorial, Category("Installer")]
+        public void InstallerNumericalPolicyHonorsChoiceAndPlatform(
+            [Values(false, true)] bool mobileOnly, [Values(false, true)] bool allowRounding,
+            [Values(BuildTarget.StandaloneWindows64, BuildTarget.Android, BuildTarget.iOS)] BuildTarget target)
+        {
+            var draft = InstallerChoices(true);
+            Assert.That(draft.AllowedNumericalDifferences, Is.EqualTo(NumericalOptimization.All));
+            draft.CommonMobileOnly = mobileOnly;
+            draft.AllowedNumericalDifferences = allowRounding ? NumericalOptimization.All : NumericalOptimization.None;
+            var settings = InstallerSettings(draft);
+            Assert.That(settings.GetComponentInChildren<ALTOOptimizationPolicy>().AllowedNumericalDifferences,
+                Is.EqualTo(draft.AllowedNumericalDifferences));
+            var context = new BuildContext(root, null);
+            typeof(OptimizationBuildEnvironment).GetField("Target", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                .SetValue(context.GetState<OptimizationBuildEnvironment>(), target);
+            OptimizationPolicy.Capture(context);
+            bool applies = !mobileOnly || target != BuildTarget.StandaloneWindows64;
+            Assert.That(context.GetState<OptimizationPolicy>().AllowsSmallNumericalDifferences(renderer.transform, NumericalOptimization.All),
+                Is.EqualTo(!applies || allowRounding));
+        }
+
+        [Test, Category("Installer")]
+        public void InstallerCopiesIndependentNumericalFeatureChoices()
+        {
+            var draft = InstallerChoices(true);
+            draft.AllowedNumericalDifferences = NumericalOptimization.All &
+                ~(NumericalOptimization.ComponentHoisting | NumericalOptimization.Constraints | NumericalOptimization.Skinning);
+            var settings = InstallerSettings(draft);
+            Assert.That(settings.GetComponentInChildren<ALTOOptimizationPolicy>().AllowedNumericalDifferences,
+                Is.EqualTo(draft.AllowedNumericalDifferences));
+            var context = new BuildContext(root, null); OptimizationPolicy.Capture(context);
+            var policy = context.GetState<OptimizationPolicy>();
+            Assert.That(policy.AllowsSmallNumericalDifferences(renderer.transform, NumericalOptimization.ComponentHoisting | NumericalOptimization.Constraints), Is.False);
+            Assert.That(policy.AllowsSmallNumericalDifferences(renderer.transform, NumericalOptimization.AnimationOutputs | NumericalOptimization.BlendShapes | NumericalOptimization.MeshMerging), Is.True);
         }
 
         [Test, Category("Installer")]

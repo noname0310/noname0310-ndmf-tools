@@ -15,8 +15,11 @@ namespace Noname.AvatarTools
         [Tooltip("Remove redundant Active/Enabled curves only when every reachable output equals the initial state. Initial activation and initialization side effects remain unchanged. Occlusion and mesh grouping can use the resulting constant visibility.")]
         public bool BakeConstantVisibility = true;
 
-        [Tooltip("Remove redundant local transform curves only when they equal the initial transform and no humanoid, physics or constraint writer can change it. The mesh optimizer can then rebind eligible static skin bones.")]
+        [Tooltip("Remove redundant local transform curves and bake proven constant visual positions/scales. Changing authored starting poses requires Optimization Policy permission and no simulation/sensor reader of that pose. Humanoid, physics and constraint writers remain protected. The mesh optimizer can then rebind eligible static skin bones.")]
         public bool BakeConstantTransforms = true;
+
+        [Tooltip("Bake proven constant renderer and light configuration, and remove invariant Contact/PhysBone Collider spatial tracks. Changing visual starting values requires Optimization Policy permission. Lifecycle, native output and simulation initialization fields remain protected.")]
+        public bool BakeConstantComponentProperties = true;
 
         [Tooltip("Remove constraints and transform/activation curves whose outputs cannot reach a renderer, bone, physics object, contact or other runtime consumer. References, scope boundaries and explicit preservation are respected.")]
         public bool RemoveUnusedTransformOutputs = true;

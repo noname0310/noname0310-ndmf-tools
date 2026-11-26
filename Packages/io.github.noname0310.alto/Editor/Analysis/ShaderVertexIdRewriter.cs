@@ -29,12 +29,14 @@ namespace Noname.AvatarTools.Analysis
 
         // ShaderLab words inside comments and strings are not declarations. Keep
         // original source spans so edits never rewrite names in properties/tags.
-        private sealed class Layout
+        internal sealed class Layout
         {
             internal PpToken Name;
             internal int Body, Properties = -1;
             internal readonly List<(int Offset, int Length, string Prefix, string Body, string Suffix)> Programs = new();
-            internal static Layout Parse(string source)
+            internal readonly List<string> Dependencies = new();
+            internal readonly List<(PpToken Token, string Shader, string Suffix)> DependencyReferences = new();
+            internal static Layout Parse(string source, bool allowSharedPrograms = false, bool allowDependencies = false)
             {
                 var tokens = PpLexer.Lex(source, trackOffsets: true).Where(t => t.Kind != PpTokenKind.Newline).ToArray();
                 if (tokens.Length < 4 || tokens[0].Text != "Shader" || tokens[1].Kind != PpTokenKind.String || tokens[2].Text != "{")
@@ -44,11 +46,12 @@ namespace Noname.AvatarTools.Analysis
                 {
                     var token = tokens[i];
                     if (token.Kind != PpTokenKind.Identifier) continue;
-                    if (token.Text == "CGINCLUDE" || token.Text == "HLSLINCLUDE")
+                    bool shared = token.Text == "CGINCLUDE" || token.Text == "HLSLINCLUDE";
+                    if (shared && !allowSharedPrograms)
                         throw new InvalidOperationException("shared ShaderLab program blocks need a separate input adapter");
-                    if (token.Text == "CGPROGRAM" || token.Text == "HLSLPROGRAM")
+                    if (shared || token.Text == "CGPROGRAM" || token.Text == "HLSLPROGRAM")
                     {
-                        string suffix = token.Text == "CGPROGRAM" ? "ENDCG" : "ENDHLSL";
+                        string suffix = token.Text.StartsWith("CG", StringComparison.Ordinal) ? "ENDCG" : "ENDHLSL";
                         int end = i + 1;
                         while (end < tokens.Length && (tokens[end].Kind != PpTokenKind.Identifier || tokens[end].Text != suffix)) end++;
                         if (end == tokens.Length) throw new InvalidOperationException("unterminated ShaderLab program");
@@ -60,12 +63,36 @@ namespace Noname.AvatarTools.Analysis
                     if (string.Equals(token.Text, "UsePass", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(token.Text, "Dependency", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(token.Text, "Fallback", StringComparison.OrdinalIgnoreCase) && i + 1 < tokens.Length && tokens[i + 1].Kind == PpTokenKind.String)
-                        throw new InvalidOperationException("shader dependencies need a separate input adapter");
+                    {
+                        if (!allowDependencies) throw new InvalidOperationException("shader dependencies need a separate input adapter");
+                        int name = i + 1;
+                        if (string.Equals(token.Text, "Dependency", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (i + 3 >= tokens.Length || tokens[i + 1].Kind != PpTokenKind.String || tokens[i + 2].Text != "=")
+                                throw new InvalidOperationException("unsupported ShaderLab dependency declaration");
+                            name = i + 3;
+                        }
+                        if (name >= tokens.Length || tokens[name].Kind != PpTokenKind.String)
+                            throw new InvalidOperationException("unsupported ShaderLab dependency name");
+                        string dependency = tokens[name].Text.Substring(1, tokens[name].Text.Length - 2);
+                        if (dependency.IndexOf('\\') >= 0) throw new InvalidOperationException("escaped shader dependency names are unsupported");
+                        string passSuffix = "";
+                        if (string.Equals(token.Text, "UsePass", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int split = dependency.LastIndexOf('/');
+                            if (split <= 0 || split == dependency.Length - 1) throw new InvalidOperationException("unsupported UsePass name");
+                            passSuffix = dependency.Substring(split);
+                            dependency = dependency.Substring(0, split);
+                        }
+                        result.Dependencies.Add(dependency);
+                        result.DependencyReferences.Add((tokens[name], dependency, passSuffix)); continue;
+                    }
                     if (token.Text != "Properties" || i + 1 == tokens.Length || tokens[i + 1].Text != "{") continue;
                     if (result.Properties >= 0) throw new InvalidOperationException("ambiguous ShaderLab properties block");
                     result.Properties = tokens[i + 1].Offset + tokens[i + 1].Length;
                 }
-                if (result.Programs.Count == 0) throw new InvalidOperationException("no explicit ShaderLab programs");
+                if (result.Programs.Count == 0 && (!allowDependencies || result.Dependencies.Count == 0))
+                    throw new InvalidOperationException("no explicit ShaderLab programs");
                 return result;
             }
         }
@@ -75,10 +102,8 @@ namespace Noname.AvatarTools.Analysis
             result = null; reason = null;
             try
             {
-                string path = ShaderPropertyUsage.PhysicalPath(AssetDatabase.GetAssetPath(shader));
-                if (path == null || !File.Exists(path) || Path.GetExtension(path) != ".shader")
+                if (!ShaderBuildSource.TryRead(shader, out string text, out string path))
                     throw new InvalidOperationException("editable ShaderLab source is unavailable");
-                string text = File.ReadAllText(path);
                 var layout = Layout.Parse(text);
                 if (PpLexer.Lex(text).Any(t => t.Kind == PpTokenKind.Identifier && (t.Text == OffsetProperty || t.Text == OriginalAttribute)))
                     throw new InvalidOperationException("an existing vertex-ID adapter must retain its mesh layout");
@@ -96,53 +121,9 @@ namespace Noname.AvatarTools.Analysis
             catch (Exception exception) { reason = "vertex-ID adapter: " + exception.Message; return false; }
         }
 
-        private static string Expand(string body, string directory, HashSet<string> stack, int depth)
-        {
-            if (depth > 32 || body.Length > 4 * 1024 * 1024) throw new InvalidOperationException("source expansion budget exceeded");
-            string engine = Path.GetFullPath(Path.Combine(EditorApplication.applicationContentsPath, "CGIncludes"));
-            var tokens = PpLexer.Lex(body, trackOffsets: true);
-            var edits = new List<(int Begin, int End, string Text)>();
-            for (int i = 0; i < tokens.Count; i++)
-            {
-                if (tokens[i].Text != "#" || i + 1 == tokens.Count) continue;
-                int end = i + 1;
-                while (end < tokens.Count && tokens[end].Kind != PpTokenKind.Newline) end++;
-                if (tokens[i + 1].Text == "include_with_pragmas")
-                    throw new InvalidOperationException("pragma includes need a separate source adapter");
-                if (tokens[i + 1].Text != "include") { i = end; continue; }
-                var arguments = tokens.Skip(i + 2).Take(end - i - 2).ToArray();
-                string include;
-                if (arguments.Length == 1 && arguments[0].Kind == PpTokenKind.String && arguments[0].Text.StartsWith("\"", StringComparison.Ordinal))
-                    include = arguments[0].Text.Substring(1, arguments[0].Text.Length - 2);
-                else if (arguments.Length >= 3 && arguments[0].Text == "<" && arguments[arguments.Length - 1].Text == ">")
-                    include = string.Concat(arguments.Skip(1).Take(arguments.Length - 2).Select(t => t.Text));
-                else throw new InvalidOperationException("macro-generated include needs a separate source adapter");
-                var paths = new[] { Path.Combine(directory, include), ShaderPropertyUsage.PhysicalPath(include), Path.Combine(engine, include) };
-                string path = paths.Where(p => p != null).Select(Path.GetFullPath).FirstOrDefault(File.Exists);
-                if (path == null) throw new InvalidOperationException("unresolved include: " + include);
-                // Engine includes do not define user entry points. Keep them in their
-                // original compiler environment; reject hidden system-ID declarations.
-                string content = File.ReadAllText(path);
-                string replacement;
-                if (path.StartsWith(engine + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                {
-                    if (PpLexer.Lex(content).Any(t => t.Kind == PpTokenKind.Identifier && ShaderInputQuery.VertexId.MatchesToken(t.Text)))
-                        throw new InvalidOperationException("engine include declares a vertex-ID interface");
-                    replacement = "\n#include \"" + path.Replace('\\', '/') + "\"\n";
-                }
-                else
-                {
-                    if (!stack.Add(path)) throw new InvalidOperationException("recursive source include");
-                    replacement = "\n" + Expand(content, Path.GetDirectoryName(path), stack, depth + 1) + "\n";
-                    stack.Remove(path);
-                }
-                edits.Add((tokens[i].Offset, tokens[end - 1].Offset + tokens[end - 1].Length, replacement));
-                i = end;
-            }
-            foreach (var edit in edits.OrderByDescending(e => e.Begin)) body = body.Remove(edit.Begin, edit.End - edit.Begin).Insert(edit.Begin, edit.Text);
-            if (body.Length > 4 * 1024 * 1024) throw new InvalidOperationException("source expansion budget exceeded");
-            return body;
-        }
+        internal static string Expand(string body, string directory, HashSet<string> stack, int depth,
+            bool retainUnresolvedIncludes = false) => ShaderSourceExpansion.Expand(body, directory, stack, depth,
+                retainUnresolvedIncludes, rejectEngineVertexId: true);
 
         internal string GenerateSource(int offset, bool uniform, int attributeChannel = -1)
         {
@@ -169,13 +150,15 @@ namespace Noname.AvatarTools.Analysis
 
         internal Shader CreateShader(int offset, bool uniform, int attributeChannel = -1)
         {
-            var shader = ShaderUtil.CreateShaderAsset(GenerateSource(offset, uniform, attributeChannel), true);
+            string generatedSource = GenerateSource(offset, uniform, attributeChannel);
+            var shader = ShaderUtil.CreateShaderAsset(generatedSource, true);
             if (shader == null || ShaderUtil.ShaderHasError(shader))
             {
                 string message = shader == null ? "no shader" : string.Join("; ", ShaderUtil.GetShaderMessages(shader).Select(m => m.message));
                 if (shader != null) UnityEngine.Object.DestroyImmediate(shader);
                 throw new InvalidOperationException("Vertex-ID adapter failed to compile: " + message);
             }
+            ShaderBuildSource.Register(shader, generatedSource, ShaderBuildSource.PhysicalPath(Original));
             return shader;
         }
 

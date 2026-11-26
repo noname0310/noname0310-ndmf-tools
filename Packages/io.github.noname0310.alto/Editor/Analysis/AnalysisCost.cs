@@ -22,5 +22,8 @@ namespace Noname.AvatarTools.Analysis
         }
         internal static Scope Measure(string name) => new(name);
         internal static Scope Measure(string name, Type type) => Observer == null ? default : new(name + "/" + type.FullName);
+        // A zero-duration observation counts an event without reading the clock.
+        // Profiling consumers keep these counts separate from inclusive timings.
+        internal static void Count(string name) => Observer?.Invoke(name, 0);
     }
 }

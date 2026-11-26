@@ -5,6 +5,7 @@ using Noname.AvatarTools.Meshes;
 using Noname.AvatarTools.ParameterPolicy;
 using UnityEditor;
 using UnityEngine;
+using Noname.AvatarTools.Build;
 using VRC.SDK3.Avatars.Components;
 using Object = UnityEngine.Object;
 
@@ -191,6 +192,14 @@ namespace Noname.AvatarTools.Installer
                     draft.NormalizeProbeAnchors = EditorGUILayout.Toggle(new GUIContent("Use consistent lighting across meshes",
                         "Sample lighting from a shared probe anchor. This changes meshes that intentionally use different anchors."), draft.NormalizeProbeAnchors);
                     draft.PreserveMmdBlendShapes = EditorGUILayout.Toggle("Keep expressions used by MMD worlds", draft.PreserveMmdBlendShapes);
+                    if (advancedMode)
+                    {
+                        draft.AllowedNumericalDifferences = NumericalPolicyGUI.Draw(draft.AllowedNumericalDifferences);
+                        draft.AllowShaderConstantFolding = EditorGUILayout.Toggle(new GUIContent("Let the shader compiler simplify fixed values",
+                            "Replace proven constant material inputs before compilation. This allows normal compiler floating-point folding; clear it for strict native equivalence checks."), draft.AllowShaderConstantFolding);
+                    }
+                    draft.AllowInitialValueChanges = EditorGUILayout.Toggle(new GUIContent("Use constant animated appearance from startup",
+                        "Bake proven constant visual outputs before animations start. This may change the brief initial appearance; later animation, physics and parameter behavior must still be preserved."), draft.AllowInitialValueChanges);
                     EditorGUILayout.Space(12);
                     Section("Expressions allowed to change", "Leave selected animations out of BlendShape optimization analysis to allow more shapes to be frozen. Their expressions may look different afterwards.");
                     draft.ExcludeAfkAnimations = EditorGUILayout.ToggleLeft(new GUIContent("Allow AFK expressions to change",
@@ -397,8 +406,10 @@ namespace Noname.AvatarTools.Installer
 
         private void DrawGeometry()
         {
-            Frame("Common", "Combine more meshes", CommonMeshPlatforms, CommonMeshOptionsEnabled, () =>
+            Frame("Common", "Optimize mesh rendering", CommonMeshPlatforms, CommonMeshOptionsEnabled, () =>
             {
+                draft.RemovePermanentlyHiddenGeometry = EditorGUILayout.Toggle(new GUIContent("Remove geometry that can never draw",
+                    "Remove triangles only after proving they can never render through any remaining animation, deformation or shader pass. Visibility in one camera is not sufficient."), draft.RemovePermanentlyHiddenGeometry);
                 Text("Compatible meshes are combined automatically. These optional choices can reduce draw calls further by allowing changes to appearance. Independently controlled clothing and accessories still keep their toggles.");
                 EditorGUILayout.Space(6);
                 DrawMeshMergeChoices(false);
@@ -503,8 +514,10 @@ namespace Noname.AvatarTools.Installer
 
         private void DrawMaterials()
         {
-            Frame("Common", "Combine lilToon colors and texture layers", CommonPlatforms, draft.IncludeCommon, () =>
+            Frame("Common", "Simplify material and shader work", CommonPlatforms, draft.IncludeCommon, () =>
             {
+                draft.BakeConstantShaderInputs = EditorGUILayout.Toggle(new GUIContent("Fold shared fixed shader values",
+                    "Keep one shader shared by its materials and fold only values that every use proves constant. Animated inputs stay editable; unsupported shaders are retained."), draft.BakeConstantShaderInputs);
                 draft.BakeLilToonMainTextures = EditorGUILayout.Toggle("Bake lilToon colors and layers", draft.BakeLilToonMainTextures);
                 Text("Combine supported static color corrections and secondary textures into the main texture. Animated or unsupported settings are left for the shader. Texture filtering, mipmaps and Safety Fallback appearance may differ.");
             });
@@ -538,6 +551,9 @@ namespace Noname.AvatarTools.Installer
             {
                 if (!draft.IncludeCommon) { Text("General optimization is not included."); return; }
                 Text("Remove unused animation logic, mesh data, materials and physics calculations.");
+                Text("Allow small numerical differences: " + NumericalPolicyGUI.Summary(draft.AllowedNumericalDifferences));
+                Text("Use constant animated appearance from startup: " + YesNo(draft.AllowInitialValueChanges));
+                Text("Let the shader compiler simplify fixed values: " + YesNo(draft.AllowShaderConstantFolding));
                 Text("Consistent lighting across meshes: " + YesNo(draft.NormalizeProbeAnchors));
                 if (CommonMeshOptionsEnabled)
                 {

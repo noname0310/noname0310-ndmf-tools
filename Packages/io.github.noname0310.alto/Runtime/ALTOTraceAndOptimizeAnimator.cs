@@ -27,8 +27,11 @@ namespace Noname.AvatarTools
         [Tooltip("Merge disjoint static clips with identical weights in non-normalized Direct Blend Trees.")]
         public bool MergeSameWeightClips = true;
 
-        [Tooltip("Bake provably invariant Float/Range material properties into build copies. Color and Vector channels remain animated to preserve Unity's property-block output.")]
+        [Tooltip("Bake proven constant Float/Range properties and complete Color, Vector and texture-transform channel groups into build material copies. Changing authored starting values requires Optimization Policy permission. Partial groups, dynamic material swaps and native writers remain animated.")]
         public bool BakeConstantMaterialProperties = true;
+
+        [Tooltip("Replace constant material-swap animations with the proven material on the build renderer. Changing authored starting materials requires Optimization Policy permission. Dynamic swaps and uncertain writers remain animated.")]
+        public bool BakeConstantMaterialSlots = true;
 
         [Tooltip("Remove whole material-property tracks proven unused by every possible shader, then simplify their unused calculations. Unknown shader sources and preserved dynamic inputs remain intact.")]
         public bool RemoveUnusedMaterialProperties = true;

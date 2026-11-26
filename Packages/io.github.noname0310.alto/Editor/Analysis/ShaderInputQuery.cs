@@ -58,7 +58,7 @@ namespace Noname.AvatarTools.Analysis
         internal static ShaderInputQuery Identifiers(IEnumerable<string> names) => new(names);
         internal static ShaderInputQuery Uniform(string name) => new(new[] { name }, true);
         internal bool QueriesIdentifier(string name) => identifiers?.Contains(name) == true;
-        internal bool MayUseIdentifiers(ShaderPropertyUsage.Proof proof) => identifiers?.Any(proof.MayUse) == true;
+        internal bool MayUseIdentifiers(ShaderPropertyUsage.Proof proof) => identifiers?.Any(proof.MayUseProgramIdentifier) == true;
         internal bool MatchesCompiled(D3DShaderInputs.Input input) => UniformQuery
             ? input.Kind != D3DShaderInputs.InputKind.Semantic && identifiers.Contains(input.Semantic)
             : input.Kind == D3DShaderInputs.InputKind.Semantic && Matches(input.Semantic, input.SemanticIndex);
@@ -84,12 +84,29 @@ namespace Noname.AvatarTools.Analysis
 
         internal bool MatchesToken(string text) => MatchesToken(text, 0, text.Length);
 
+        // A source declaration can span later semantic indices through an array
+        // or matrix. Only native reflection knows that span. Lexical dependency
+        // discovery therefore retains the family for indexed queries too.
+        internal bool MayDeclareToken(string text)
+        {
+            if (MatchesToken(text)) return true;
+            foreach (var semantic in Semantics)
+            {
+                if (!semantic.Index.HasValue || text.Length < semantic.Name.Length ||
+                    string.Compare(text, 0, semantic.Name, 0, semantic.Name.Length, StringComparison.OrdinalIgnoreCase) != 0) continue;
+                bool numeric = true;
+                for (int i = semantic.Name.Length; i < text.Length; i++) if (text[i] < '0' || text[i] > '9') { numeric = false; break; }
+                if (numeric) return true;
+            }
+            return false;
+        }
+
         internal bool MatchesTokens(HashSet<string> tokens)
         {
             if (identifiers != null)
                 foreach (string name in identifiers) if (tokens.Contains(name)) return true;
             if (Semantics.Length != 0)
-                foreach (string token in tokens) if (MatchesToken(token)) return true;
+                foreach (string token in tokens) if (MayDeclareToken(token)) return true;
             return false;
         }
 

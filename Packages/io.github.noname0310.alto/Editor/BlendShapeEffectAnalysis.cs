@@ -1,8 +1,12 @@
 using System.Collections.Generic;
 using System.Linq;
+using Noname.AvatarTools.Analysis;
 using UnityEditor;
 using UnityEngine;
 using VRC.SDK3.Avatars.Components;
+using VRC.SDK3.Dynamics.Contact.Components;
+using VRC.SDK3.Dynamics.PhysBone.Components;
+using Noname.AvatarTools.ObjectOptimization;
 
 namespace Noname.AvatarTools.BlendShapeOptimization
 {
@@ -13,6 +17,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
         private readonly Mesh mesh;
         private readonly int[] vertices;
         private readonly ShapeDelta buffer;
+        private readonly Dictionary<int, bool> effects = new();
 
         internal BlendShapeEffectAnalysis(Mesh mesh, bool observeAllVertices = false)
         {
@@ -28,44 +33,95 @@ namespace Noname.AvatarTools.BlendShapeOptimization
             buffer = new ShapeDelta(mesh.vertexCount);
         }
 
-        internal static HashSet<SkinnedMeshRenderer> FindFullVertexReaders(GameObject avatar)
+        internal static HashSet<SkinnedMeshRenderer> FindFullVertexReaders(GameObject avatar, AvatarAnimationIndex animations = null,
+            IDictionary<SkinnedMeshRenderer, string> reasons = null)
         {
             var result = new HashSet<SkinnedMeshRenderer>();
+            var references = new SerializedReferenceSnapshot();
             var inspected = new HashSet<Object>();
+            var referenced = new HashSet<Object>();
+            string reader = "animated object reference";
+            void Add(SkinnedMeshRenderer skin)
+            {
+                if (result.Add(skin) && reasons != null) reasons[skin] = reader;
+            }
+            void Reference(Object value)
+            {
+                if (value == null || !referenced.Add(value)) return;
+                if (value is SkinnedMeshRenderer renderer) { Add(renderer); return; }
+                if (value is GameObject go)
+                { foreach (var skin in go.GetComponentsInChildren<SkinnedMeshRenderer>(true)) Add(skin); return; }
+                if (value is Transform transform) { Reference(transform.gameObject); return; }
+                if (value is Component || value is ScriptableObject) Read(value);
+            }
             void Read(Object owner)
             {
                 if (owner == null || !inspected.Add(owner)) return;
-                using var serialized = new SerializedObject(owner);
-                var property = serialized.GetIterator();
-                while (property.Next(true))
-                {
-                    if (property.propertyType != SerializedPropertyType.ObjectReference ||
-                        property.propertyPath == "m_GameObject" || property.propertyPath == "m_Script") continue;
-                    var reference = property.objectReferenceValue;
-                    if (reference is SkinnedMeshRenderer renderer) result.Add(renderer);
-                    else if (reference is ScriptableObject asset) Read(asset);
-                }
+                foreach (var reference in references.Get(owner)) Reference(reference.Value);
             }
             // A renderer reader can consume unindexed vertices (for example a particle
             // emitter). Unknown readers keep the entire vertex buffer observable.
             // Descriptor morph names/indices are protected separately; our settings
             // describe transformations rather than consume deformed vertex output.
+            // A renderer's own bones/root/probe anchors are rendering inputs, not
+            // external readers of every vertex. Actual consumers can still refer
+            // directly to that renderer through Reference above.
             foreach (var component in avatar.GetComponentsInChildren<Component>(true))
-                if (component != null && !(component is Transform) && !(component is VRCAvatarDescriptor) &&
+                if (component != null && !(component is Transform) && !(component is Renderer) && !(component is VRCAvatarDescriptor) &&
                     !(component is ALTOOptimizationComponent) && !(component is ALTOTraceAndOptimizeBlendShapes) &&
-                    !(component is BlendShapeOptimizationExclude)) Read(component);
+                    !(component is BlendShapeOptimizationExclude) && !ObjectOptimizationSafety.IsBuildOnly(component) &&
+                    !TransformReferencesOnly(component))
+                {
+                    reader = component.GetType().FullName + " on '" + AnimationUtility.CalculateTransformPath(component.transform, avatar.transform) + "'";
+                    if (component is ParticleSystem)
+                    {
+                        // Custom simulation space and collision planes consume a
+                        // frame, not every descendant renderer's vertices. Keep
+                        // actual renderer/mesh readers and unknown indirect paths.
+                        foreach (var reference in references.Get(component))
+                            if (!(reference.Value is Transform)) Reference(reference.Value);
+                    }
+                    else Read(component);
+                }
+            // An emitter or other consumer can select a renderer only after an
+            // animation evaluates. Its serialized initial reference is not the
+            // complete set of mesh readers, even when this binding is immutable.
+            // Static and animated references share the same transitive closure,
+            // including readers that locate a renderer through a hierarchy root.
+            if (animations != null) foreach (var binding in animations.Bindings)
+            {
+                if (binding.ObjectKeys == null) continue;
+                var owners = binding.Objects().ToArray();
+                if (binding.Complete && owners.Length != 0 && owners.All(owner => owner is Renderer ||
+                    owner is Component component && (TransformReferencesOnly(component) || ObjectOptimizationSafety.IsBuildOnly(component)))) continue;
+                if (binding.Complete && owners.Length != 0 && owners.All(owner => owner is ParticleSystem) &&
+                    binding.ObjectKeys.All(key => key.value == null || key.value is Transform)) continue;
+                reader = "animation binding '" + binding.Binding.path + ":" + binding.Binding.propertyName + "'";
+                foreach (var key in binding.ObjectKeys)
+                    Reference(key.value);
+            }
             return result;
         }
 
+        // These native contracts use referenced frames, not a search for vertex
+        // buffers below those frames. Unknown scripts still retain the transitive
+        // hierarchy-reader rule, including scripts that reference these components.
+        private static bool TransformReferencesOnly(Component component) => component is Animator || component is MeshFilter ||
+            component is Light || component is VRCPhysBone || component is VRCPhysBoneCollider ||
+            component is VRCContactSender || component is VRCContactReceiver ||
+            component is UnityEngine.Animations.IConstraint || component is VRC.Dynamics.VRCConstraintBase ||
+            ObjectOptimizationSafety.IsParentChangeDetector(component);
+
         internal bool HasEffect(int shape)
         {
+            if (effects.TryGetValue(shape, out bool result)) return result;
             for (int frame = 0; frame < mesh.GetBlendShapeFrameCount(shape); frame++)
             {
-                if (!AnimationUsage.Finite(mesh.GetBlendShapeFrameWeight(shape, frame))) return true;
+                if (!AnimationUsage.Finite(mesh.GetBlendShapeFrameWeight(shape, frame))) return effects[shape] = true;
                 buffer.Read(mesh, shape, frame);
-                if (HasEffect(buffer)) return true;
+                if (HasEffect(buffer)) return effects[shape] = true;
             }
-            return false;
+            return effects[shape] = false;
         }
 
         internal bool HasEffect(ShapeDelta delta)

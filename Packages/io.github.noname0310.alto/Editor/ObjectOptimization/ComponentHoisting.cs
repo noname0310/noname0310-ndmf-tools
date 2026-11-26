@@ -115,7 +115,12 @@ namespace Noname.AvatarTools.ObjectOptimization
                     GameObjectUtility.GetStaticEditorFlags(frame.gameObject) != GameObjectUtility.GetStaticEditorFlags(parent.gameObject)) continue;
                 if (references.ReferenceOwners.ContainsKey(frame.gameObject)) continue;
                 Action<Component> spatialSettings = null;
-                if (!StaticTransformProof.Near(StaticTransformProof.Local(frame), Matrix4x4.identity) &&
+                // Contact callbacks and velocity outputs observe the owner's
+                // actual origin. A near-identity frame must still use its contract.
+                bool allowRounding = proof.AllowsRounding(NumericalOptimization.ComponentHoisting, frame, parent);
+                bool identity = allowRounding ? StaticTransformProof.Near(StaticTransformProof.Local(frame), Matrix4x4.identity,
+                    !(source is ContactBase)) : StaticTransformProof.ExactLocalIdentity(frame);
+                if (!identity &&
                     (!settings.FoldStaticTransformsIntoComponents ||
                      !ComponentSpatialSettings.TryPlan(source, avatar.transform, animations, proof, out spatialSettings))) continue;
                 // Native writer hosts (PhysBones and constraints targeting themselves)
@@ -199,6 +204,7 @@ namespace Noname.AvatarTools.ObjectOptimization
                 foreach (var replacement in replacements)
                     if (references.ReferenceOwners.TryGetValue(replacement.Key, out var readers))
                     { references.ReferenceOwners.Remove(replacement.Key); references.ReferenceOwners[replacement.Value] = readers; }
+                proof.NumericalPolicy?.InheritNumericalConstraints(parent, new[] { frame });
                 foreach (var old in group.Reverse())
                 {
                     ObjectRegistry.RegisterReplacedObject(old, replacements[old]);

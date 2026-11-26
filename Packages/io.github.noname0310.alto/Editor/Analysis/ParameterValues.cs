@@ -80,6 +80,23 @@ namespace Noname.AvatarTools.Analysis
                 if (Min > 0 || Max < 0) return One;
                 return Boolean;
             }
+            if (type == AnimatorControllerParameterType.Float)
+            {
+                // Integer defaults and Driver sources enter the lattice exactly.
+                // A Float destination rounds them to its actual storage precision.
+                bool exact = Min == (double)(float)Min && Max == (double)(float)Max;
+                if (exact && values != null)
+                    foreach (double value in values) exact &= value == (double)(float)value;
+                if (exact) return this;
+                if (values == null) return Range((float)Min, (float)Max);
+                ParameterValues rounded = null;
+                foreach (double value in values)
+                {
+                    var converted = Constant((float)value);
+                    rounded = rounded == null ? converted : rounded.Union(converted);
+                }
+                return rounded;
+            }
             if (type != AnimatorControllerParameterType.Int) return this;
             if (Min < int.MinValue || Max > int.MaxValue) return Unknown;
             // Cover both rounding and truncation, including SDK conversions between parameter types.

@@ -61,6 +61,7 @@ namespace Noname.AvatarTools.Build
                 foreach (var plan in plans)
                 {
                     ObjectRegistry.RegisterReplacedObject(plan.Source, plan.Output);
+                    context.GetState<OptimizationState>().Provenance.RecordMeshRewrite(plan.Renderer, plan.Source, plan.Output);
                     context.AssetSaver.SaveAsset(plan.Output); plan.Renderer.sharedMesh = plan.Output;
                     report.Messages.Add("BlendShape exclusion removed " + plan.Removed.Count(v => v) + " triangles from " +
                         AnimationUtility.CalculateTransformPath(plan.Renderer.transform, context.AvatarRootTransform) +
