@@ -57,6 +57,7 @@ jobs:
   publish-listing:
     needs: release
     permissions:
+      actions: read
       contents: read
       pages: write
       id-token: write

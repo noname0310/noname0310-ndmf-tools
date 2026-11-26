@@ -7,6 +7,7 @@ on:
     types: [published]
 
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
@@ -35,9 +36,27 @@ jobs:
         run: ci/build.cmd BuildMultiPackageListing --root ci --list-publish-directory "$GITHUB_WORKSPACE/Website"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
+        id: pages-artifact
         with:
+          name: github-pages-${{ github.run_attempt }}
           path: Website
+      - name: Wait for uploaded Pages artifact metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.pages-artifact.outputs.artifact_id }}
+        run: |
+          for attempt in {1..18}; do
+            if visible_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+                --jq ".artifacts[] | select(.id == $ARTIFACT_ID) | .id") && [[ "$visible_id" == "$ARTIFACT_ID" ]]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::The uploaded Pages artifact is not yet visible in the Actions API."
+          exit 1
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
 
