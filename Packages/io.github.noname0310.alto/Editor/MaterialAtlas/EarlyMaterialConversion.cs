@@ -24,12 +24,73 @@ namespace Noname.AvatarTools.MaterialAtlas
         {
             internal Material Source;
             internal int Group;
+            internal bool BakeEligible;
+            internal HashSet<string> BakeWriters;
+            internal readonly List<(string Source, string Destination, Texture Texture, Vector2 Scale, Vector2 Offset)> Textures = new();
         }
         private readonly Dictionary<string, Input> inputs = new(StringComparer.Ordinal);
         private readonly Dictionary<Object, Input> origins = new();
         private readonly Dictionary<Renderer, Input[]> preparedRenderers = new();
         internal readonly DeferredMaterialConsumers DeferredConsumers = new();
         private Transform avatarRoot;
+
+        // Conversion must precede generators, but image generation need not. Keep
+        // the original recipe until live atlas consumers and their textures settle.
+        internal void BakeInputs(BuildContext context, IEnumerable<Renderer> selected, AvatarAnimationIndex animations = null)
+        {
+            var renderers = selected.Where(r => r != null).ToHashSet();
+            var swaps = animations?.Bindings.Where(u => u.Binding.isPPtrCurve && u.ObjectKeys != null).ToArray()
+                ?? Array.Empty<AvatarAnimationIndex.BindingUse>();
+            var materials = renderers.SelectMany(r => r.sharedMaterials).Concat(swaps.Where(u => u.Objects().OfType<Renderer>().Any(renderers.Contains))
+                .SelectMany(u => u.ObjectKeys.Select(k => k.value).OfType<Material>()))
+                .Where(m => m != null).Distinct().ToArray();
+            var bakeScope = context.GetState<MaterialOptimizationState>().Scope;
+            var outOfScope = context.AvatarRootObject.GetComponentsInChildren<Renderer>(true)
+                .Where(r => bakeScope == null || !bakeScope.Contains(r.transform)).SelectMany(r => r.sharedMaterials).ToHashSet();
+            foreach (var swap in swaps)
+            {
+                var consumers = swap.Objects().OfType<Renderer>().ToArray();
+                if (!swap.Complete || consumers.Length == 0 || consumers.Any(r => bakeScope == null || !bakeScope.Contains(r.transform)))
+                    outOfScope.UnionWith(swap.ObjectKeys.Select(k => k.value).OfType<Material>());
+            }
+            var animated = animations == null ? new Dictionary<Material, HashSet<string>>() :
+                MaterialTextureBake.AnimatedProperties(animations, renderers, swaps);
+            foreach (var group in materials.GroupBy(Find).Where(g => g.Key?.BakeEligible == true))
+            {
+                var input = group.Key;
+                var destinations = group.Where(material => !outOfScope.Contains(material) && input.Textures.All(t =>
+                    material.GetTexture(t.Destination) == t.Texture && material.GetTextureScale(t.Destination).Equals(t.Scale) &&
+                    material.GetTextureOffset(t.Destination).Equals(t.Offset))).ToArray();
+                if (destinations.Length == 0) continue; // A generator owns the new texture recipe.
+                var blocked = new HashSet<string>(input.BakeWriters, StringComparer.Ordinal);
+                foreach (var material in destinations)
+                    if (animated.TryGetValue(material, out var properties))
+                    {
+                        blocked.UnionWith(properties);
+                        foreach (var mapping in input.Textures)
+                            if (properties.Contains(mapping.Destination) || properties.Contains(mapping.Destination + "_ST"))
+                            { blocked.Add(mapping.Source); blocked.Add(mapping.Source + "_ST"); }
+                    }
+                var bake = MaterialTextureBake.LilToon?.Invoke(input.Source, blocked);
+                if (bake == null) continue;
+                try
+                {
+                    if (bake.Texture != null) context.AssetSaver.SaveAsset(bake.Texture);
+                    foreach (var material in destinations)
+                    foreach (var mapping in input.Textures)
+                    {
+                        var source = bake.TextureSource(input.Source, mapping.Source);
+                        if (source == input.Source) continue;
+                        material.SetTexture(mapping.Destination, source.GetTexture(mapping.Source));
+                        material.SetTextureScale(mapping.Destination, source.GetTextureScale(mapping.Source));
+                        material.SetTextureOffset(mapping.Destination, source.GetTextureOffset(mapping.Source));
+                    }
+                    context.GetState<OptimizationBuildReport>().Messages.Add(input.Source.name + ": " + bake.Detail);
+                }
+                finally { if (bake.Material != null) Object.DestroyImmediate(bake.Material); }
+                input.BakeEligible = false;
+            }
+        }
 
         internal void RegisterCopies(GameObject avatar)
         {
@@ -38,13 +99,13 @@ namespace Noname.AvatarTools.MaterialAtlas
                     ObjectRegistry.TryRegisterReplacedObject(ObjectRegistry.GetReference(input.Source), material);
         }
 
-        internal void ValidateSurvivingInputs(IEnumerable<Renderer> atlasRenderers)
+        internal void ValidateSurvivingInputs(IEnumerable<Renderer> atlasRenderers, Func<Renderer, bool> omitted = null)
         {
             HashSet<Input> survivingInputs = null;
             foreach (var prepared in preparedRenderers)
             {
                 var renderer = prepared.Key;
-                if (renderer == null || renderer.sharedMaterials.Any(m => m != null)) continue;
+                if (renderer == null || omitted?.Invoke(renderer) == true || renderer.sharedMaterials.Any(m => m != null)) continue;
                 if (!HasGeometry(renderer)) continue;
                 // Generators can move rendering to copies while keeping the original
                 // renderer as an animation source. Validate input availability across
@@ -89,7 +150,8 @@ namespace Noname.AvatarTools.MaterialAtlas
             // material-swap keys without changing the persistent source clip.
             var components = context.AvatarRootObject.GetComponentsInChildren<Component>(true)
                 .Where(c => c != null && !(c is Transform) && !(c is ALTOOptimizationComponent) &&
-                    !(c is ALTOTraceAndOptimizeBlendShapes) && !(c is BlendShapeOptimizationExclude)).ToArray();
+                    !(c is ALTOTraceAndOptimizeBlendShapes) && !(c is BlendShapeOptimizationExclude) &&
+                    !(c is nadena.dev.ndmf.runtime.components.NDMFAvatarRoot)).ToArray();
             var parents = new Dictionary<Object, HashSet<Object>>();
             var visited = new HashSet<Object>();
             void Visit(Object asset)
@@ -164,6 +226,7 @@ namespace Noname.AvatarTools.MaterialAtlas
             var replacements = new Dictionary<Object, Object>();
             var owned = new List<Object>();
             var bakeSettings = context.GetState<MaterialOptimizationState>();
+            var bakeReferences = new SerializedReferenceSnapshot();
             var controllerClips = new Dictionary<RuntimeAnimatorController, HashSet<AnimationClip>>();
             var clipRoots = new Dictionary<AnimationClip, HashSet<Transform>>();
             var nonSlotInputs = new Dictionary<AnimationClip, HashSet<Material>>();
@@ -244,12 +307,79 @@ namespace Noname.AvatarTools.MaterialAtlas
                 }
                 return hasConsumer;
             }
-            // Before-generators conversion deliberately replaces the shader contract.
-            // Bake only its selected inputs, using every currently referenced clip as
-            // a conservative writer set. Normal optimization uses the final controllers.
-            var animatedProperties = bakeSettings.BakeLilToon ? visited.OfType<AnimationClip>().SelectMany(clip =>
-                AnimationUtility.GetCurveBindings(clip).Concat(AnimationUtility.GetObjectReferenceCurveBindings(clip)))
-                .Select(MaterialTextureBake.Property).Where(p => p != null).ToHashSet(StringComparer.Ordinal) : new();
+            bool HasEarlyTextureReader(Material source)
+            {
+                // A generator can derive geometry/other assets from the converted
+                // image. Keep baking before that observer rather than changing its
+                // input later. Unknown serialized readers are deliberately conservative.
+                var dependencies = new HashSet<Object> { source };
+                foreach (var property in source.GetTexturePropertyNames())
+                    if (source.GetTexture(property) != null) dependencies.Add(source.GetTexture(property));
+                var consumers = initialMaterials.Where(p => p.Value.Contains(source)).Select(p => p.Key).ToArray();
+                foreach (var renderer in consumers)
+                { dependencies.Add(renderer); dependencies.Add(renderer.gameObject); dependencies.Add(renderer.transform); }
+                foreach (var component in components)
+                {
+                    if (component is Renderer || component is Animator || component is VRCAvatarDescriptor) continue;
+                    if ((component is INDMFEditorOnly || component is VRC.SDKBase.IEditorOnly) &&
+                        consumers.Any(r => r.transform == component.transform || r.transform.IsChildOf(component.transform))) return true;
+                    foreach (var entry in bakeReferences.Get(component))
+                        if (dependencies.Contains(entry.Value)) return true;
+                }
+                var queue = new Queue<Object>(); queue.Enqueue(source);
+                var seen = new HashSet<Object>();
+                while (queue.Count != 0)
+                {
+                    var value = queue.Dequeue(); if (!seen.Add(value)) continue;
+                    if (value is Component reader)
+                    {
+                        if (!(reader is Renderer || reader is Animator || reader is VRCAvatarDescriptor)) return true;
+                        continue;
+                    }
+                    if (parents.TryGetValue(value, out var users)) foreach (var user in users) queue.Enqueue(user);
+                }
+                return false;
+            }
+            // Resolve actual consumers. Unknown generators/roots retain the conservative
+            // union; a property animated on another material no longer blocks this one.
+            var animatedProperties = candidates.Keys.ToDictionary(m => m, _ => new HashSet<string>(StringComparer.Ordinal));
+            if (bakeSettings.BakeLilToon)
+            {
+                var consumerMaterials = initialMaterials.ToDictionary(p => p.Key, p => p.Value.Where(m => m != null).ToHashSet());
+                bool ambiguousSwaps = false;
+                foreach (var curve in materialCurves)
+                {
+                    var roots = AnimationRoots(curve.Clip);
+                    if (roots == null) { ambiguousSwaps = true; continue; }
+                    foreach (var animationRoot in roots)
+                    foreach (var target in AnimationUsage.Resolve(context.AvatarRootTransform, animationRoot, curve.Binding.path, null))
+                    foreach (var renderer in target.GetComponents<Renderer>())
+                    {
+                        if (!consumerMaterials.TryGetValue(renderer, out var values)) consumerMaterials.Add(renderer, values = new());
+                        values.UnionWith(curve.Materials);
+                    }
+                }
+                foreach (var clip in visited.OfType<AnimationClip>())
+                foreach (var binding in AnimationUtility.GetCurveBindings(clip).Concat(AnimationUtility.GetObjectReferenceCurveBindings(clip)))
+                {
+                    string property = MaterialTextureBake.Property(binding);
+                    if (property == null) continue;
+                    var roots = AnimationRoots(clip);
+                    var affectedMaterials = new HashSet<Material>();
+                    bool unknown = ambiguousSwaps || roots == null;
+                    if (!unknown)
+                    foreach (var animationRoot in roots)
+                    {
+                        var targets = AnimationUsage.Resolve(context.AvatarRootTransform, animationRoot, binding.path, null);
+                        if (targets.Count == 0) { unknown = true; break; }
+                        foreach (var target in targets)
+                        foreach (var renderer in target.GetComponents(binding.type).OfType<Renderer>())
+                            if (consumerMaterials.TryGetValue(renderer, out var values)) affectedMaterials.UnionWith(values);
+                    }
+                    foreach (var pair in animatedProperties)
+                        if (unknown || affectedMaterials.Contains(pair.Key)) pair.Value.Add(property);
+                }
+            }
             try
             {
                 foreach (var candidate in candidates)
@@ -258,18 +388,23 @@ namespace Noname.AvatarTools.MaterialAtlas
                     var source = candidate.Key;
                     var material = new Material(group.ReferenceMaterial) { name = source.name + " (Reference converted)" };
                     owned.Add(material);
-                    MaterialTextureBakeResult bake = null;
-                    if (bakeSettings.BakeLilToon && bakeSettings.Scope != null && source.parent == null &&
+                    bool bakeEligible = bakeSettings.BakeLilToon && bakeSettings.Scope != null && source.parent == null &&
                         !bakeSettings.Preserved.Contains(ObjectRegistry.GetReference(source)) &&
                         group.TextureMappings.Any(m => m.SourceProperty == "_MainTex") &&
-                        AllBakeConsumersInScope(source))
-                        bake = MaterialTextureBake.LilToon?.Invoke(source, animatedProperties);
-                    if (bake != null) context.GetState<OptimizationBuildReport>().Messages.Add(source.name + ": " + bake.Detail);
-                    if (bake?.Texture != null) owned.Add(bake.Texture);
-                    if (bake?.Material != null) owned.Add(bake.Material);
+                        AllBakeConsumersInScope(source);
+                    MaterialTextureBakeResult earlyBake = null;
+                    if (bakeEligible && HasEarlyTextureReader(source))
+                    {
+                        earlyBake = MaterialTextureBake.LilToon?.Invoke(source, animatedProperties[source]);
+                        bakeEligible = false;
+                        if (earlyBake?.Texture != null) owned.Add(earlyBake.Texture);
+                        if (earlyBake?.Material != null) owned.Add(earlyBake.Material);
+                        if (earlyBake != null) context.GetState<OptimizationBuildReport>().Messages.Add(source.name +
+                            ": texture bake kept before generator readers. " + earlyBake.Detail);
+                    }
                     foreach (var mapping in group.TextureMappings)
                     {
-                        var textureSource = bake?.TextureSource(source, mapping.SourceProperty) ?? source;
+                        var textureSource = earlyBake?.TextureSource(source, mapping.SourceProperty) ?? source;
                         var texture = textureSource.HasTexture(mapping.SourceProperty) ? textureSource.GetTexture(mapping.SourceProperty) : null;
                         if (texture == null)
                         {
@@ -285,10 +420,13 @@ namespace Noname.AvatarTools.MaterialAtlas
                         }
                         material.SetTexture(mapping.DestinationProperty, texture);
                     }
-                    if (bake?.Material != null) { owned.Remove(bake.Material); Object.DestroyImmediate(bake.Material); }
+                    if (earlyBake?.Material != null) { owned.Remove(earlyBake.Material); Object.DestroyImmediate(earlyBake.Material); }
                     string token = Guid.NewGuid().ToString("N");
                     material.SetOverrideTag(ProvenanceTag, token);
-                    var input = new Input { Source = source, Group = candidate.Value };
+                    var input = new Input { Source = source, Group = candidate.Value, BakeEligible = bakeEligible, BakeWriters = animatedProperties[source] };
+                    foreach (var mapping in group.TextureMappings)
+                        input.Textures.Add((mapping.SourceProperty, mapping.DestinationProperty, material.GetTexture(mapping.DestinationProperty),
+                            material.GetTextureScale(mapping.DestinationProperty), material.GetTextureOffset(mapping.DestinationProperty)));
                     result.inputs.Add(token, input);
                     result.origins[ObjectRegistry.GetReference(source).Object] = input;
                     replacements.Add(source, material);

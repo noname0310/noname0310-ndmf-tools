@@ -25,12 +25,13 @@ namespace Noname.AvatarTools.Build
             Func<OptimizationChanges> optimizePhysics = null, Func<OptimizationChanges> optimizeStaticFrames = null, Action<AnalysisDomain> invalidate = null,
             ShaderPropertyUsage shaders = null, OptimizationPolicy initialization = null,
             Materials.MaterialOptimizationState materials = null, Meshes.MeshOptimizationState meshes = null,
-            Func<int> optimizeBlendShapes = null, Func<OptimizationChanges> optimizeShaderConstants = null, OptimizationAnalysis facts = null)
+            Func<int> optimizeBlendShapes = null, Func<OptimizationChanges> optimizeShaderConstants = null, OptimizationAnalysis facts = null,
+            bool runtimeDependenciesOnly = true)
         {
             shaders ??= new ShaderPropertyUsage();
             facts ??= new OptimizationAnalysis();
             bool previous = objects.RuntimeDependenciesOnly;
-            objects.RuntimeDependenciesOnly = true;
+            objects.RuntimeDependenciesOnly = runtimeDependenciesOnly;
             // Late SDK writers can invalidate any proof captured before generation.
             objects.PrunedSensorInputs.Clear();
             var expressionReports = new List<ExpressionOptimizationReport>();

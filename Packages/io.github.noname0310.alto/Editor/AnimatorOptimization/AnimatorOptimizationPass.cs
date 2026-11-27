@@ -39,14 +39,7 @@ namespace Noname.AvatarTools.AnimatorOptimization
                     context.GetState<OptimizationBuildEnvironment>().Target.ToString());
         }
 
-        internal static void Apply(BuildContext context)
-            => Apply(context, false);
-
-        internal static void ApplyAfterMaterials(BuildContext context)
-            => Apply(context, true);
-
-        internal static void ApplyFinal(BuildContext context)
-            => Apply(context, true, true);
+        internal static int ApplyPreparation(BuildContext context, bool inspectMaterials) => Apply(context, inspectMaterials);
 
         internal static int ApplyFinalAndCountChanges(BuildContext context)
             => Apply(context, true, true);

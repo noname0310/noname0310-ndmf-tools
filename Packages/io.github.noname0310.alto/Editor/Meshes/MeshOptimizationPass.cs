@@ -203,7 +203,8 @@ namespace Noname.AvatarTools.Meshes
             var references = AvatarDependencyGraph.Create(avatar, animations, referenceSettings, collectObjects: false,
                 shaders: context.GetState<OptimizationAnalysis>().Shaders, references: records);
             int converted = 0, weighted = 0;
-            if (settings.MayConvertRigid)
+            bool pendingReduction = context.GetState<MeshReduction.MeshReductionState>().Pending;
+            if (settings.MayConvertRigid && !pendingReduction)
             {
                 foreach (var renderer in avatar.GetComponentsInChildren<MeshRenderer>(true).Where(r => settings.Scope.Contains(r.transform)))
                 {
@@ -240,6 +241,9 @@ namespace Noname.AvatarTools.Meshes
                 objectSettings, animations, references, shaderSources, context.GetState<OptimizationBuildEnvironment>().Target,
                 save, report.Messages, shapeProvenance, context.GetState<OptimizationPolicy>().AllowsInitialValueChanges) : 0;
             if (hiddenTriangles != 0) settings.Changed = true;
+            // Keep renderer-level reduction policy boundaries intact until all
+            // visibility/geometry changes have converged and the budget is spent.
+            if (pendingReduction) return hiddenTriangles;
             double dependencyMilliseconds = phaseWatch.Elapsed.TotalMilliseconds;
             phaseWatch.Restart();
             int independentlyRebound = StaticSkinningOptimization.Apply(avatar, settings, objectSettings,

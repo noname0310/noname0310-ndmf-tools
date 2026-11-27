@@ -114,6 +114,8 @@ namespace Noname.AvatarTools.ObjectOptimization
         internal static void Apply(BuildContext context)
             => Apply(context, false);
 
+        internal static int ApplyPreparation(BuildContext context) => Apply(context, false);
+
         internal static void ApplyFinal(BuildContext context)
             => Apply(context, true);
 
@@ -183,7 +185,7 @@ namespace Noname.AvatarTools.ObjectOptimization
                     changes += UnusedTransformOutputs.Apply(avatar, entries, paths, state, policy.Preserved, report.Messages, shaders, snapshot);
                 if (!finalHierarchy && (settings.BakeConstantTransforms || settings.BakeConstantVisibility))
                 {
-                    InvariantObjectCurves.Apply(avatar, entries, paths, state, analysis, report.Messages,
+                    changes += InvariantObjectCurves.Apply(avatar, entries, paths, state, analysis, report.Messages,
                         context.GetState<OptimizationPolicy>(), snapshot.Index);
                     snapshot.Invalidate();
                 }

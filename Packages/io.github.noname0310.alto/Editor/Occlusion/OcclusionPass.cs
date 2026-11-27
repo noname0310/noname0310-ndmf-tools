@@ -68,8 +68,10 @@ namespace Noname.AvatarTools.Occlusion
                 var animations = AvatarAnimationIndex.Create(avatar, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap(), policy.Preserved);
                 var paths = state.PoseObjects.ToDictionary(p => p.Key, p => p.Value != null && p.Value.IsChildOf(avatar.transform)
                     ? AnimationUtility.CalculateTransformPath(p.Value, avatar.transform) : null, StringComparer.Ordinal);
+                var liveness = RendererInputLiveness.Analyze(context.GetState<ObjectOptimizationState>(), animations,
+                    context.GetState<OptimizationAnalysis>().Shaders);
                 var evaluation = OcclusionEvaluation.Run(avatar, settings, state.Scope, animations,
-                    r => context.GetState<ObjectOptimizationState>().Protected(r), paths);
+                    r => context.GetState<ObjectOptimizationState>().Protected(r), paths, r => liveness == null || liveness.IsLive(r));
                 report.Messages.AddRange(evaluation.Messages);
                 foreach (var target in evaluation.Targets.Where(t => t.RemovedCount > 0))
                 {

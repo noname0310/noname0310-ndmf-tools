@@ -150,8 +150,10 @@ namespace Noname.AvatarTools.Materials
             if (policy.Uncertain || issue != null)
             { report.Messages.Add("Material optimization retained inputs: " + (issue ?? "unverified Preserve mapping")); return; }
             var objectState = context.GetState<ObjectOptimizationState>();
+            var liveInputs = RendererInputLiveness.Analyze(objectState, animations, context.GetState<OptimizationAnalysis>().Shaders);
             var renderers = avatar.GetComponentsInChildren<Renderer>(true).Where(r => (r is SkinnedMeshRenderer || r is MeshRenderer) &&
-                state.Scope.Contains(r.transform) && !objectState.Protected(r) && !ProtectedInput(state, r)).ToHashSet();
+                state.Scope.Contains(r.transform) && !objectState.Protected(r) && !ProtectedInput(state, r) &&
+                (liveInputs == null || liveInputs.IsLive(r))).ToHashSet();
             var swaps = animations.Bindings.Where(u => u.Binding.isPPtrCurve && u.Binding.propertyName.StartsWith("m_Materials", StringComparison.Ordinal)).ToArray();
             bool Safe(AvatarAnimationIndex.BindingUse use) => use.Complete && !use.Protected &&
                 use.Binding.propertyName.StartsWith("m_Materials.Array.data[", StringComparison.Ordinal) &&

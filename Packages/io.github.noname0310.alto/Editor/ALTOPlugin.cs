@@ -118,7 +118,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 foreach (var component in context.AvatarRootObject.GetComponentsInChildren<ALTOTraceAndOptimizeBlendShapes>(true))
                     Object.DestroyImmediate(component);
             })
-                .Then.Run("Check PhysBone resource budgets", PhysBoneFilterPass.CheckBudget)
+                .Then.Run("Record provisional PhysBone resources", context => PhysBoneFilterPass.CheckBudget(context, final: false))
                 .Then.Run("Reduce surviving meshes to the triangle budget", context =>
                     OptimizationSession.Step(context, "mesh reduction", AnalysisDomain.Meshes, MeshReductionPass.Apply))
                 .Then.Run("Merge compatible surviving meshes", context =>

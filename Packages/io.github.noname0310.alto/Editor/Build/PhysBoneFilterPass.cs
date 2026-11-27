@@ -238,7 +238,7 @@ namespace Noname.AvatarTools.Build
             return result;
         }
 
-        internal static void CheckBudget(BuildContext context)
+        internal static void CheckBudget(BuildContext context, bool final = true)
         {
             var state = context.GetState<PhysBoneFilterState>();
             if (!state.Applied) return;
@@ -246,7 +246,8 @@ namespace Noname.AvatarTools.Build
             var counts = PhysBoneResourceCounts.Capture(context.AvatarRootObject, target == BuildTarget.Android || target == BuildTarget.iOS);
             var report = context.GetState<OptimizationBuildReport>();
             report.Physics = counts;
-            report.Messages.Add("Final NDMF PhysBone resources: " + counts + ".");
+            report.Messages.Add((final ? "Final" : "Provisional") + " PhysBone resources: " + counts + ".");
+            if (!final) return;
             var exceeded = counts.Exceeded(state.Budget).ToArray();
             if (exceeded.Length == 0) return;
             string message = "PhysBone budget exceeded: " + string.Join("; ", exceeded);

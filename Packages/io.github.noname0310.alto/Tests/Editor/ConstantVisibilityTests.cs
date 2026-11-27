@@ -89,7 +89,10 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var controllers = new Dictionary<object, VirtualAnimatorController> { [VRCAvatarDescriptor.AnimLayerType.FX] = controller };
             var scope = OptimizationBuildScope.Capture(occlusion, root);
             var before = OcclusionEvaluation.Run(root, occlusion, scope, AvatarAnimationIndex.Create(root, controllers, null));
-            Assert.That(before.Targets.Single().RemovedCount, Is.Zero);
+            Assert.That(before.Targets.Single().RemovedCount, Is.EqualTo(1),
+                "A proven invariant visibility writer need not be physically removed before sampling.");
+            Assert.That(controller.AllReachableNodes().OfType<VirtualClip>().Any(c => c.GetFloatCurve(binding) != null), Is.True,
+                "Occlusion analysis must leave the source controller unchanged.");
             OptimizeObjectCurves(controller, ObjectSettings());
             Assert.That(shell.gameObject.activeSelf, Is.True);
             var after = OcclusionEvaluation.Run(root, occlusion, scope, AvatarAnimationIndex.Create(root, controllers, null));

@@ -6,6 +6,7 @@ using nadena.dev.ndmf;
 using nadena.dev.ndmf.animator;
 using Noname.AvatarTools.Analysis;
 using Noname.AvatarTools.Build;
+using Noname.AvatarTools.ObjectOptimization;
 using Noname.AvatarTools.ParameterPolicy;
 using UnityEditor;
 using UnityEngine;
@@ -18,6 +19,7 @@ namespace Noname.AvatarTools.MaterialAtlas
         internal OptimizationBuildScope Scope;
         internal readonly HashSet<ObjectReference> Targets = new();
         internal readonly List<AtlasRendererPlan> Plans = new();
+        internal readonly AtlasInputLiveness Liveness = new();
         internal readonly Stopwatch Watch = new();
         internal bool Prepared;
         internal EarlyMaterialConversion Early;
@@ -192,7 +194,12 @@ namespace Noname.AvatarTools.MaterialAtlas
                 var hazards = AtlasAnimationSafety.Find(avatar, controllers, policy.Preserved,
                     services.ObjectPathRemapper.GetVirtualToRealPathMap(), state.Settings.MergeGroups, state.Original, state.Group);
                 var renderers = SelectRenderers(avatar, state).ToArray();
-                state.Early?.ValidateSurvivingInputs(renderers);
+                var objects = context.GetState<ObjectOptimizationState>();
+                if (objects.Scope != null && objects.RemoveUnusedObjects)
+                    renderers = state.Liveness.Select(renderers, objects,
+                        AvatarAnimationIndex.Create(avatar, controllers, services.ObjectPathRemapper.GetVirtualToRealPathMap(), policy.Preserved),
+                        context.GetState<OptimizationAnalysis>().Shaders, report.Messages);
+                state.Early?.ValidateSurvivingInputs(renderers, state.Liveness.IsOmitted);
                 foreach (var renderer in renderers)
                 {
                     if (!(renderer is SkinnedMeshRenderer) && !(renderer is MeshRenderer)) continue;
@@ -213,6 +220,8 @@ namespace Noname.AvatarTools.MaterialAtlas
                     }
                     state.Plans.Add(new AtlasRendererPlan { Renderer = renderer, Mesh = mesh, Materials = materials, Groups = groups, UvDomain = domain });
                 }
+                state.Early?.BakeInputs(context, state.Plans.Select(p => p.Renderer),
+                    AvatarAnimationIndex.Create(avatar, controllers, services.ObjectPathRemapper.GetVirtualToRealPathMap(), policy.Preserved));
                 MaterialAtlasBackend.Prepare(context, state);
                 state.Prepared = true;
                 report.Messages.Add("Prepared texture atlas inputs for " + state.Plans.Count + " renderers; source properties other than mapped textures follow the Reference Material.");
@@ -256,9 +265,31 @@ namespace Noname.AvatarTools.MaterialAtlas
             if (state.Settings == null) return;
             if (state.Deferred) PrepareInputs(context);
             if (state.Prepared) MaterialAtlasBackend.Finish(context, state);
+            ValidateOmittedInputs(context);
             state.Watch.Stop();
             context.GetState<OptimizationBuildReport>().Messages.Add("Material atlasing including TexTransTool completed in " + state.Watch.ElapsedMilliseconds + " ms.");
             UnityEngine.Object.DestroyImmediate(state.Settings);
+        }
+
+        internal static void ValidateOmittedInputs(BuildContext context)
+        {
+            if (!context.GetState<MaterialAtlasState>().Liveness.HasSurvivingInputs) return;
+            using var lease = OptimizationSession.Acquire(context);
+            var controllers = lease.Services.ControllerContext.Controllers
+                .Where(e => !(e.Key is UnityEngine.Object owner) || owner != null).ToDictionary(e => e.Key, e => e.Value);
+            var policy = ParameterPolicyPass.Resolve(context, controllers);
+            if (policy.Uncertain) throw new InvalidOperationException("Cannot validate omitted atlas inputs: parameter preservation mappings became uncertain.");
+            ValidateOmittedInputs(context, controllers, lease.Services.ObjectPathRemapper.GetVirtualToRealPathMap(), policy.Preserved);
+        }
+
+        internal static void ValidateOmittedInputs(BuildContext context, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> paths, IEnumerable<string> preserved)
+        {
+            var liveness = context.GetState<MaterialAtlasState>().Liveness;
+            if (!liveness.HasSurvivingInputs) return;
+            liveness.Validate(context.GetState<ObjectOptimizationState>(),
+                AvatarAnimationIndex.Create(context.AvatarRootObject, controllers, paths, preserved),
+                context.GetState<OptimizationAnalysis>().Shaders);
         }
     }
 }

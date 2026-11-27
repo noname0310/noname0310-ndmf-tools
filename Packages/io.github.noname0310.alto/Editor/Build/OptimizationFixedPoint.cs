@@ -4,12 +4,29 @@ using Noname.AvatarTools.ObjectOptimization;
 using Noname.AvatarTools.Meshes;
 using Noname.AvatarTools.Physics;
 using Noname.AvatarTools.BlendShapeOptimization;
+using Noname.AvatarTools.ParameterPolicy;
 using System.Collections.Generic;
 
 namespace Noname.AvatarTools.Build
 {
     internal static class OptimizationFixedPoint
     {
+        // Non-destructive preparation for irreversible consumers. Preserve authoring
+        // references and region morphs; do not run hierarchy collection or mesh assembly.
+        internal static void PrepareInputs(BuildContext context, bool inspectMaterials = false)
+        {
+            OptimizationWorklist.Run(new[]
+            {
+                new OptimizationWorklist.Stage("prepared Animator outputs", AnalysisDomain.All,
+                    AnalysisDomain.Animation | AnalysisDomain.Materials, () => AnimatorOptimizationPass.ApplyPreparation(context, inspectMaterials)),
+                new OptimizationWorklist.Stage("prepared initial visibility", AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.ExternalInputs,
+                    AnalysisDomain.Animation | AnalysisDomain.Hierarchy, () => InitialVisibilityPolicy.ApplyAndCountChanges(context)),
+                new OptimizationWorklist.Stage("prepared object outputs", AnalysisDomain.All,
+                    AnalysisDomain.Hierarchy | AnalysisDomain.Animation | AnalysisDomain.Physics | AnalysisDomain.Meshes | AnalysisDomain.ExternalInputs,
+                    () => ObjectOptimizationPass.ApplyPreparation(context))
+            }, report: context.GetState<OptimizationBuildReport>(), invalidateChanges: context.GetState<OptimizationAnalysis>().Invalidate);
+        }
+
         // Only run after hierarchy generators have finished. Each reported change
         // removes graph data, a runtime component or an object. Default-state
         // normalization also removes control fields and cannot repeat indefinitely.

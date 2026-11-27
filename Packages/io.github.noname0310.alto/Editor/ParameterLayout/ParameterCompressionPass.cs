@@ -211,6 +211,29 @@ namespace Noname.AvatarTools.ParameterLayout
         internal static ParameterCompressionResult Apply(BuildContext context, ParameterCompressionSettings settings,
             ParameterLayoutRecord reference, OptimizationBuildReport report, Action<Object> save)
         {
+            // Planning sees logical consumers only. Generated transport readers must
+            // never feed back into dead-input analysis or allocation on this build.
+            var plan = Plan(context, settings, reference, report);
+            return Commit(plan, save);
+        }
+
+        private sealed class CompressionPlan
+        {
+            internal BuildContext Context;
+            internal VRCExpressionParameters Original;
+            internal string OriginalData;
+            internal VRCExpressionParameters.Parameter[] Output;
+            internal Dictionary<string, VRCExpressionParameters.Parameter> Declared;
+            internal List<IntegerEncoding> Active;
+            internal HashSet<string> MultiplexActive, Occupied;
+            internal Dictionary<string, float> Fallback;
+            internal bool WriteParameters;
+            internal ParameterCompressionResult Result = new();
+        }
+
+        private static CompressionPlan Plan(BuildContext context, ParameterCompressionSettings settings,
+            ParameterLayoutRecord reference, OptimizationBuildReport report)
+        {
             if (settings == null)
             {
                 if (reference?.IntegerEncodings?.Count > 0 || reference?.Multiplexing != null || reference?.FloatPrecisionOverrides?.Count > 0 ||
@@ -222,6 +245,7 @@ namespace Noname.AvatarTools.ParameterLayout
             var avatar = context.AvatarRootObject;
             var descriptor = avatar.GetComponent<VRCAvatarDescriptor>();
             var original = descriptor.expressionParameters;
+            string originalData = original != null ? EditorJsonUtility.ToJson(original) : null;
             var input = ParameterLayoutModel.Read(original?.parameters);
             int before = MultiplexEncoding.Cost(input);
             var overrides = reference == null ? ParameterPrecisionRules.Resolve(settings.PrecisionRules, input) : new ResolvedParameterPrecisions();
@@ -338,33 +362,8 @@ namespace Noname.AvatarTools.ParameterLayout
                 output = output.Concat(multiplex.WireDeclarations()).ToArray();
                 occupied.UnionWith(multiplex.WireDeclarations().Select(p => p.name));
             }
-            if (active.Any(e => !e.IsNative) || multiplex != null)
-            {
-                if (entries.TryGetValue(VRCAvatarDescriptor.AnimLayerType.FX, out var existingFx))
-                    ParameterTransportIdentity.Read(existingFx);
-                // Use NDMF's public serialization lifecycle, including layer-index remapping
-                // and generated-asset ownership. Reopen the current controllers so SDK
-                // preparation also includes edits made after the NDMF passes finished.
-                var current = new VirtualControllerContext(); current.OnActivate(context);
-                try
-                {
-                    var key = VRCAvatarDescriptor.AnimLayerType.FX;
-                    if (!current.Controllers.TryGetValue(key, out var fx))
-                        current.Controllers[key] = fx = VirtualAnimatorController.Create(current.CloneContext, "ALTO Parameter Transport");
-                    foreach (var encoding in active)
-                        IntegerEncodingAnimator.Append(current.CloneContext, fx, encoding, (int)declared[encoding.Name].defaultValue, save);
-                    if (multiplex != null) MultiplexAnimator.Append(current.CloneContext, fx, multiplex,
-                        declared, multiplexActive, fallback, occupied, save);
-                }
-                finally { AnimatorAssetPersistence.Commit(context, current, save); }
-            }
-            if (active.Count != 0 || unused.Count != 0 || multiplex != null || precisions.Count != 0 || avatarDriven.Count != 0)
-            {
-                var copy = original != null ? Object.Instantiate(original) : ScriptableObject.CreateInstance<VRCExpressionParameters>();
-                copy.name = "Compressed Expression Parameters"; copy.parameters = output; save(copy);
-                if (original != null) ObjectRegistry.RegisterReplacedObject(original, copy);
-                descriptor.expressionParameters = copy;
-            }
+            if ((active.Any(e => !e.IsNative) || multiplex != null) && entries.TryGetValue(VRCAvatarDescriptor.AnimLayerType.FX, out var existingFx))
+                ParameterTransportIdentity.Read(existingFx);
             int after = MultiplexEncoding.Cost(output);
             report.Messages.Add("Parameter transport: " + before + " -> " + after + " bits; " + active.Count +
                 " Ints encoded; " + unused.Count + " unused synchronized inputs kept local. Logical names and Saved values retained.");
@@ -393,7 +392,50 @@ namespace Noname.AvatarTools.ParameterLayout
                     "th sweep holds publications longer for slow observers. This does not guarantee delivery under arbitrary loss or field skew.");
             var recordedPrecisions = reference != null ? precisions : precisions.Where(p =>
                 output.Any(o => o.name == p.Name && o.networkSynced) || multiplex?.Inputs.Any(i => i.Name == p.Name) == true).ToList();
-            return new ParameterCompressionResult { Integers = encodings, Multiplexing = multiplex, FloatPrecisions = recordedPrecisions, AvatarDriven = avatarDriven };
+            return new CompressionPlan
+            {
+                Context = context, Original = original, OriginalData = originalData, Output = output, Declared = declared,
+                Active = active, MultiplexActive = multiplexActive, Fallback = fallback, Occupied = occupied,
+                WriteParameters = active.Count != 0 || unused.Count != 0 || multiplex != null || precisions.Count != 0 || avatarDriven.Count != 0,
+                Result = new ParameterCompressionResult { Integers = encodings, Multiplexing = multiplex, FloatPrecisions = recordedPrecisions, AvatarDriven = avatarDriven }
+            };
+        }
+
+        // A plan is private to the synchronous planning/commit interval. It is never
+        // cached across generator boundaries, and a recorded wire contract is never
+        // repacked after another platform has consumed it.
+        private static ParameterCompressionResult Commit(CompressionPlan plan, Action<Object> save)
+        {
+            var context = plan.Context;
+            if (context == null) return plan.Result;
+            var descriptor = context.AvatarRootObject.GetComponent<VRCAvatarDescriptor>();
+            var original = descriptor.expressionParameters;
+            if (original != plan.Original || (original != null ? EditorJsonUtility.ToJson(original) : null) != plan.OriginalData)
+                throw new InvalidOperationException("Parameter declarations changed while planning transport. No transport was emitted.");
+            var multiplex = plan.Result.Multiplexing;
+            if (plan.Active.Any(e => !e.IsNative) || multiplex != null)
+            {
+                var current = new VirtualControllerContext(); current.OnActivate(context);
+                try
+                {
+                    var key = VRCAvatarDescriptor.AnimLayerType.FX;
+                    if (!current.Controllers.TryGetValue(key, out var fx))
+                        current.Controllers[key] = fx = VirtualAnimatorController.Create(current.CloneContext, "ALTO Parameter Transport");
+                    foreach (var encoding in plan.Active)
+                        IntegerEncodingAnimator.Append(current.CloneContext, fx, encoding, (int)plan.Declared[encoding.Name].defaultValue, save);
+                    if (multiplex != null) MultiplexAnimator.Append(current.CloneContext, fx, multiplex,
+                        plan.Declared, plan.MultiplexActive, plan.Fallback, plan.Occupied, save);
+                }
+                finally { AnimatorAssetPersistence.Commit(context, current, save); }
+            }
+            if (plan.WriteParameters)
+            {
+                var copy = original != null ? Object.Instantiate(original) : ScriptableObject.CreateInstance<VRCExpressionParameters>();
+                copy.name = "Compressed Expression Parameters"; copy.parameters = plan.Output; save(copy);
+                if (original != null) ObjectRegistry.RegisterReplacedObject(original, copy);
+                descriptor.expressionParameters = copy;
+            }
+            return plan.Result;
         }
     }
 }

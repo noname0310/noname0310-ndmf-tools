@@ -29,9 +29,7 @@ namespace Noname.AvatarTools.Build
             OptimizationSession.Step(context, "parameter specialization", AnalysisDomain.Animation, ParameterFreezePass.Apply);
             OptimizationSession.Step(context, "physics filtering", AnalysisDomain.Physics | AnalysisDomain.Hierarchy | AnalysisDomain.Animation, PhysBoneFilterPass.Apply);
             OptimizationSession.Step(context, "Contact filtering", AnalysisDomain.ExternalInputs | AnalysisDomain.Hierarchy | AnalysisDomain.Animation, ContactFilterPass.Apply);
-            OptimizationSession.Step(context, "Animator simplification", AnalysisDomain.Animation | AnalysisDomain.Materials, AnimatorOptimizationPass.Apply);
-            OptimizationSession.Step(context, "initial visibility policy", AnalysisDomain.Animation | AnalysisDomain.Hierarchy, InitialVisibilityPolicy.Apply);
-            OptimizationSession.Step(context, "object simplification", AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Physics | AnalysisDomain.Meshes, ObjectOptimizationPass.Apply);
+            OptimizationFixedPoint.PrepareInputs(context);
             OcclusionPass.ChooseStage(context);
             if (!context.GetState<OcclusionBuildState>().AfterMaterialConversion)
             {
@@ -49,9 +47,7 @@ namespace Noname.AvatarTools.Build
             OptimizationSession.Step(context, "converted BlendShape input provenance", AnalysisDomain.None, ALTOPlugin.PrepareInputs);
             if (context.GetState<MaterialAtlasState>().Prepared)
             {
-                OptimizationSession.Step(context, "material output simplification", AnalysisDomain.Animation | AnalysisDomain.Materials, AnimatorOptimizationPass.ApplyAfterMaterials);
-                OptimizationSession.Step(context, "initial visibility after materials", AnalysisDomain.Animation | AnalysisDomain.Hierarchy, InitialVisibilityPolicy.Apply);
-                OptimizationSession.Step(context, "object simplification after materials", AnalysisDomain.Animation | AnalysisDomain.Hierarchy | AnalysisDomain.Physics | AnalysisDomain.Meshes, ObjectOptimizationPass.Apply);
+                OptimizationFixedPoint.PrepareInputs(context, inspectMaterials: true);
             }
             if (context.GetState<OcclusionBuildState>().AfterMaterialConversion)
             {
@@ -75,6 +71,7 @@ namespace Noname.AvatarTools.Build
             OptimizationSession.Step(context, "combined parameter validation", AnalysisDomain.Animation, ParameterFreezePass.Apply);
             OptimizationSession.Step(context, "final initial visibility policy", AnalysisDomain.Animation | AnalysisDomain.Hierarchy, InitialVisibilityPolicy.Apply);
             OptimizationFixedPoint.Apply(context);
+            MaterialAtlasPass.ValidateOmittedInputs(context);
         });
 
         internal static void AfterMeshes(BuildContext context) => OptimizationSession.RunBoundary(context, "after meshes", () =>
@@ -86,8 +83,10 @@ namespace Noname.AvatarTools.Build
             }
             // Run expression cleanup once, against the final surviving consumers. The SDK
             // finalizer still rechecks late generated/compressed parameter declarations.
+            MaterialAtlasPass.ValidateOmittedInputs(context);
             AvatarOutputSdkFinalizer.Capture(context);
             OptimizationSession.Step(context, "expression cleanup", AnalysisDomain.ExternalInputs, ExpressionOptimizationPass.Apply);
+            if (!AvatarOutputSdkFinalizer.HasSession(context)) PhysBoneFilterPass.CheckBudget(context);
         });
     }
 }

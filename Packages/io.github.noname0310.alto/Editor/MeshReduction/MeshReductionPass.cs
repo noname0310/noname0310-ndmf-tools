@@ -50,6 +50,13 @@ namespace Noname.AvatarTools.MeshReduction
     internal sealed class MeshReductionState
     {
         internal ALTOMeshReduction Settings;
+        // Authoring markers may be stripped by SDK preprocessors. Keep the recipe,
+        // selection boundaries and current source renderers until geometry settles.
+        internal bool Pending, PreserveBorders;
+        internal int Budget;
+        internal BudgetExceededAction OnUnreachable;
+        internal RendererSelectionMode SelectionMode;
+        internal readonly Dictionary<ObjectReference, List<ReductionInput>> MappedInputs = new();
         internal OptimizationBuildScope Scope;
         internal readonly HashSet<ObjectReference> Targets = new(), Preserved = new();
         internal readonly Dictionary<ObjectReference, MeshReductionPriority> Priorities = new();
@@ -77,6 +84,11 @@ namespace Noname.AvatarTools.MeshReduction
             var state = context.GetState<MeshReductionState>();
             state.Settings = enabled[0]; state.Scope = OptimizationBuildScope.Capture(state.Settings, context.AvatarRootObject);
             ValidateSettings(state.Settings);
+            state.Pending = true;
+            state.Budget = state.Settings.TriangleBudget;
+            state.PreserveBorders = state.Settings.PreserveBorderEdges;
+            state.OnUnreachable = state.Settings.OnBudgetUnreachable;
+            state.SelectionMode = state.Settings.TargetSelection;
             void Add(Renderer renderer, HashSet<ObjectReference> set)
             {
                 if (!state.Scope.Contains(renderer.transform))
@@ -137,7 +149,7 @@ namespace Noname.AvatarTools.MeshReduction
             state.Priorities.TryGetValue(reference, out var priority);
             return new ReductionInput
             {
-                InScope = state.Scope.Contains(renderer.transform), Selected = state.Settings.TargetSelection == RendererSelectionMode.AllRenderersInScope || state.Targets.Contains(reference),
+                InScope = state.Scope.Contains(renderer.transform), Selected = state.SelectionMode == RendererSelectionMode.AllRenderersInScope || state.Targets.Contains(reference),
                 Preserved = state.Preserved.Contains(reference), Weight = priority?.Weight ?? 1, Minimum = priority?.MinimumTriangles ?? 0
             };
         }
@@ -156,37 +168,50 @@ namespace Noname.AvatarTools.MeshReduction
         internal static void Apply(BuildContext context)
         {
             var state = context.GetState<MeshReductionState>();
-            if (state.Settings == null) return;
-            var settings = state.Settings;
+            if (!state.Pending) return;
+            if (state.Settings != null)
+            {
+                var mapped = state.Settings.BuildInputRenderers;
+                if (mapped.Length != state.Inputs.Count)
+                    throw new InvalidOperationException("Mesh reduction input mapping is incomplete.");
+                for (int i = 0; i < mapped.Length; i++)
+                {
+                    if (mapped[i] == null) continue;
+                    var reference = ObjectRegistry.GetReference(mapped[i]);
+                    if (!state.MappedInputs.TryGetValue(reference, out var inputs)) state.MappedInputs.Add(reference, inputs = new());
+                    inputs.Add(state.Inputs[i]);
+                }
+                Object.DestroyImmediate(state.Settings);
+            }
+            if (AvatarOutputSdkFinalizer.HasSession(context)) return;
+            // Geometry-only mesh passes participate in this fixed point. Assembly
+            // is gated by Pending, so a preserved face cannot absorb reducible cloth.
+            OptimizationFixedPoint.Apply(context, includeMeshes: true);
+            using var lease = OptimizationSession.Acquire(context);
+            ApplyFinal(context, lease.Services.ControllerContext.Controllers,
+                lease.Services.ObjectPathRemapper.GetVirtualToRealPathMap(), context.AssetSaver.SaveAsset);
+        }
+
+        internal static void ApplyFinal(BuildContext context, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> paths, Action<Object> save, string unsupported = null)
+        {
+            var state = context.GetState<MeshReductionState>();
+            if (!state.Pending) return;
             var watch = Stopwatch.StartNew();
             var buildReport = context.GetState<OptimizationBuildReport>();
-            var report = new MeshReductionReport { Budget = settings.TriangleBudget };
+            var report = new MeshReductionReport { Budget = state.Budget };
             buildReport.MeshReduction = report;
-            var groups = new Dictionary<Renderer, List<ReductionInput>>();
-            for (int i = 0; i < state.Inputs.Count; i++)
-            {
-                var renderer = settings.BuildInputRenderers[i];
-                if (renderer == null) continue;
-                if (!groups.TryGetValue(renderer, out var entries)) groups.Add(renderer, entries = new());
-                entries.Add(state.Inputs[i]);
-            }
-            var animationLease = Noname.AvatarTools.Build.OptimizationSession.Acquire(context);
-            var services = animationLease.Services;
-            Dictionary<Renderer, string> hazards;
-            try { hazards = MeshReductionSafety.Find(context.AvatarRootObject, services.ControllerContext, services.ObjectPathRemapper.GetVirtualToRealPathMap()); }
-            finally
-            {
-                animationLease.Dispose();
-            }
+            var hazards = MeshReductionSafety.Find(context.AvatarRootObject, controllers, paths);
             var requests = new List<ReductionRequest>();
             foreach (var renderer in context.AvatarRootObject.GetComponentsInChildren<Renderer>(true).Where(IsMeshRenderer))
             {
-                if (!groups.TryGetValue(renderer, out var entries)) entries = new() { Selection(state, renderer) };
+                if (!state.MappedInputs.TryGetValue(ObjectRegistry.GetReference(renderer), out var entries)) entries = new() { Selection(state, renderer) };
                 if (!entries.Any(e => e.InScope)) continue;
                 var mesh = MeshOf(renderer); long triangles = Triangles(mesh);
                 string reason = entries.Any(e => !e.InScope) ? "merged with an out-of-scope input; counting the whole renderer conservatively" :
                     entries.Any(e => e.Preserved) ? "preserved renderer or merged preserved input" :
                     entries.Any(e => !e.Selected) ? "unselected renderer or merged unselected input" :
+                    unsupported != null ? unsupported :
                     hazards.TryGetValue(renderer, out var hazard) ? hazard :
                     mesh == null || triangles == 0 ? "no triangles" :
                     triangles > int.MaxValue ? "triangle count exceeds the reducer's range" :
@@ -209,12 +234,12 @@ namespace Noname.AvatarTools.MeshReduction
             }
             try
             {
-                Reduce(requests, report, settings.PreserveBorderEdges);
+                Reduce(requests, report, state.PreserveBorders);
                 foreach (var request in requests)
                 {
                     if (request.Result == null) continue;
                     ObjectRegistry.RegisterReplacedObject(request.Source, request.Result);
-                    context.AssetSaver.SaveAsset(request.Result);
+                    save(request.Result);
                     if (request.Renderer is SkinnedMeshRenderer skin)
                     {
                         var weights = Enumerable.Range(0, request.Source.blendShapeCount).Select(skin.GetBlendShapeWeight).ToArray();
@@ -235,14 +260,15 @@ namespace Noname.AvatarTools.MeshReduction
                     string message = $"Mesh reduction did not reach its budget: {report.OutputTriangles} / {report.Budget} triangles. " +
                         "Preserved inputs, minimum counts and topology constraints limit reduction; inspect the per-renderer build report.";
                     buildReport.Messages.Add(message);
-                    if (settings.OnBudgetUnreachable == BudgetExceededAction.Error) throw new InvalidOperationException(message);
+                    if (state.OnUnreachable == BudgetExceededAction.Error) throw new InvalidOperationException(message);
                     UnityEngine.Debug.LogWarning("[ALTO] " + message, context.AvatarRootObject);
                 }
             }
             finally
             {
                 foreach (var request in requests) if (request.Result != null) Object.DestroyImmediate(request.Result);
-                Object.DestroyImmediate(settings);
+                state.Pending = false;
+                context.GetState<OptimizationAnalysis>().Invalidate(AnalysisDomain.Meshes);
             }
         }
 

@@ -63,7 +63,10 @@ namespace Noname.AvatarTools.ObjectOptimization
             // Preserved inputs can share a mutable clip with an unobservable
             // component. Capture target identities before deleting their hierarchy,
             // then remove a binding only if every target was actually removed.
-            var candidates = index.Bindings.Where(u => u.Complete && !u.Immutable && !u.Binding.isPPtrCurve)
+            // Known resource assignments have owner-to-resource dependency edges. Their
+            // PPtr curves can disappear with a dead owner, just like numeric curves.
+            // Unknown retargeting roots its owner in the graph and cannot reach this path.
+            var candidates = index.Bindings.Where(u => u.Complete && !u.Immutable)
                 .Select(u => (Use: u, Targets: u.Objects().ToArray()))
                 .Where(c => c.Targets.Length > 0 && c.Targets.All(Removed)).ToArray();
             foreach (var component in order)

@@ -261,10 +261,22 @@ namespace Noname.AvatarTools.Analysis
             {
                 if (use.Binding.isPPtrCurve)
                 {
-                    // Retargeting can change the graph at runtime. Both the property owner
-                    // and every possible object key remain valid, even in an inactive branch.
-                    foreach (var key in use.ObjectKeys ?? Array.Empty<ObjectReferenceKeyframe>()) Root(key.value);
-                    foreach (var target in use.Objects()) Root(target);
+                    if (IsResourceAssignment(use))
+                    {
+                        // A material/mesh assignment is a writer, not an observer of its
+                        // renderer. Keep possible resources when their owner is live; an
+                        // invisible, otherwise unused owner does not become a drawing output
+                        // merely because a clip changes its resources.
+                        foreach (var target in use.Objects())
+                            foreach (var key in use.ObjectKeys ?? Array.Empty<ObjectReferenceKeyframe>()) Edge(target, key.value);
+                    }
+                    else
+                    {
+                        // Unknown retargeting can change runtime dependencies. Preserve both
+                        // ends, including inactive branches and ambiguous/immutable bindings.
+                        foreach (var key in use.ObjectKeys ?? Array.Empty<ObjectReferenceKeyframe>()) Root(key.value);
+                        foreach (var target in use.Objects()) Root(target);
+                    }
                 }
                 if (use.Immutable || !use.Complete)
                     foreach (var target in use.Targets) Root(target.gameObject);
@@ -284,6 +296,19 @@ namespace Noname.AvatarTools.Analysis
                     ReadReferences(metadata);
                 if (edges.TryGetValue(value, out var dependencies)) foreach (var dependency in dependencies) pending.Enqueue(dependency);
             }
+        }
+
+        private static bool IsResourceAssignment(AvatarAnimationIndex.BindingUse use)
+        {
+            if (!use.Complete || use.Immutable || use.Binding.type == null || use.ObjectKeys == null) return false;
+            bool material = typeof(Renderer).IsAssignableFrom(use.Binding.type) &&
+                MaterialFilterPass.TrySlot(use.Binding.propertyName, out _);
+            bool mesh = use.Binding.propertyName == "m_Mesh" &&
+                (use.Binding.type == typeof(MeshFilter) || use.Binding.type == typeof(SkinnedMeshRenderer));
+            if (!material && !mesh) return false;
+            foreach (var key in use.ObjectKeys)
+                if (key.value != null && !(material ? key.value is Material : key.value is Mesh)) return false;
+            return true;
         }
 
         private readonly HashSet<Object> inspected = new();

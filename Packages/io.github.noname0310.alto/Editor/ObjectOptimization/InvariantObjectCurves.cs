@@ -37,7 +37,7 @@ namespace Noname.AvatarTools.ObjectOptimization
             ["m_LocalRotation"] = new[] { "m_LocalRotation.x", "m_LocalRotation.y", "m_LocalRotation.z", "m_LocalRotation.w" }
         };
 
-        internal static void Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
+        internal static int Apply(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
             IReadOnlyDictionary<string, string> paths, ObjectOptimizationState settings, AnimatorReachability analysis,
             ICollection<string> messages, OptimizationPolicy numericPolicy = null, AvatarAnimationIndex animations = null)
         {
@@ -170,6 +170,7 @@ namespace Noname.AvatarTools.ObjectOptimization
             messages.Add("Removed " + removals.Sum(p => p.Value.Count) + " invariant object curves in " + targets +
                 " property groups; initial visibility and transforms were unchanged.");
             appliedProofs.AppendTo(messages, "invariant object outputs");
+            return removals.Sum(p => p.Value.Count);
         }
 
         private static Transform Resolve(Transform root, Transform avatar, string path, IReadOnlyDictionary<string, string> paths)

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.22
+
+- Omit renderers proven unobservable by object dependency analysis from texture atlas inputs. Preserve toggleable, referenced and explicitly protected renderers, defer hierarchy deletion until generators finish, and revalidate omissions after later build passes.
+- Treat known animated material and mesh assignments as dependencies of their owners instead of independent runtime outputs. Remove their animation curves only after every bound owner has actually been collected, preserving shared clips and unknown retargeting.
+- Settle constant object and material outputs before occlusion and atlas preparation. Occlusion accepts proven invariant visibility and resource assignments while retaining variable, ambiguous and Contact-driven inputs.
+- Allocate mesh reduction budgets after final geometry and dependency cleanup, including late SDK changes. Preserve renderer selection boundaries until reduction commits and avoid repeatedly simplifying an already-reduced result.
+- Plan texture bakes per material consumer and defer eligible image generation until live atlas inputs are known. Preserve early generator readers and textures changed by generators.
+- Settle logical outputs before planning parameter transport, then emit its controllers and declarations separately. Preserve authoring readers and recorded cross-platform wire layouts.
+- Treat intermediate PhysBone counts as diagnostics and enforce budgets after final runtime cleanup.
+
 ## 0.0.21
 
 - Fix shared shader constant baking for generated surface shaders by preserving Unity engine include resolution. Resolve imported shader aliases only against their verified native dependencies.

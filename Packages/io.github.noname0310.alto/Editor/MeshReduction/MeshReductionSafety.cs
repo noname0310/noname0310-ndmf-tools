@@ -11,6 +11,10 @@ namespace Noname.AvatarTools.MeshReduction
     {
         internal static Dictionary<Renderer, string> Find(GameObject avatar, VirtualControllerContext controllers,
             IReadOnlyDictionary<string, string> paths)
+            => Find(avatar, controllers.Controllers, paths);
+
+        internal static Dictionary<Renderer, string> Find(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> paths)
         {
             var hazards = new Dictionary<Renderer, string>();
             string unknown = ObjectOptimizationSafety.UnsupportedRuntime(avatar);
@@ -19,7 +23,7 @@ namespace Noname.AvatarTools.MeshReduction
                 foreach (var renderer in avatar.GetComponentsInChildren<Renderer>(true)) hazards[renderer] = unknown;
                 return hazards;
             }
-            foreach (var entry in controllers.Controllers.Where(e => !(e.Key is Object owner) || owner != null))
+            foreach (var entry in controllers.Where(e => !(e.Key is Object owner) || owner != null))
             {
                 var root = entry.Key is Animator animator ? animator.transform : avatar.transform;
                 foreach (var clip in entry.Value.AllReachableNodes().OfType<VirtualClip>().Distinct())

@@ -4,6 +4,7 @@ using System.Linq;
 using nadena.dev.ndmf;
 using nadena.dev.ndmf.animator;
 using nadena.dev.ndmf.util;
+using Noname.AvatarTools.Analysis;
 using Noname.AvatarTools.Build;
 using Noname.AvatarTools.MaterialAtlas;
 using Noname.AvatarTools.Materials;
@@ -30,6 +31,15 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         {
             foreach (var asset in root.ReferencedAssets().Where(a => a != null && !(a is Component) && !(a is GameObject) &&
                 !(a is Shader) && !(a is MonoScript) && !EditorUtility.IsPersistent(a))) Track(asset);
+        }
+
+        private void BakeEarlyAtlasInputs(BuildContext context, MaterialAtlasState state)
+        {
+            var clone = new CloneContext(VRChatPlatformAnimatorBindings.Instance);
+            var entries = new Dictionary<object, VirtualAnimatorController>();
+            foreach (var (key, controller, _) in VRChatPlatformAnimatorBindings.Instance.GetInnateControllers(root))
+                if (controller != null) entries[key] = clone.Clone(controller, key);
+            state.Early.BakeInputs(context, root.GetComponentsInChildren<Renderer>(true), AvatarAnimationIndex.Create(root, entries, null));
         }
 
         [TestCase(AtlasMaterialConversionTiming.BeforeGenerators)] [TestCase(AtlasMaterialConversionTiming.AfterGenerators)]
@@ -120,7 +130,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                         return new MaterialTextureBakeResult
                         { Material = material, Texture = baked, ReplacedTextureProperty = replaced, Detail = "Declared texture replacement fixture." };
                     };
-                    try { state.Early = EarlyMaterialConversion.Apply(context, state); }
+                    try { state.Early = EarlyMaterialConversion.Apply(context, state); BakeEarlyAtlasInputs(context, state); }
                     finally { TrackEarlyAtlasAssets(); }
                     string description = "seed=" + seed + ", case=" + iteration + ", replaced=" + replaced;
                     Assert.That(calls, Is.EqualTo(1), description);
@@ -226,6 +236,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                     { Material = material, Texture = texture, ReplacedTextureProperty = "_MainTex", Detail = "Scope fixture." };
                 };
                 state.Early = EarlyMaterialConversion.Apply(context, state);
+                BakeEarlyAtlasInputs(context, state);
             }
             finally { MaterialTextureBake.LilToon = backend; TrackEarlyAtlasAssets(); }
             Assert.That(baked.ContainsKey(source), Is.EqualTo(expectedBake), kind + ": the bake scope must include defaults and every animation destination.");

@@ -26,25 +26,27 @@ namespace Noname.AvatarTools.ParameterPolicy
             internal VirtualLayer Layer;
         }
 
-        internal static void Apply(BuildContext context)
+        internal static void Apply(BuildContext context) => ApplyAndCountChanges(context);
+
+        internal static int ApplyAndCountChanges(BuildContext context)
         {
             var state = context.GetState<ParameterPolicyState>();
-            if (!state.Enabled || !state.BakeInitialVisibility) return;
+            if (!state.Enabled || !state.BakeInitialVisibility) return 0;
             using var lease = OptimizationSession.Acquire(context);
             var entries = lease.Services.ControllerContext.Controllers
                 .Where(e => !(e.Key is Object owner) || owner != null).ToDictionary(e => e.Key, e => e.Value);
             var policy = ParameterPolicyPass.Resolve(context, entries);
-            if (policy.Uncertain) return;
+            if (policy.Uncertain) return 0;
             var external = ExternalParameterAccess.Collect();
             if (external.Uncertain)
             {
                 context.GetState<OptimizationBuildReport>().Messages.Add("Initial visibility retained: unverified external parameter declarations.");
-                return;
+                return 0;
             }
             var analysis = AnimatorReachability.Analyze(context.AvatarRootObject, entries.Values, policy.Preserved);
             var index = AvatarAnimationIndex.Create(context.AvatarRootObject, entries,
                 lease.Services.ObjectPathRemapper.GetVirtualToRealPathMap(), policy.Preserved);
-            Bake(context.AvatarRootObject, index, analysis, state.Scope,
+            return Bake(context.AvatarRootObject, index, analysis, state.Scope,
                 context.GetState<ObjectOptimizationState>(), context.GetState<OptimizationBuildReport>().Messages);
         }
 

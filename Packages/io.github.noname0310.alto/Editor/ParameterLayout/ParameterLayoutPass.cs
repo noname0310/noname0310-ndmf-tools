@@ -226,6 +226,7 @@ namespace Noname.AvatarTools.ParameterLayout
                 // Keep generator validation on the original logical declarations, then
                 // prepare transport before late cost-based optimizers can encode it.
                 ValidateDeclarations(avatar, session);
+                AvatarOutputSdkFinalizer.PrepareTransport(avatar, saveForTests);
                 if (saveForTests == null && (session.Container == null || !EditorUtility.IsPersistent(session.Container)))
                     throw new InvalidOperationException("Parameter transport preparation requires the generated NDMF asset container.");
                 using var registry = new ObjectRegistryScope(session.Registry);

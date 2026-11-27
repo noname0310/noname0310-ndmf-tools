@@ -54,6 +54,26 @@ namespace Noname.AvatarTools.Build
 
         internal static bool HasSession(BuildContext context) => Sessions.TryGetValue(context.AvatarRootObject, out _);
 
+        internal static void PrepareTransport(GameObject avatar, Action<Object> saveForTests = null)
+        {
+            if (!Sessions.TryGetValue(avatar, out var session) || session.Context == null) return;
+            using var registry = new ObjectRegistryScope(session.Registry);
+            // A late compressor may still inspect menus/authoring settings. Retain
+            // those readers here; only settle their logical runtime outputs.
+            string reason = ObjectOptimizationSafety.UnsupportedRuntime(avatar);
+            if (reason == null)
+                foreach (var (_, controller, _) in VRChatPlatformAnimatorBindings.Instance.GetInnateControllers(avatar))
+                    if (controller != null && controller.animationClips.Any(c => c != null && c.events.Length != 0))
+                    { reason = "animation events"; break; }
+            if (reason == null)
+                try { ParameterFreezeSdkFinalizer.ValidateNativeBehaviours(avatar); }
+                catch (InvalidOperationException exception) { reason = exception.Message; }
+            if (reason != null) { session.Report.Messages.Add("Transport input preparation retained outputs: " + reason); return; }
+            using var measurement = OptimizationMeasurement.Begin(session.Report, "SDK preparation", "logical output convergence");
+            Apply(avatar, session, saveForTests, prepareTransport: true);
+            measurement?.Complete();
+        }
+
         internal static bool Defer(BuildContext context, ExpressionSettings settings,
             ISet<string> frozen, OptimizationBuildReport report)
         {
@@ -85,6 +105,8 @@ namespace Noname.AvatarTools.Build
                 session.Context.GetState<OptimizationState>().Scopes.Count == 0 &&
                 !session.Context.GetState<Materials.MaterialOptimizationState>().BakeShaderInputs &&
                 !session.Context.GetState<PhysBoneOptimizationState>().Enabled &&
+                !session.Context.GetState<MeshReduction.MeshReductionState>().Pending &&
+                !session.Context.GetState<PhysBoneFilterState>().Applied &&
                 !ContactFilterPass.HasPendingRemovals(session.Context)) return;
             using var measurement = OptimizationMeasurement.Begin(session.Report, "SDK finalizer", "runtime output cleanup");
             string unsupported = ObjectOptimizationSafety.UnsupportedRuntime(avatar);
@@ -101,15 +123,20 @@ namespace Noname.AvatarTools.Build
             if (unsupported == null) Apply(avatar, session, saveForTests);
             else
             {
+                if (session.Context.GetState<MaterialAtlas.MaterialAtlasState>().Liveness.HasSurvivingInputs)
+                    throw new InvalidOperationException("Cannot validate omitted atlas inputs after SDK preprocessing: " + unsupported);
                 if (ContactFilterPass.HasPendingRemovals(session.Context))
                     throw new InvalidOperationException("Final Contact filtering cannot safely process the generated Animator: " + unsupported);
                 session.Report.Messages.Add("Final runtime output cleanup skipped: " + unsupported);
+                MeshReduction.MeshReductionPass.ApplyFinal(session.Context, new Dictionary<object, VirtualAnimatorController>(),
+                    null, saveForTests ?? session.Context.AssetSaver.SaveAsset, unsupported);
             }
+            PhysBoneFilterPass.CheckBudget(session.Context);
             AvatarBuildAnalysis.PublishReport(avatar, session.Report);
             measurement?.Complete();
         }
 
-        private static void Apply(GameObject avatar, Session session, Action<Object> saveForTests)
+        private static void Apply(GameObject avatar, Session session, Action<Object> saveForTests, bool prepareTransport = false)
         {
             if (saveForTests == null && (session.AssetContainer == null || !EditorUtility.IsPersistent(session.AssetContainer)))
                 throw new InvalidOperationException("Runtime output cleanup requires the generated NDMF asset container after SDK preprocessing.");
@@ -128,19 +155,30 @@ namespace Noname.AvatarTools.Build
                 ContactFilterPass.Apply(session.Context, finalEntries);
                 var policy = ParameterPolicyPass.Resolve(session.Context, finalEntries);
                 using var shapeBoundary = session.Context.GetState<OptimizationState>().Provenance.BeginBoundary();
-                FinalOutputOptimization.Apply(avatar, finalEntries, policy, session.Frozen ??
+                void SettleOutputs() => FinalOutputOptimization.Apply(avatar, finalEntries, policy, session.Frozen ??
                     new HashSet<string>(session.Context.GetState<ParameterPolicyState>().Constants.Keys, StringComparer.Ordinal),
                     session.Context.GetState<ObjectOptimizationState>(), session.Context.GetState<AnimatorOptimizationState>().Settings,
-                    session.Settings, session.Report, saveForTests ?? saver.SaveAsset, session.LocalCandidates,
-                    () => MeshOptimizationPass.ApplyFinal(session.Context, finalEntries, policy, saveForTests ?? saver.SaveAsset),
-                    () => PhysBoneOptimizationPass.ApplyFinalChanges(session.Context, finalEntries, policy),
-                    () => StaticTransformOptimizationPass.ApplyFinalChanges(session.Context, finalEntries, policy, mesh => (saveForTests ?? saver.SaveAsset)(mesh)),
+                    prepareTransport ? null : session.Settings, session.Report, saveForTests ?? saver.SaveAsset, session.LocalCandidates,
+                    prepareTransport ? null : () => MeshOptimizationPass.ApplyFinal(session.Context, finalEntries, policy, saveForTests ?? saver.SaveAsset),
+                    prepareTransport ? null : () => PhysBoneOptimizationPass.ApplyFinalChanges(session.Context, finalEntries, policy),
+                    prepareTransport ? null : () => StaticTransformOptimizationPass.ApplyFinalChanges(session.Context, finalEntries, policy, mesh => (saveForTests ?? saver.SaveAsset)(mesh)),
                     null, session.Context.GetState<OptimizationAnalysis>().Shaders,
                     session.Context.GetState<OptimizationPolicy>(), session.Context.GetState<Materials.MaterialOptimizationState>(),
                     session.Context.GetState<MeshOptimizationState>(),
-                    () => ALTOPlugin.ApplyFinal(session.Context, finalEntries, policy, saveForTests ?? saver.SaveAsset),
-                    () => Materials.MaterialOptimizationPass.SpecializeFinalChanges(session.Context, finalEntries, policy,
-                        null, saveForTests ?? saver.SaveAsset), analysis);
+                    prepareTransport ? null : () => ALTOPlugin.ApplyFinal(session.Context, finalEntries, policy, saveForTests ?? saver.SaveAsset),
+                    prepareTransport ? null : () => Materials.MaterialOptimizationPass.SpecializeFinalChanges(session.Context, finalEntries, policy,
+                        null, saveForTests ?? saver.SaveAsset), analysis, runtimeDependenciesOnly: !prepareTransport);
+                SettleOutputs();
+                if (!prepareTransport && session.Context.GetState<MeshReduction.MeshReductionState>().Pending)
+                {
+                    using var reduction = OptimizationMeasurement.Begin(session.Report, "SDK finalizer", "mesh reduction");
+                    MeshReduction.MeshReductionPass.ApplyFinal(session.Context, finalEntries, null, saveForTests ?? saver.SaveAsset);
+                    reduction?.Complete();
+                    // Reduction changes topology once. Downstream assembly and dead
+                    // output removal can now converge without reducing that result again.
+                    SettleOutputs();
+                }
+                MaterialAtlas.MaterialAtlasPass.ValidateOmittedInputs(session.Context, finalEntries, null, policy.Preserved);
             }
             finally
             {

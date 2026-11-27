@@ -54,7 +54,7 @@ namespace Noname.AvatarTools.Occlusion
 
         internal static OcclusionEvaluation Run(GameObject avatar, ALTORemoveOccludedMesh settings,
             OptimizationBuildScope scope, AvatarAnimationIndex animations = null, Func<Renderer, bool> protectedRenderer = null,
-            IReadOnlyDictionary<string, string> posePaths = null)
+            IReadOnlyDictionary<string, string> posePaths = null, Func<Renderer, bool> liveRenderer = null)
         {
             Validate(settings, scope);
             var result = new OcclusionEvaluation(); var watch = Stopwatch.StartNew();
@@ -64,7 +64,7 @@ namespace Noname.AvatarTools.Occlusion
             foreach (var target in settings.Targets ?? new())
             {
                 var renderer = target.Renderer;
-                if (target.BlendShapes == null || target.BlendShapes.Count == 0) continue;
+                if (target.BlendShapes == null || target.BlendShapes.Count == 0 || liveRenderer?.Invoke(renderer) == false) continue;
                 if (protectedRenderer?.Invoke(renderer) == true || MeshCanChange(animations, renderer))
                 { result.Messages.Add(renderer.name + ": target preserved by protection or mesh animation."); continue; }
                 if (renderer.sharedMesh == null || target.BlendShapes.Any(n => renderer.sharedMesh.GetBlendShapeIndex(n) < 0))
@@ -79,7 +79,7 @@ namespace Noname.AvatarTools.Occlusion
             var occluders = (settings.OccluderSelection == RendererSelectionMode.AllRenderersInScope
                 ? avatar.GetComponentsInChildren<Renderer>(true).AsEnumerable() : rules.Keys)
                 .Where(r => r != null && (r is SkinnedMeshRenderer || r is MeshRenderer) && scope.Contains(r.transform) &&
-                    !candidates.Contains(r as SkinnedMeshRenderer) && !excluded.Contains(r)).ToArray();
+                    !candidates.Contains(r as SkinnedMeshRenderer) && !excluded.Contains(r) && liveRenderer?.Invoke(r) != false).ToArray();
             var safeOccluders = new List<Renderer>();
             var lodRenderers = avatar.GetComponentsInChildren<LODGroup>(true).Where(g => g.enabled)
                 .SelectMany(g => g.GetLODs()).SelectMany(l => l.renderers).ToHashSet();
@@ -142,9 +142,13 @@ namespace Noname.AvatarTools.Occlusion
             return result;
         }
 
-        internal static bool MeshCanChange(AvatarAnimationIndex animations, Renderer renderer) => animations != null &&
-            animations.ForObject(renderer).Concat(animations.ForObject(renderer.GetComponent<MeshFilter>()))
-                .Any(u => u.Binding.propertyName == "m_Mesh" || u.Binding.propertyName == "sharedMesh");
+        internal static bool MeshCanChange(AvatarAnimationIndex animations, Renderer renderer)
+        {
+            if (animations == null) return false;
+            var proof = new InvariantRenderInputs(animations);
+            var owner = renderer is SkinnedMeshRenderer ? (Component)renderer : renderer.GetComponent<MeshFilter>();
+            return owner != null && (!proof.Unchanged(owner, "m_Mesh") || !proof.Unchanged(owner, "sharedMesh"));
+        }
 
         private static bool ExplicitSurface(OcclusionOccluder rule) => rule?.AssumeOpaque == true && rule.Culling != OcclusionCulling.Automatic;
 
@@ -152,12 +156,15 @@ namespace Noname.AvatarTools.Occlusion
         {
             if (animations == null) return null;
             if (MeshCanChange(animations, renderer)) return "animated mesh reference";
+            if (!ExplicitSurface(rule) && ContactOutputs.Writers(avatar, renderer, animations).Any()) return "Contact-driven material output";
+            var proof = new InvariantRenderInputs(animations);
             var writers = animations.ForObject(renderer).Where(u => !u.Binding.propertyName.StartsWith("blendShape.", StringComparison.Ordinal) &&
+                !proof.Unchanged(renderer, u.Binding.propertyName) &&
                 !(ExplicitSurface(rule) && u.Curve != null && u.Binding.propertyName.StartsWith("material.", StringComparison.Ordinal))).ToArray();
             if (writers.Length > 0) return "animated renderer properties [" +
                 string.Join(", ", writers.Select(w => w.Binding.propertyName).Distinct().OrderBy(n => n, StringComparer.Ordinal)) + "]";
             for (var current = renderer.transform; current != null && current != avatar.transform; current = current.parent)
-                if (animations.Writes(current.gameObject, "m_IsActive")) return "animated active state on " + current.name;
+                if (!proof.Unchanged(current.gameObject, "m_IsActive")) return "animated active state on " + current.name;
             return null;
         }
     }

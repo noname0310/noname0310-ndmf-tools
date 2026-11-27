@@ -233,7 +233,12 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 ("A", StaticCurve(MaterialBinding(observable ? "_HiddenUniform.x" : "_RemovedLightingControl"), 1)));
             var result = PruneMaterialOutputs(source);
             var report = new AnimatorOptimizationReport();
-            ParameterLiveness.RemoveUnusedCurves(root, new[] { result.Controller }, report, null, (clip, binding) => !result.Usage.Unused(clip, binding));
+            var hierarchy = new Expressions.ExpressionOutputUsage(root,
+                new Dictionary<object, VirtualAnimatorController> { [0] = result.Controller }, null);
+            // Match the production pass: its generated duration placeholders do not
+            // become pose outputs merely because material pruning emptied a clip.
+            ParameterLiveness.RemoveUnusedCurves(root, new[] { result.Controller }, report, null,
+                (clip, binding) => !result.Usage.Unused(clip, binding) && hierarchy.IsObservable(clip, binding));
             Assert.That(result.Report.RemovedCurves, Is.EqualTo(observable ? 0 : 1));
             Assert.That(report.ParameterCurves, Is.EqualTo(observable ? 0 : 2));
         }
