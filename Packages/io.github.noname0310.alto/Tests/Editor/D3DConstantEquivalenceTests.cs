@@ -20,6 +20,66 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         [SetUp] public void RequireCompiler()
         { if (Application.platform != RuntimePlatform.WindowsEditor) Assert.Ignore("The native D3D compiler is required."); }
 
+        [TestCase("s.xy,c.zw")] [TestCase("s")] [TestCase("c")]
+        [TestCase("saturate(s.xy),saturate(c.zw)")]
+        public void NativePureOperations_SincosPreservesRolesModifiersAndConstantProvenance(string returned)
+        {
+            string source = "float _Value;float4 main(float4 p:TEXCOORD):SV_Target{float4 s,c;" +
+                "sincos(-abs(p.yzwx),s,c);return float4(" + returned + ")+_Value;}";
+            var original = Compile(source); var candidate = Compile(source.Replace("float _Value;", "static const float _Value=.25;"));
+            Assert.That(Disassembly(original), Does.Contain("sincos"));
+            Assert.That(D3DConstantEquivalence.TryEquivalent(original, candidate, Constants(.25f), ShaderType.Fragment,
+                out _, out string issue), Is.True, issue);
+            var changed = Compile(source.Replace("sincos(-abs(p.yzwx),s,c)", "sincos(-abs(p.yzwx),c,s)"));
+            Assert.That(D3DConstantEquivalence.TryEquivalent(original, changed, Constants(.25f), ShaderType.Fragment, out _, out _), Is.False);
+            Assert.That(D3DConstantEquivalence.TryInputs(original, Constants(.25f), ShaderType.Fragment, out var inputs, out issue), Is.True, issue);
+            Assert.That(inputs.Any(i => i.Semantic == "TEXCOORD"), Is.True);
+        }
+
+        [TestCase("int", "p.xxxx * -p.yyyy", "imul")]
+        [TestCase("uint", "p.xxxx * p.yyyy", "mul")]
+        [TestCase("int", "p / 7", "udiv")]
+        [TestCase("uint", "p / 7u", "udiv")]
+        [TestCase("uint", "(p & 65535u) | ((p.yzwx & 65535u) << 16)", "bfi")]
+        public void NativePureOperations_IntegerAndBitfieldInstructionsRetainInputDependencies(string type, string expression, string opcode)
+        {
+            string source = type + "4 main(" + type + "4 p:TEXCOORD):SV_Target{return " + expression + ";}";
+            var original = Compile(source);
+            Assert.That(Disassembly(original), Does.Contain(opcode));
+            Assert.That(D3DConstantEquivalence.TryInputs(original, Constants(0), ShaderType.Fragment, out var inputs, out string issue), Is.True, issue);
+            Assert.That(inputs.Any(i => i.Semantic == "TEXCOORD"), Is.True);
+            Assert.That(D3DConstantEquivalence.TryEquivalent(original, Compile(source), Constants(0), ShaderType.Fragment, out _, out issue), Is.True, issue);
+            Assert.That(D3DConstantEquivalence.TryEquivalent(original, Compile(source.Replace(expression, "p")), Constants(0), ShaderType.Fragment, out _, out _), Is.False);
+        }
+
+        [Test]
+        public void NativePureOperations_ExactIntegerFoldsMatchWideArithmetic()
+        {
+            var fold = typeof(D3DConstantEquivalence).GetMethod("Fold", BindingFlags.NonPublic | BindingFlags.Static);
+            var random = new System.Random(47219);
+            uint[] edge = { 0, 1, 31, 32, 0x7fffffff, 0x80000000, uint.MaxValue };
+            uint Next(int i) => i >= 0 && i < edge.Length ? edge[i] : (uint)random.Next() | ((uint)random.Next(2) << 31);
+            void Check(string operation, uint expected, params uint[] operands)
+            {
+                object[] args = { operation, operands, 0u };
+                Assert.That(fold.Invoke(null, args), Is.EqualTo(true)); Assert.That(args[2], Is.EqualTo(expected), operation);
+            }
+            for (int i = 0; i < 512; i++)
+            {
+                uint a = Next(i), b = Next(6 - i), insert = Next(i + 7), basis = Next(i + 8);
+                var signed = (System.Numerics.BigInteger)(int)a * (int)b;
+                var unsigned = (System.Numerics.BigInteger)a * b;
+                Check("imul-high", (uint)((signed >> 32) & uint.MaxValue), a, b);
+                Check("umul-high", (uint)((unsigned >> 32) & uint.MaxValue), a, b);
+                Check("imul-low", (uint)(signed & uint.MaxValue), a, b);
+                Check("umul-low", (uint)(unsigned & uint.MaxValue), a, b);
+                uint result = basis;
+                for (int bit = 0; bit < (a & 31) && bit + (b & 31) < 32; bit++)
+                { uint mask = 1u << (bit + (int)(b & 31)); result = (insert & (1u << bit)) != 0 ? result | mask : result & ~mask; }
+                Check("bfi", result, a, b, insert, basis);
+            }
+        }
+
         [TestCase("_Value", ".25", .25f)]
         [TestCase("1-_Value", ".75", .25f)]
         [TestCase("_Value*2", ".5", .25f)]

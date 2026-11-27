@@ -22,6 +22,44 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             return candidate;
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void VertexIdIdentityWithoutHolesDoesNotRequireAnUnusedAdapter(bool trim)
+        {
+            var bone = PolicyChild("Bone").transform;
+            var plain = AssemblyPart("Plain", new[] { bone }, Vector3.zero);
+            var effect = AssemblyPart("Effect", new[] { bone }, Vector3.zero);
+            var material = Track(new Material(Shader.Find("Hidden/Noname/Vertex ID Preservation")));
+            effect.sharedMaterial = material;
+            var candidate = new MeshMergeCandidate { Renderer = effect, Shaders = new ShaderPropertyUsage() };
+            candidate.VertexIdMaterials.Add(material);
+            using var plan = VertexIdMergePlan.Create(new[] { new MeshMergeCandidate { Renderer = plain }, candidate }, trim, 3);
+            Assert.That(candidate.VertexIdAdaptersPrepared, Is.False);
+            Assert.That(plan.VertexOrder[0], Is.SameAs(effect));
+            Assert.That(plan.KeepVertices, Does.Contain(effect));
+            Assert.That(plan.Materials[effect][0], Is.SameAs(material));
+            Assert.That(plan.AttributeInputs, Is.Empty);
+            Assert.That(plan.LiteralShaders + plan.UniformShaders, Is.Zero);
+        }
+
+        [Test]
+        public void VertexIdAdaptersArePreparedOnlyForOtherwiseCompatiblePairs()
+        {
+            var pair = MergePair();
+            var material = Track(new Material(Shader.Find("Hidden/Noname/Vertex ID Preservation")));
+            pair.First.sharedMaterial = pair.Second.sharedMaterial = material;
+            var policy = new MeshMergePolicy { PreserveVertexIds = true };
+            var candidates = MergeCandidates(new[] { pair.First, pair.Second }, policy: policy);
+            Assert.That(candidates.All(c => !c.VertexIdAdaptersPrepared), Is.True);
+            pair.First.shadowCastingMode = ShadowCastingMode.Off;
+            pair.Second.shadowCastingMode = ShadowCastingMode.On;
+            Assert.That(MeshMergeAnalysis.Incompatibility(candidates[0], candidates[1], policy), Does.Contain("shadow settings"));
+            Assert.That(candidates.All(c => !c.VertexIdAdaptersPrepared), Is.True);
+            pair.First.shadowCastingMode = ShadowCastingMode.On;
+            Assert.That(MeshMergeAnalysis.Incompatibility(candidates[0], candidates[1], policy), Is.Null);
+            Assert.That(candidates.All(c => c.VertexIdAdaptersPrepared), Is.True);
+            Assert.That(candidates[0].VertexIdAdapters[material.shader], Is.SameAs(candidates[1].VertexIdAdapters[material.shader]));
+        }
+
         [Test]
         public void VertexIdIdentityLayoutDoesNotMoveThePinnedRendererOrItsMorphInterface()
         {
@@ -70,8 +108,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         public void VertexIdSparseCompactionStoresOriginalIdsInAnUnusedAttribute()
         {
             var part = SparseVertexIdPart();
-            var candidate = VertexIdCandidate(part, Track(new Material(Shader.Find("Hidden/Noname/Vertex ID Preservation"))));
+            part.sharedMaterial = Track(new Material(Shader.Find("Hidden/Noname/Vertex ID Preservation")));
+            var candidate = new MeshMergeCandidate { Renderer = part, Shaders = new ShaderPropertyUsage() };
+            candidate.VertexIdMaterials.Add(part.sharedMaterial);
             using var plan = VertexIdMergePlan.Create(new[] { candidate }, true, 3);
+            Assert.That(candidate.VertexIdAdaptersPrepared, Is.True);
             Assert.That(plan.AttributeInputs, Does.Contain(part));
             using var assembly = SkinnedMeshAssembler.Create(new[] { part }, true, removeUnusedData: true, vertexIds: plan);
             Assert.That(assembly.Mesh.vertexCount, Is.EqualTo(3));

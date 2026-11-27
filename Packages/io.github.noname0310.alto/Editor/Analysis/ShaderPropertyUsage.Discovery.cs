@@ -24,6 +24,47 @@ namespace Noname.AvatarTools.Analysis
         private readonly Dictionary<Shader, NativeDiscovery> discoveries = new();
         private readonly Dictionary<string, bool> fileExistence = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> physicalIncludes = new(StringComparer.Ordinal);
+        private readonly Dictionary<(string Search, string Include), (string[] Candidates, string[] Existing)> includePaths = new();
+        private readonly Dictionary<Shader, (ShaderVertexIdRewriter Adapter, string Issue)> vertexIdAdapters = new();
+
+        // These facts belong to the source epoch, just like file existence and
+        // imported pass handles. Include every search root and missing candidate;
+        // a new source epoch must resolve optional/newly imported files again.
+        internal (string[] Candidates, string[] Existing) ResolveIncludePaths(string[] roots, string include)
+        {
+            var key = (string.Join("\0", roots), include);
+            if (includePaths.TryGetValue(key, out var previous))
+            { AnalysisCost.Count("Shader discovery/include path reuse"); return previous; }
+            using var cost = AnalysisCost.Measure("Shader discovery/include path resolution");
+            var candidates = new List<string>(); var existing = new List<string>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            void Add(string path)
+            {
+                if (path == null || !seen.Add(path)) return;
+                candidates.Add(path);
+                if (SourceExists(path)) existing.Add(path);
+            }
+            foreach (string root in roots)
+                if (!string.IsNullOrEmpty(root)) Add(Path.GetFullPath(Path.Combine(root, include)));
+            Add(IncludePhysicalPath(include));
+            var result = (candidates.ToArray(), existing.ToArray());
+            includePaths.Add(key, result); return result;
+        }
+
+        internal bool TryVertexIdAdapter(Shader shader, out ShaderVertexIdRewriter adapter, out string issue)
+        {
+            if (!vertexIdAdapters.TryGetValue(shader, out var result))
+            {
+                // The source adapter is independent of renderer vertices, offsets
+                // and material values. Its immutable plan can serve every user of
+                // this shader, including a repeated unsupported source form.
+                ShaderVertexIdRewriter.TryCreate(shader, out adapter, out issue);
+                vertexIdAdapters.Add(shader, result = (adapter, issue));
+            }
+            else AnalysisCost.Count("Vertex-ID adapter preparation/reuse");
+            adapter = result.Adapter; issue = result.Issue;
+            return adapter != null;
+        }
 
         private bool SourceExists(string path)
         {

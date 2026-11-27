@@ -8,7 +8,7 @@ using System.Text.RegularExpressions;
 
 namespace Noname.AvatarTools.Analysis
 {
-    // This is deliberately not an HLSL parser. Only standalone scalar globals
+    // This is deliberately not an HLSL parser. Only scalar globals
     // with no initializer, register, array or aggregate layout are specialized.
     // Unity expands includes/macros first; the native compiler checks all uses of
     // the resulting constants. Unsupported declarations keep their runtime input.
@@ -180,7 +180,7 @@ namespace Noname.AvatarTools.Analysis
             {
                 specialized = 0;
                 var original = PpLexer.Lex(WithoutDiagnosticPragmas(Source), trackOffsets: true).Where(t => t.Kind != PpTokenKind.Newline).ToArray();
-                var actual = PpLexer.Lex(WithoutDiagnosticPragmas(Normalize(candidate))).Where(t => t.Kind != PpTokenKind.Newline).ToArray();
+                var actual = PpLexer.Lex(WithoutDiagnosticPragmas(ExpandScalarDeclarationLists(Normalize(candidate)))).Where(t => t.Kind != PpTokenKind.Newline).ToArray();
                 int first = 0, second = 0;
                 bool SameUntil(int end)
                 {
@@ -241,7 +241,7 @@ namespace Noname.AvatarTools.Analysis
         internal static Plan Prepare(string source)
         {
             using var cost = AnalysisCost.Measure("Shader specialization preparation");
-            source = Normalize(source);
+            source = ExpandScalarDeclarationLists(Normalize(source));
             var plan = new Plan(source);
             // Preserve compiler pragmas in the result but exclude them from the
             // declaration scanner, including identifiers in file-name strings.
@@ -273,7 +273,7 @@ namespace Noname.AvatarTools.Analysis
                 {
                     int start = tokens[statement].Index, end = tokens[i].Index + tokens[i].Length;
                     int typeIndex = statement + (tokens[statement].Text == "uniform" ? 1 : 0);
-                    if (typeIndex + 2 == i)
+                    if (typeIndex + 2 == i && source.IndexOf('#', start, end - start) < 0)
                     {
                         string type = tokens[typeIndex].Text, name = tokens[typeIndex + 1].Text;
                         bool identifier = name.Length != 0 && PpLexer.IdentifierStart(name[0]);
@@ -292,6 +292,57 @@ namespace Noname.AvatarTools.Analysis
             plan.UniformNames = new string[names.Count]; names.CopyTo(plan.UniformNames);
             Array.Sort(plan.UniformNames, StringComparer.Ordinal);
             return plan;
+        }
+
+        // Canonicalize only the grammar [uniform] scalar name (, name)+ ;.
+        // Splitting these globals preserves declaration order, type and storage.
+        // Initializers, arrays, register annotations, aggregate members and any
+        // declaration crossing a directive remain untouched. The same canonical
+        // form is used by the source certificate, including partial replacement.
+        private static string ExpandScalarDeclarationLists(string source)
+        {
+            var tokens = Tokenize(ScanDirectives(source, false));
+            int braces = 0, parentheses = 0, statement = 0, copied = 0;
+            StringBuilder output = null;
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                string token = tokens[i].Text;
+                if (token == "{") { braces++; continue; }
+                if (token == "}") { braces--; if (braces == 0) statement = i + 1; continue; }
+                if (token == "(") parentheses++;
+                if (token == ")") parentheses--;
+                if (token != ";" || braces != 0 || parentheses != 0) continue;
+                int first = statement; statement = i + 1;
+                bool uniform = tokens[first].Text == "uniform";
+                int typeIndex = first + (uniform ? 1 : 0);
+                if (typeIndex + 4 > i || (i - typeIndex) % 2 != 0) continue;
+                string type = tokens[typeIndex].Text;
+                if (type != "float" && type != "half" && type != "int" && type != "uint" && type != "bool") continue;
+                int start = tokens[first].Index, end = tokens[i].Index + tokens[i].Length;
+                if (source.IndexOf('#', start, end - start) >= 0) continue;
+                bool supported = true;
+                for (int j = typeIndex + 1; supported && j < i; j++)
+                {
+                    string text = tokens[j].Text;
+                    if ((j - typeIndex) % 2 == 0) supported = text == ",";
+                    else
+                    {
+                        supported = text.Length != 0 && PpLexer.IdentifierStart(text[0]);
+                        for (int k = 1; supported && k < text.Length; k++) supported = PpLexer.IdentifierPart(text[k]);
+                    }
+                }
+                if (!supported) continue;
+                output ??= new StringBuilder(source.Length);
+                output.Append(source, copied, start - copied);
+                for (int j = typeIndex + 1; j < i; j += 2)
+                {
+                    if (j != typeIndex + 1) output.Append(' ');
+                    if (uniform) output.Append("uniform ");
+                    output.Append(type).Append(' ').Append(tokens[j].Text).Append(';');
+                }
+                copied = end;
+            }
+            return output == null ? source : output.Append(source, copied, source.Length - copied).ToString();
         }
 
         private static bool Literal(string type, float value, out string literal)

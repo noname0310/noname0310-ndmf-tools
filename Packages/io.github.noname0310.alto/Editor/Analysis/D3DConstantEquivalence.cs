@@ -142,6 +142,12 @@ namespace Noname.AvatarTools.Analysis
                     case "xor": result = a ^ b; return true;
                     case "iadd": result = a + b; return true;
                     case "imad": result = a * b + operands[2]; return true;
+                    case "imul-low": case "umul-low": result = a * b; return true;
+                    case "imul-high": result = (uint)(((long)(int)a * (int)b) >> 32); return true;
+                    case "umul-high": result = (uint)(((ulong)a * b) >> 32); return true;
+                    case "bfi":
+                        uint mask = ((1u << (int)(a & 31)) - 1u) << (int)(b & 31);
+                        result = ((operands[2] << (int)(b & 31)) & mask) | (operands[3] & ~mask); return true;
                     case "udiv-quotient": result = b == 0 ? uint.MaxValue : a / b; return true;
                     case "udiv-remainder": result = b == 0 ? uint.MaxValue : a % b; return true;
                     case "ishl": result = a << (int)(b & 31); return true;

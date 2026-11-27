@@ -14,6 +14,56 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
 {
     public sealed partial class BlendShapeOptimizationTests
     {
+        [Test]
+        public void ShaderImportedAliasesMustResolveToAnActualDependency()
+        {
+            var standard = Shader.Find("Standard"); var vertexLit = Shader.Find("VertexLit");
+            Assert.That(standard, Is.Not.Null); Assert.That(vertexLit, Is.Not.Null);
+            var dependencies = ShaderPropertyUsage.CollectNativeShaderDependencies(standard);
+            Assert.That(ShaderPropertyUsage.ResolveImportedDependency("VertexLit", dependencies, out bool ambiguous), Is.SameAs(vertexLit));
+            Assert.That(ambiguous, Is.False);
+            Assert.That(ShaderPropertyUsage.ResolveImportedDependency("VertexLit", new[] { standard }, out _), Is.Null);
+            Assert.That(new ShaderPropertyUsage().GetPrograms(standard).Uncertain, Is.Null);
+        }
+
+        [Test]
+        public void ShaderImportedAliasesDoNotHideAmbiguousActualNames()
+        {
+            string name = "Hidden/ALTO/Ambiguous/" + Guid.NewGuid().ToString("N");
+            string source = "Shader \"" + name + "\" { SubShader { Pass {} } }";
+            var first = Track(ShaderUtil.CreateShaderAsset(source)); var second = Track(ShaderUtil.CreateShaderAsset(source));
+            Assert.That(ShaderPropertyUsage.ResolveImportedDependency(name, new[] { first, second }, out bool ambiguous), Is.Null);
+            Assert.That(ambiguous, Is.True);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ShaderEngineIncludesCompileAfterSurfaceSourceSpecialization(bool explicitEnginePath)
+        {
+            RequireRuntimeShaderTarget();
+            string directory = "Assets/ALTO_SurfaceConstants_" + Guid.NewGuid().ToString("N");
+            try
+            {
+                System.IO.Directory.CreateDirectory(directory);
+                string engine = System.IO.Path.Combine(EditorApplication.applicationContentsPath, "CGIncludes", "UnityCG.cginc").Replace('\\', '/');
+                string include = explicitEnginePath ? engine : "UnityCG.cginc";
+                string source = "Shader \"Hidden/ALTO/SurfaceConstants/" + Guid.NewGuid().ToString("N") +
+                    "\" { Properties { _A(\"A\",Float)=0 _B(\"B\",Float)=0 } SubShader { CGPROGRAM\n" +
+                    "#pragma surface surf Standard\n#include \"" + include + "\"\n" +
+                    "half _A, _B; struct Input { float2 uv_MainTex; }; void surf(Input i,inout SurfaceOutputStandard o){o.Albedo=_A; o.Metallic=_B;}\nENDCG } }";
+                source = ShaderSourceExpansion.Expand(source, directory, new HashSet<string>(StringComparer.OrdinalIgnoreCase), 0);
+                var original = ImportDependencyShader(directory, "Surface", source);
+                Assert.That(SharedShaderConstantSource.TryCreate(original, new Dictionary<string, float> { ["_A"] = .25f },
+                    SharedShaderTarget, new ShaderPropertyUsage(), out var generated, out string text, out int count, out string issue,
+                    allowCompilerConstantFolding: true), Is.True, issue);
+                Track(generated);
+                Assert.That(ShaderUtil.ShaderHasError(generated), Is.False);
+                Assert.That(count, Is.EqualTo(1));
+                Assert.That(text, Does.Contain("#include \"UnityCG.cginc\"").And.Not.Contain(engine));
+                Assert.That(text, Does.Contain("static const half _A").And.Contain("half _B;"));
+            }
+            finally { AssetDatabase.DeleteAsset(directory); }
+        }
+
         [TestCase("_Value += 1;")]
         [TestCase("_Value %= 1;")]
         [TestCase("_Value.x = 1;")]

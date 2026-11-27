@@ -48,7 +48,10 @@ namespace Noname.AvatarTools.Analysis
                 {
                     if (rejectEngineVertexId && PpLexer.Lex(content).Any(t => t.Kind == PpTokenKind.Identifier && ShaderInputQuery.VertexId.MatchesToken(t.Text)))
                         throw new InvalidOperationException("engine include declares a vertex-ID interface");
-                    replacement = "\n#include \"" + path.Replace('\\', '/') + "\"\n";
+                    // Surface-shader generation does not reliably accept absolute
+                    // engine paths (including spaces). Use the compiler's engine
+                    // include namespace after verifying the resolved file is in it.
+                    replacement = "\n#include \"" + path.Substring(engine.Length + 1).Replace('\\', '/') + "\"\n";
                 }
                 else
                 {

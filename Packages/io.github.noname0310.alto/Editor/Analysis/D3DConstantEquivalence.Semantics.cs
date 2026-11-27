@@ -88,34 +88,6 @@ namespace Noname.AvatarTools.Analysis
                 return ((first.Operation == "ieq" && second.Operation == "ine") || (first.Operation == "ine" && second.Operation == "ieq")) &&
                     (first.Children.SequenceEqual(second.Children) || first.Children.SequenceEqual(second.Children.Reverse()));
             }
-            private void SemanticPair(string opcode, string[] args, Dictionary<string, Value[]> registers)
-            {
-                // Pure paired instructions retain distinct output identities and
-                // read the old register file before either destination is written.
-                // No numerical property of sin/cos or multiplication is assumed.
-                var pending = new Dictionary<string, Value[]>(StringComparer.Ordinal);
-                for (int output = 0; output < 2; output++)
-                {
-                    if (args[output] == "null") continue;
-                    var destination = Destination(args[output]);
-                    if (!pending.TryGetValue(destination.Name, out var lanes)) pending.Add(destination.Name, lanes = new Value[4]);
-                    for (int lane = 0; lane < 4; lane++)
-                    {
-                        if (destination.Mask.IndexOf("xyzw"[lane]) < 0) continue;
-                        Require(lanes[lane] == null, "overlapping native paired destinations");
-                        var values = new List<Value>();
-                        for (int source = 2; source < args.Length; source++)
-                            values.Add(Read(args[source], lane, registers, opcode == "sincos", opcode != "sincos"));
-                        lanes[lane] = Apply(opcode + ":output:" + output + ":" + destination.Precise, values.ToArray());
-                    }
-                }
-                Require(pending.Count != 0, "native paired instruction has no destination");
-                foreach (var pair in pending)
-                {
-                    if (!registers.TryGetValue(pair.Key, out var lanes)) registers.Add(pair.Key, lanes = new Value[4]);
-                    for (int lane = 0; lane < 4; lane++) if (pair.Value[lane] != null) lanes[lane] = pair.Value[lane];
-                }
-            }
             private (string Name, string Mask, string Precise) Destination(string text)
             {
                 string precise = "";
@@ -161,7 +133,7 @@ namespace Noname.AvatarTools.Analysis
                 {
                     var item = instructions[index]; if (item.Arguments.Length < 2) continue;
                     string opcode = item.Opcode.EndsWith("_sat", StringComparison.Ordinal) ? item.Opcode.Substring(0, item.Opcode.Length - 4) : item.Opcode;
-                    int count = opcode == "sincos" || opcode == "imul" || opcode == "umul" || opcode == "udiv" ? 2 : 1;
+                    int count = PureOperations.TryGetValue(opcode, out var operation) ? operation.Outputs.Length : 1;
                     for (int output = 0; output < count; output++)
                     {
                         string text = Regex.Replace(item.Arguments[output], @"^\[precise(?:\([xyzw]{1,4}\))?\]\s+", "");
@@ -250,10 +222,13 @@ namespace Noname.AvatarTools.Analysis
                         if (opcode == "breakc_nz" || opcode == "breakc_z" || opcode == "continuec_nz" || opcode == "continuec_z")
                         { Require(args.Length == 1, "malformed native summary predicate"); Source(args[0], assigned, produced); continue; }
                         if (opcode.EndsWith("_sat", StringComparison.Ordinal)) opcode = opcode.Substring(0, opcode.Length - 4);
-                        int destinations = opcode == "sincos" || opcode == "imul" || opcode == "umul" || opcode == "udiv" ? 2 : 1;
+                        bool modeled = PureOperations.TryGetValue(opcode, out var operation);
+                        int destinations = modeled ? operation.Outputs.Length : 1;
                         bool pure = opcode == "mov" || opcode == "movc" || Unary.Contains(opcode) || Binary.Contains(opcode) || Ternary.Contains(opcode) ||
-                            opcode == "dp2" || opcode == "dp3" || opcode == "dp4" || opcode == "bfi" || destinations == 2 || IsLoad(opcode);
+                            opcode == "dp2" || opcode == "dp3" || opcode == "dp4" || modeled || IsLoad(opcode);
                         Require(pure && args.Length > destinations, "unsupported native summary instruction: " + opcode);
+                        if (modeled) Require(args.Length == destinations + operation.Sources &&
+                            (!instruction.Opcode.EndsWith("_sat", StringComparison.Ordinal) || operation.Saturate), "malformed native summary operation");
                         for (int source = destinations; source < args.Length; source++) Source(args[source], assigned, produced);
                         for (int output = 0; output < destinations; output++)
                         {

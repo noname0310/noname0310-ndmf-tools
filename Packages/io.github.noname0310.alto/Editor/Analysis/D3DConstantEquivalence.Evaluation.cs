@@ -22,6 +22,30 @@ namespace Noname.AvatarTools.Analysis
         private static readonly HashSet<string> Loads = new(StringComparer.Ordinal)
         { "sample", "sample_l", "sample_b", "sample_d", "sample_c", "sample_c_lz", "ld", "ld_ms", "resinfo", "lod", "gather4", "gather4_c" };
 
+        // Pure lane-wise operations can share an evaluator without knowing a
+        // host approximation of their numerical results. Output roles, operand
+        // types and modifiers are part of the contract, never inferred from an
+        // unknown opcode. Texture operations, derivatives and side effects use
+        // their separate execution-context models.
+        private readonly struct PureOperation
+        {
+            internal readonly int Sources;
+            internal readonly bool FloatModifiers, IntegerModifiers, Saturate;
+            internal readonly string[] Outputs;
+            internal PureOperation(int sources, bool floats, bool integers, bool saturate, params string[] outputs)
+            { Sources = sources; FloatModifiers = floats; IntegerModifiers = integers; Saturate = saturate; Outputs = outputs; }
+        }
+        // D3D SM4/SM5 instruction contracts: sincos, imul, umul, udiv and bfi.
+        // https://learn.microsoft.com/windows/win32/direct3dhlsl/dx-graphics-hlsl-sm4-asm
+        private static readonly Dictionary<string, PureOperation> PureOperations = new(StringComparer.Ordinal)
+        {
+            ["sincos"] = new(1, true, false, true, "sin", "cos"),
+            ["imul"] = new(2, false, true, false, "imul-high", "imul-low"),
+            ["umul"] = new(2, false, false, false, "umul-high", "umul-low"),
+            ["udiv"] = new(2, false, false, false, "udiv-quotient", "udiv-remainder"),
+            ["bfi"] = new(4, false, false, false, "bfi")
+        };
+
         private sealed partial class Program
         {
             private int executedInstructions;
@@ -112,18 +136,14 @@ namespace Noname.AvatarTools.Analysis
                         value = Apply(opcode == "discard_z" ? "ieq" : "ine", value, Literal(0)); discarded = Apply("or", discarded, value); continue;
                     }
                     bool saturate = opcode.EndsWith("_sat", StringComparison.Ordinal); if (saturate) opcode = opcode.Substring(0, opcode.Length - 4);
-                    if (opcode == "udiv")
+                    if (PureOperations.TryGetValue(opcode, out var operation))
                     {
-                        Require(!saturate && args.Length == 4, "unsupported native unsigned divide");
-                        Divide(args, registers); continue;
-                    }
-                    if (semanticInputsOnly && (opcode == "sincos" || opcode == "imul" || opcode == "umul"))
-                    {
-                        Require(!saturate && args.Length == (opcode == "sincos" ? 3 : 4), "unsupported native paired operation");
-                        SemanticPair(opcode, args, registers); continue;
+                        Require((!saturate || operation.Saturate) && args.Length == operation.Outputs.Length + operation.Sources,
+                            "unsupported native pure operation: " + opcode);
+                        EvaluatePure(operation, args, registers, saturate); continue;
                     }
                     bool floatModifiers = FloatSources(opcode);
-                    bool integerModifiers = semanticInputsOnly && IntegerSources(opcode);
+                    bool integerModifiers = IntegerSources(opcode);
                     Require(args.Length >= 2, "unsupported native instruction: " + opcode);
                     string target = args[0], preciseMask = "";
                     if (target.StartsWith("[", StringComparison.Ordinal))
@@ -154,8 +174,6 @@ namespace Noname.AvatarTools.Analysis
                         else if (Unary.Contains(opcode) && args.Length == 2) value = Apply(nativeOpcode, Read(args[1], lane, registers, floatModifiers, integerModifiers));
                         else if (Binary.Contains(opcode) && args.Length == 3) value = Apply(nativeOpcode, Read(args[1], lane, registers, floatModifiers, integerModifiers), Read(args[2], lane, registers, floatModifiers, integerModifiers));
                         else if (Ternary.Contains(opcode) && args.Length == 4) value = Apply(nativeOpcode, Read(args[1], lane, registers, floatModifiers, integerModifiers), Read(args[2], lane, registers, floatModifiers, integerModifiers), Read(args[3], lane, registers, floatModifiers, integerModifiers));
-                        else if (semanticInputsOnly && opcode == "bfi" && args.Length == 5)
-                            value = Apply(nativeOpcode, args.Skip(1).Select(source => Read(source, lane, registers, false)).ToArray());
                         else if ((opcode == "dp2" || opcode == "dp3" || opcode == "dp4") && args.Length == 3)
                         {
                             int width = opcode[2] - '0'; var operands = new List<Value>();
@@ -180,32 +198,33 @@ namespace Noname.AvatarTools.Analysis
                 }
                 return false;
             }
-            private void Divide(string[] args, Dictionary<string, Value[]> registers)
+            private void EvaluatePure(PureOperation operation, string[] args, Dictionary<string, Value[]> registers, bool saturate)
             {
-                // UDIV writes quotient then remainder; either destination may
-                // be null. Evaluate both from the old register file before any
-                // writes, including when a destination also supplies an input.
-                // https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/udiv--sm4---asm-
+                // Read every operand from the old register file before committing
+                // any result. Destinations may share a register only with disjoint
+                // masks; a null output never changes the other output's identity.
                 var pending = new Dictionary<string, Value[]>(StringComparer.Ordinal);
-                for (int output = 0; output < 2; output++)
+                for (int output = 0; output < operation.Outputs.Length; output++)
                 {
                     string target = args[output]; if (target == "null") continue;
-                    var destination = Register.Match(target);
-                    Require(destination.Success && target[0] != 'v', "unsupported native divide destination: " + target);
-                    string name = destination.Groups[1].Value;
-                    string mask = destination.Groups[2].Success ? destination.Groups[2].Value : "xyzw";
-                    ValidateTemporary(name, mask);
-                    Require(mask.Distinct().Count() == mask.Length, "duplicate native divide destination component");
+                    var destination = Destination(target);
+                    string name = destination.Name, mask = destination.Mask;
                     if (!pending.TryGetValue(name, out var lanes)) pending.Add(name, lanes = new Value[4]);
                     for (int lane = 0; lane < 4; lane++)
                     {
                         if (mask.IndexOf("xyzw"[lane]) < 0) continue;
-                        Require(lanes[lane] == null, "overlapping native divide destinations");
-                        lanes[lane] = Apply(output == 0 ? "udiv-quotient" : "udiv-remainder",
-                            Read(args[2], lane, registers, false), Read(args[3], lane, registers, false));
+                        Require(lanes[lane] == null, "overlapping native pure-operation destinations");
+                        var operands = new Value[operation.Sources];
+                        for (int source = 0; source < operands.Length; source++)
+                            operands[source] = Read(args[operation.Outputs.Length + source], lane, registers,
+                                operation.FloatModifiers, operation.IntegerModifiers);
+                        bool precise = destination.Precise == "*" || destination.Precise.IndexOf("xyzw"[lane]) >= 0;
+                        string prefix = precise ? "precise:" : "";
+                        var value = Apply(prefix + operation.Outputs[output], operands);
+                        lanes[lane] = saturate ? Apply(prefix + "sat", value) : value;
                     }
                 }
-                Require(pending.Count != 0, "native divide has no observable destination");
+                Require(pending.Count != 0, "native pure operation has no observable destination");
                 foreach (var pair in pending)
                 {
                     if (!registers.TryGetValue(pair.Key, out var lanes)) registers.Add(pair.Key, lanes = new Value[4]);

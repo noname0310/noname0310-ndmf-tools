@@ -33,6 +33,13 @@ namespace Noname.AvatarTools.Meshes
                 var sensitive = group.Where(c => c.VertexIdMaterials.Count != 0).ToArray();
                 var layouts = new Dictionary<SkinnedMeshRenderer, VertexRewriteLayout>();
                 if (trim) foreach (var candidate in group) layouts.Add(candidate.Renderer, new VertexRewriteLayout(candidate.Renderer.sharedMesh));
+                // With one sensitive input and no removable vertices, placing it
+                // first is already an identity mapping. Adapter availability can
+                // affect neither ordering nor compaction in that case. Multiple
+                // inputs and every possible compaction still need the full proof.
+                if (sensitive.Length > 1 || trim && sensitive.Any(c =>
+                    layouts[c.Renderer].CompactVertexCount < c.Renderer.sharedMesh.vertexCount))
+                    foreach (var candidate in sensitive) candidate.PrepareVertexIdAdapters();
                 var first = sensitive.OrderBy(c => c.VertexIdAdapters.Count == c.VertexIdMaterials.Select(m => m.shader).Distinct().Count() ? 1 : 0)
                     .ThenByDescending(c => c.Renderer.sharedMesh.vertexCount).FirstOrDefault();
                 plan.VertexOrder = (first == null ? group : new[] { first }.Concat(group.Where(c => c != first)))

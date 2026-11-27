@@ -9,16 +9,16 @@ namespace Noname.AvatarTools.Analysis
     {
         private const string Lexical = "lexical/1";
         private const string Imported = Lexical + "/imported-programs/1";
-        private const string Declarations = Lexical + "/declarations/1";
+        private const string Declarations = Lexical + "/declarations/2";
         private const string Preprocessing = Imported + "/preprocessing/1";
         private const string NativeEnvironment = "native-environment/1";
         private const string NativeDependencies = Imported + "/" + NativeEnvironment + "/dependencies/1";
         private const string NativeProgram = NativeDependencies + "/native-artifact/1";
         internal const string CompiledInputs = "compiled-input-inventory/1";
-        private const string NativeInputs = NativeProgram + "/" + Declarations + "/" + CompiledInputs + "/native-expression-proof/1";
+        private const string NativeInputs = NativeProgram + "/" + Declarations + "/" + CompiledInputs + "/native-expression-proof/2";
         private const string Slices = Preprocessing + "/" + Declarations + "/" + CompiledInputs + "/input-slices/1";
         private const string Coverage = NativeInputs + "/" + Slices + "/keyword-coverage/1";
-        private const string Rewrite = Preprocessing + "/" + Declarations + "/source-rewrite/1";
+        private const string Rewrite = Preprocessing + "/" + Declarations + "/source-rewrite/2";
 
         // Unknown producers are deliberately not persistent. Adding a cache
         // requires choosing its invalidation dependencies here.

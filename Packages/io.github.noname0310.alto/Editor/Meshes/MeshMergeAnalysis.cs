@@ -24,6 +24,19 @@ namespace Noname.AvatarTools.Meshes
         internal readonly HashSet<Material> VertexIdMaterials = new();
         internal readonly Dictionary<Shader, ShaderVertexIdRewriter> VertexIdAdapters = new();
         internal string VertexIdAdapterIssue;
+        internal bool VertexIdAdaptersPrepared { get; private set; }
+        internal void PrepareVertexIdAdapters()
+        {
+            if (VertexIdAdaptersPrepared) return;
+            VertexIdAdaptersPrepared = true;
+            foreach (var shader in VertexIdMaterials.Select(m => m.shader).Distinct())
+            {
+                if (VertexIdAdapters.ContainsKey(shader)) continue;
+                if ((Shaders ??= new ShaderPropertyUsage()).TryVertexIdAdapter(shader, out var adapter, out string issue))
+                    VertexIdAdapters.Add(shader, adapter);
+                else VertexIdAdapterIssue = issue;
+            }
+        }
         internal readonly List<ParticleMeshBinding> ParticleBindings = new();
         internal readonly Dictionary<AvatarAnimationIndex.BindingUse, int> MaterialSwaps = new();
         internal IEnumerable<Material> PossibleMaterials => Renderer.sharedMaterials.Concat(MaterialSwaps.Keys
@@ -185,9 +198,6 @@ namespace Noname.AvatarTools.Meshes
                     allowShaderIndexChanges: policy?.AllowsShaderIndexChanges(renderer) == true,
                     preserveVertexIds: policy?.PreserveVertexIds == true, vertexIdMaterials: result.VertexIdMaterials);
                 if (shaderIssue != null) return shaderIssue;
-                foreach (var shader in result.VertexIdMaterials.Select(m => m.shader).Distinct())
-                    if (ShaderVertexIdRewriter.TryCreate(shader, out var adapter, out string adapterIssue)) result.VertexIdAdapters.Add(shader, adapter);
-                    else result.VertexIdAdapterIssue = adapterIssue;
                 var offscreenWriters = result.Bindings.Where(u => u.Binding.propertyName == UpdateWhenOffscreenProperty).ToArray();
                 if (offscreenWriters.Any(u => u.Curve == null)) return "unverified offscreen-update animation";
                 if (offscreenWriters.Length > 0)
@@ -281,9 +291,6 @@ namespace Noname.AvatarTools.Meshes
                 else if (policy?.ParticleDistributionsMatch(x, y) != true)
                     return "particle emission distributions have unverified relative scale";
             }
-            if (a.VertexIdMaterials.Count != 0 && b.VertexIdMaterials.Count != 0 &&
-                a.VertexIdAdapterIssue != null && b.VertexIdAdapterIssue != null)
-                return "multiple vertex-ID inputs require an unsupported shader source adapter";
             foreach (var contact in a.MaterialContacts.Union(b.MaterialContacts))
                 if (a.MaterialContacts.Contains(contact) != b.MaterialContacts.Contains(contact) &&
                     (ContactOutputs.MaterialReads(contact, x, a.Shaders ?? new ShaderPropertyUsage(), a.Animations) ||
@@ -310,11 +317,6 @@ namespace Noname.AvatarTools.Meshes
             if (a.MaskCoverage != b.MaskCoverage) return "different Animator mask coverage";
             if (!SameVisibility(a, b)) return "different activation or enabled signals";
             if (!a.UpdateWhenOffscreen.Equals(b.UpdateWhenOffscreen)) return "different offscreen-update animation signals";
-            if (compareMaterialAnimations)
-            {
-                string materialIssue = (planning?.Plan(new[] { a, b }) ?? MeshMaterialAnimationPlan.Create(new[] { a, b }, policy)).Issue;
-                if (materialIssue != null) return materialIssue;
-            }
             if (!(policy?.CoordinatesMatch(a, b) ?? MeshMergePolicy.CoordinateRoot(x) == MeshMergePolicy.CoordinateRoot(y)))
                 return "different coordinate systems or independent animated scale signs";
             if (policy?.ExpandBounds != true && !a.Bounds.Equals(b.Bounds)) return "different bounds with expansion disabled";
@@ -332,6 +334,20 @@ namespace Noname.AvatarTools.Meshes
             if (x.quality != y.quality) return "different skinning quality";
             if (x.skinnedMotionVectors != y.skinnedMotionVectors || x.motionVectorGenerationMode != y.motionVectorGenerationMode) return "different motion-vector settings";
             if (x.sortingLayerID != y.sortingLayerID || x.sortingOrder != y.sortingOrder || x.rendererPriority != y.rendererPriority) return "different sorting settings";
+            // Compatibility is a conjunction. A renderer-level incompatibility
+            // already excludes the pair, without preparing unused shader adapters
+            // or proving material-animation interference for that pair.
+            if (a.VertexIdMaterials.Count != 0 && b.VertexIdMaterials.Count != 0)
+            {
+                a.PrepareVertexIdAdapters(); b.PrepareVertexIdAdapters();
+                if (a.VertexIdAdapterIssue != null && b.VertexIdAdapterIssue != null)
+                    return "multiple vertex-ID inputs require an unsupported shader source adapter";
+            }
+            if (compareMaterialAnimations)
+            {
+                string materialIssue = (planning?.Plan(new[] { a, b }) ?? MeshMaterialAnimationPlan.Create(new[] { a, b }, policy)).Issue;
+                if (materialIssue != null) return materialIssue;
+            }
             return null;
         }
 

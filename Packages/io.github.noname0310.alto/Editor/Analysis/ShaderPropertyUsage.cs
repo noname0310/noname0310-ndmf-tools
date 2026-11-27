@@ -16,6 +16,26 @@ namespace Noname.AvatarTools.Analysis
     // program availability are separate proofs; a declaration counts as usage.
     internal sealed partial class ShaderPropertyUsage
     {
+        internal static Shader ResolveImportedDependency(string name, IEnumerable<Shader> dependencies, out bool ambiguous)
+        {
+            ambiguous = false;
+            Shader resolved = null;
+            // Unity retains legacy names in imported metadata, but Shader.Find
+            // resolves those aliases to their canonical shader objects. A lookup
+            // is evidence only when that exact object is an imported dependency.
+            var alias = Shader.Find(name);
+            bool importedAlias = false;
+            foreach (var candidate in dependencies)
+            {
+                if (candidate == null) continue;
+                importedAlias |= candidate == alias;
+                if (candidate.name != name) continue;
+                if (resolved != null && resolved != candidate) { ambiguous = true; return null; }
+                resolved = candidate;
+            }
+            return resolved != null ? resolved : importedAlias ? alias : null;
+        }
+
         internal sealed class Programs
         {
             internal readonly List<(Shader Shader, ShaderData.Pass Pass, UnityEngine.Rendering.PassIdentifier Identifier)> Passes = new();
@@ -266,9 +286,8 @@ namespace Noname.AvatarTools.Analysis
             {
                 var includeKey = (root, owner, origin, include);
                 if (resolvedIncludes.TryGetValue(includeKey, out var previousSources)) return previousSources;
-                var roots = program.IncludeDirectories.Concat(new[] { Path.GetDirectoryName(origin), directory });
-                var paths = roots.Where(p => !string.IsNullOrEmpty(p)).Select(p => Path.GetFullPath(Path.Combine(p, include)))
-                    .Concat(new[] { IncludePhysicalPath(include) }).Where(p => p != null && SourceExists(p)).Distinct(StringComparer.Ordinal).ToArray();
+                var roots = program.IncludeDirectories.Concat(new[] { Path.GetDirectoryName(origin), directory }).ToArray();
+                var paths = ResolveIncludePaths(roots, include).Existing;
                 var result = paths.Select(path =>
                 {
                     if (!files.TryGetValue(path, out string text))
@@ -303,6 +322,7 @@ namespace Noname.AvatarTools.Analysis
             var rasterStates = new Dictionary<Shader, ShaderRasterizationState>();
             var importedStates = new Dictionary<Shader, ShaderImportedMetadata>();
             var seenFiles = new HashSet<string>(StringComparer.Ordinal);
+            var seenSources = new HashSet<(ShaderTextKey, string)>();
             var directories = new HashSet<string>(StringComparer.Ordinal);
             var passSources = new List<(string Source, string Directory)>();
             var includeDirectory = Path.Combine(EditorApplication.applicationContentsPath, "CGIncludes");
@@ -317,6 +337,10 @@ namespace Noname.AvatarTools.Analysis
             }
             void Scan(string text, string directory)
             {
+                // Identical imported programs may occur in several passes. The
+                // complete root search set is fixed after Visit, so the same
+                // text at the same origin has exactly the same lexical closure.
+                if (!seenSources.Add((text, directory))) return;
                 using var cost = AnalysisCost.Measure("Shader discovery/include closure");
                 var facts = Artifacts.SourceFacts(text);
                 facts.Apply(proof);
@@ -325,11 +349,10 @@ namespace Noname.AvatarTools.Analysis
                 {
                     if (path == null)
                     { sourcePrograms.NativeDependenciesComplete = false; Uncertain("macro or unsupported include path"); continue; }
-                    var roots = directories.Concat(new[] { directory, includeDirectory }).Where(d => !string.IsNullOrEmpty(d));
-                    var possiblePaths = roots.Select(d => Path.GetFullPath(Path.Combine(d, path)))
-                        .Concat(new[] { IncludePhysicalPath(path) }).Where(p => p != null).Distinct(StringComparer.Ordinal).ToArray();
-                    sourcePrograms.NativeDependencyPaths.UnionWith(possiblePaths);
-                    var candidates = possiblePaths.Where(SourceExists).ToArray();
+                    var roots = directories.Concat(new[] { directory, includeDirectory }).ToArray();
+                    var resolved = ResolveIncludePaths(roots, path);
+                    sourcePrograms.NativeDependencyPaths.UnionWith(resolved.Candidates);
+                    var candidates = resolved.Existing;
                     if (candidates.Length == 0) Uncertain("unresolved include " + path);
                     foreach (string candidate in candidates)
                         if (seenFiles.Add(candidate)) Scan(Read(candidate), Path.GetDirectoryName(candidate));
@@ -409,17 +432,8 @@ namespace Noname.AvatarTools.Analysis
                     {
                         foreach (var dependency in metadata.Dependencies)
                         {
-                            Shader resolved = null;
-                            foreach (var candidate in nativeDependencies)
-                            {
-                                if (candidate.name != dependency.Shader) continue;
-                                if (resolved != null && resolved != candidate)
-                                { Uncertain("ambiguous imported shader dependency: " + dependency.Shader); resolved = null; break; }
-                                resolved = candidate;
-                            }
-                            // Resolve against actual imported objects, not a name
-                            // lookup which could select a different shader asset.
-                            if (resolved == null) { Uncertain("unresolved imported shader dependency: " + dependency.Shader); continue; }
+                            Shader resolved = ResolveImportedDependency(dependency.Shader, nativeDependencies, out bool ambiguous);
+                            if (resolved == null) { Uncertain((ambiguous ? "ambiguous" : "unresolved") + " imported shader dependency: " + dependency.Shader); continue; }
                             Visit(resolved, dependency.Pass);
                         }
                     }

@@ -102,6 +102,64 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         }
 
         [Test]
+        public void ShaderIncludeResolutionReusesOnlyTheExactSearchAndSourceEpoch()
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "ALTO-Includes-" + Guid.NewGuid().ToString("N"));
+            string first = Path.Combine(directory, "first"), second = Path.Combine(directory, "second");
+            Directory.CreateDirectory(first); Directory.CreateDirectory(second);
+            try
+            {
+                string include = "Unique_" + Guid.NewGuid().ToString("N") + ".hlsl";
+                string a = Path.Combine(first, include), b = Path.Combine(second, include);
+                File.WriteAllText(b, "float second;");
+                var snapshot = new ShaderPropertyUsage();
+                var resolved = snapshot.ResolveIncludePaths(new[] { first, second }, include);
+                Assert.That(resolved.Candidates, Does.Contain(a).And.Contain(b));
+                Assert.That(resolved.Existing, Is.EqualTo(new[] { b }));
+                Assert.That(snapshot.ResolveIncludePaths(new[] { first, second }, include).Existing, Is.SameAs(resolved.Existing));
+                Assert.That(snapshot.ResolveIncludePaths(new[] { first }, include).Existing, Is.Empty,
+                    "Another importing root cannot inherit the first root's include candidates.");
+                File.WriteAllText(a, "float first;");
+                var fresh = new ShaderPropertyUsage();
+                Assert.That(fresh.ResolveIncludePaths(new[] { first, second }, include).Existing, Is.EqualTo(new[] { a, b }),
+                    "A newly available optional include must participate after invalidation.");
+                Assert.That(fresh.ResolveIncludePaths(new[] { second, first }, include).Existing, Is.EqualTo(new[] { b, a }),
+                    "The compiler's ordered include search must remain distinct.");
+                Assert.That(fresh.ResolveIncludePaths(new[] { first, first, second }, include).Existing, Is.EqualTo(new[] { a, b }));
+            }
+            finally { Directory.Delete(directory, true); }
+        }
+
+        [Test]
+        public void VertexIdAdapterPlansReuseSourceButRecheckAfterSourceInvalidation()
+        {
+            var fixture = Shader.Find("Hidden/Noname/Vertex ID Preservation");
+            string path = ShaderBuildSource.PhysicalPath(fixture), text = File.ReadAllText(path);
+            var shader = Track(ShaderUtil.CreateShaderAsset(text.Replace(fixture.name, fixture.name + Guid.NewGuid().ToString("N"))));
+            Assert.That(ShaderUtil.ShaderHasError(shader), Is.False);
+            ShaderBuildSource.Register(shader, text, path);
+            var analysis = new OptimizationAnalysis(); var snapshot = analysis.Shaders;
+            Assert.That(snapshot.TryVertexIdAdapter(shader, out var first, out string issue), Is.True, issue);
+            Assert.That(snapshot.TryVertexIdAdapter(shader, out var repeated, out _), Is.True);
+            Assert.That(repeated, Is.SameAs(first));
+            Assert.That(ShaderVertexIdRewriter.TryCreate(shader, out var independent, out _), Is.True);
+            foreach (int offset in new[] { 0, -3, -100 })
+                Assert.That(repeated.GenerateSource(offset, false), Is.EqualTo(independent.GenerateSource(offset, false)));
+            Assert.That(repeated.GenerateSource(-100, true), Is.EqualTo(independent.GenerateSource(-100, true)));
+            Assert.That(repeated.GenerateSource(0, false, 7), Is.EqualTo(independent.GenerateSource(0, false, 7)));
+
+            ShaderBuildSource.Register(shader, text.Replace("#pragma vertex", "#pragma surface surf Standard\n#pragma vertex"), path);
+            analysis.Invalidate(AnalysisDomain.ShaderSources);
+            Assert.That(analysis.Shaders.TryVertexIdAdapter(shader, out _, out issue), Is.False);
+            Assert.That(issue, Does.Contain("surface-shader"));
+            Assert.That(analysis.Shaders.TryVertexIdAdapter(shader, out _, out string again), Is.False);
+            Assert.That(again, Is.EqualTo(issue));
+            ShaderBuildSource.Register(shader, text, path);
+            analysis.Invalidate(AnalysisDomain.All);
+            Assert.That(analysis.Shaders.TryVertexIdAdapter(shader, out _, out issue), Is.True, issue);
+        }
+
+        [Test]
         public void SharedNativeShaderProgramsPreserveRequestCountsAndRecheckMaterials()
         {
             RequireD3DAnalysis();

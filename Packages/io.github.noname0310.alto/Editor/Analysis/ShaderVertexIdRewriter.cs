@@ -99,6 +99,7 @@ namespace Noname.AvatarTools.Analysis
 
         internal static bool TryCreate(Shader shader, out ShaderVertexIdRewriter result, out string reason)
         {
+            using var cost = AnalysisCost.Measure("Vertex-ID adapter preparation");
             result = null; reason = null;
             try
             {

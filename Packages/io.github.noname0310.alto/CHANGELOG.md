@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.21
+
+- Fix shared shader constant baking for generated surface shaders by preserving Unity engine include resolution. Resolve imported shader aliases only against their verified native dependencies.
+- Support comma-separated scalar uniform declarations and additional native pure operations, including paired sine/cosine results, wide integer multiplication, division and bit-field insertion. Keep unsupported declarations and control flow conservative.
+- Reduce repeated shader include discovery and reuse vertex-ID adapter plans within validated source snapshots. Prepare adapters only when merge ordering or vertex compaction can require them, and reject incompatible renderer settings before material-animation analysis without weakening merge checks.
+
 ## 0.0.20
 
 - Share constant-output analysis across material slots and properties, BlendShapes, transforms and supported component settings. Bake proven final outputs into build defaults while preserving Write Defaults history, partial blending, animation events, native writers and stateful initialization.
