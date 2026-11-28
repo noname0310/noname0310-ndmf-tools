@@ -25,19 +25,32 @@ namespace Noname.AvatarTools.Build
         {
             var state = context.GetState<RenderingFilterState>();
             if (state.Scope == null || state.BlendShapes.Count == 0) return;
-            foreach (var target in state.BlendShapeTargets)
-                if (target.Key == null)
-                    throw new InvalidOperationException("The renderer selected for BlendShape exclusion was removed or merged before filtering: " + target.Value +
-                        ". Select its generated destination instead.");
             using var lease = OptimizationSession.Acquire(context);
             var services = lease.Services;
             var entries = services.ControllerContext.Controllers.Where(e => !(e.Key is Object owner) || owner != null).ToDictionary(e => e.Key, e => e.Value);
-            var targets = new HashSet<SkinnedMeshRenderer>(state.BlendShapes.Select(r => r.Renderer));
-            ValidateMeshAnimations(context.AvatarRootObject, entries, targets, services.ObjectPathRemapper.GetVirtualToRealPathMap());
+            Apply(context, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap());
+        }
+
+        internal static void Apply(BuildContext context, IDictionary<object, VirtualAnimatorController> entries,
+            IReadOnlyDictionary<string, string> paths)
+        {
+            var state = context.GetState<RenderingFilterState>();
+            if (state.Scope == null || state.BlendShapes.Count == 0) return;
+            state.Replay.BeginBoundary();
+            var renderers = context.AvatarRootObject.GetComponentsInChildren<SkinnedMeshRenderer>(true)
+                .Where(r => state.Scope.Contains(r.transform) && BuildPlatformFilters.Includes(r.transform, context)).ToArray();
+            if (!state.Replay.ShapesApplied)
+                foreach (var rule in state.BlendShapes)
+                    if (!state.Replay.HasTarget(rule, renderers))
+                        throw new InvalidOperationException("The renderer selected for BlendShape exclusion was removed or merged without a registered output. " +
+                            "Its generator must publish the renderer replacement before filtering.");
+            var rules = renderers.SelectMany(r => state.Replay.ShapeRules(r, state.BlendShapes)).ToArray();
+            var targets = new HashSet<SkinnedMeshRenderer>(rules.Select(r => r.Renderer));
+            ValidateMeshAnimations(context.AvatarRootObject, entries, targets, paths);
             var plans = new List<Plan>();
             // Validate all targets before assigning any mesh. Shared source meshes
             // are copied independently; a neighboring renderer keeps its geometry.
-            foreach (var group in state.BlendShapes.GroupBy(r => r.Renderer))
+            foreach (var group in rules.GroupBy(r => r.Renderer))
             {
                 var renderer = group.Key;
                 if (!state.Scope.Contains(renderer.transform)) throw new InvalidOperationException("A BlendShape exclusion target left its Scope Root: " + renderer.name);
@@ -67,7 +80,9 @@ namespace Noname.AvatarTools.Build
                         AnimationUtility.CalculateTransformPath(plan.Renderer.transform, context.AvatarRootTransform) +
                         ". Vertex and morph indices remain stable until unused mesh data is compacted.");
                 }
-                report.Messages.Add("Explicit BlendShape region exclusions affected " + plans.Count + " renderers. Current morph weights did not select regions.");
+                if (!state.Replay.ShapesApplied || plans.Count != 0)
+                    report.Messages.Add("Explicit BlendShape region exclusions affected " + plans.Count + " renderers. Current morph weights did not select regions.");
+                state.Replay.ShapesApplied = true;
             }
             catch
             {

@@ -9,8 +9,9 @@ namespace Noname.AvatarTools.MaterialAtlas
     internal sealed class TexturePreparation
     {
         private readonly Dictionary<(Texture, Vector2, Vector2, Rect, float, bool, Color, int), Texture2D> cache = new();
-        private readonly BuildContext context;
-        internal TexturePreparation(BuildContext context) { this.context = context; }
+        private readonly Action<UnityEngine.Object> save;
+        internal TexturePreparation(BuildContext context, Action<UnityEngine.Object> save = null)
+        { this.save = save ?? context.AssetSaver.SaveAsset; }
 
         internal static string Unsupported(Material material, AtlasTextureMapping mapping)
         {
@@ -39,7 +40,7 @@ namespace Noname.AvatarTools.MaterialAtlas
             {
                 var solid = new Texture2D(4, 4, TextureFormat.RGBA32, false, mapping.Linear) { name = "Atlas missing texture" };
                 var colors = new Color[16]; for (int i = 0; i < colors.Length; i++) colors[i] = mapping.MissingTextureColor;
-                solid.SetPixels(colors); solid.Apply(); context.AssetSaver.SaveAsset(solid); return cache[key] = solid;
+                solid.SetPixels(colors); solid.Apply(); save(solid); return cache[key] = solid;
             }
             if (domain == new Rect(0, 0, 1, 1) && scale == Vector2.one && offset == Vector2.zero && priority == 1)
                 return cache[key] = texture;
@@ -61,7 +62,7 @@ namespace Noname.AvatarTools.MaterialAtlas
                 baked = new Texture2D(width, height, TextureFormat.RGBA32, false, mapping.Linear)
                 { name = texture.name + " (Atlas input)", wrapMode = TextureWrapMode.Clamp, filterMode = texture.filterMode };
                 baked.ReadPixels(new Rect(0, 0, width, height), 0, 0); baked.Apply();
-                context.AssetSaver.SaveAsset(baked); return cache[key] = baked;
+                save(baked); return cache[key] = baked;
             }
             catch { if (baked != null) UnityEngine.Object.DestroyImmediate(baked); throw; }
             finally

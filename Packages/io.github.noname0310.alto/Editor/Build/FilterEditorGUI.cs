@@ -21,12 +21,14 @@ namespace Noname.AvatarTools.Build
             EditorGUILayout.LabelField("Before Generators", EditorStyles.boldLabel);
             EditorGUILayout.PropertyField(serializedObject.FindProperty("ExcludedObjects"), true);
             EditorGUILayout.PropertyField(serializedObject.FindProperty("ExcludedComponents"), true);
+            EditorGUILayout.HelpBox("Objects include their children. Remaining skinning, constraint and component references are checked before removal. " +
+                "Preserved parameter sources cannot be excluded.", MessageType.None);
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Audio, Including Generated Sources", EditorStyles.boldLabel);
             EditorGUILayout.PropertyField(serializedObject.FindProperty("RemoveAudioSources"));
             if (serializedObject.FindProperty("RemoveAudioSources").boolValue)
                 using (new EditorGUI.IndentLevelScope())
                     EditorGUILayout.PropertyField(serializedObject.FindProperty("PreserveAudioSources"), true);
-            EditorGUILayout.HelpBox("Objects include their children. Remaining skinning, constraint and component references are checked before removal. " +
-                "Preserved parameter sources cannot be excluded.", MessageType.None);
         }
 
         internal static void Rendering(SerializedObject serializedObject)

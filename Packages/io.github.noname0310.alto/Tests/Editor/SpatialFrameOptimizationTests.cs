@@ -371,7 +371,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             Assert.That(prefab.GetComponentInChildren<ALTOTraceAndOptimizeObjects>(true).AssumeFixedHumanoidBoneScale, Is.False);
         }
 
-        private Animator SpatialHumanoid()
+        private Animator SpatialHumanoid(bool withFingers = false)
         {
             var mapping = new Dictionary<HumanBodyBones, Transform>();
             Transform Add(HumanBodyBones slot, Transform parent, Vector3 position)
@@ -390,7 +390,16 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 float sign = left ? 1 : -1;
                 var arm = Add(left ? HumanBodyBones.LeftUpperArm : HumanBodyBones.RightUpperArm, chest, new Vector3(sign * .2f, .1f, 0));
                 var forearm = Add(left ? HumanBodyBones.LeftLowerArm : HumanBodyBones.RightLowerArm, arm, new Vector3(sign * .25f, 0, 0));
-                Add(left ? HumanBodyBones.LeftHand : HumanBodyBones.RightHand, forearm, new Vector3(sign * .22f, 0, 0));
+                var hand = Add(left ? HumanBodyBones.LeftHand : HumanBodyBones.RightHand, forearm, new Vector3(sign * .22f, 0, 0));
+                if (withFingers)
+                {
+                    var proximal = Add(left ? HumanBodyBones.LeftIndexProximal : HumanBodyBones.RightIndexProximal,
+                        hand, new Vector3(sign * .04f, 0, .02f));
+                    var intermediate = Add(left ? HumanBodyBones.LeftIndexIntermediate : HumanBodyBones.RightIndexIntermediate,
+                        proximal, new Vector3(sign * .03f, 0, 0));
+                    Add(left ? HumanBodyBones.LeftIndexDistal : HumanBodyBones.RightIndexDistal,
+                        intermediate, new Vector3(sign * .02f, 0, 0));
+                }
                 var leg = Add(left ? HumanBodyBones.LeftUpperLeg : HumanBodyBones.RightUpperLeg, hips, new Vector3(sign * .1f, -.1f, 0));
                 var lowerLeg = Add(left ? HumanBodyBones.LeftLowerLeg : HumanBodyBones.RightLowerLeg, leg, new Vector3(0, -.4f, 0));
                 Add(left ? HumanBodyBones.LeftFoot : HumanBodyBones.RightFoot, lowerLeg, new Vector3(0, -.4f, .03f));

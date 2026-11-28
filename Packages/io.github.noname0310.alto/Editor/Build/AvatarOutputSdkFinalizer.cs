@@ -105,9 +105,11 @@ namespace Noname.AvatarTools.Build
                 session.Context.GetState<OptimizationState>().Scopes.Count == 0 &&
                 !session.Context.GetState<Materials.MaterialOptimizationState>().BakeShaderInputs &&
                 !session.Context.GetState<PhysBoneOptimizationState>().Enabled &&
+                !session.Context.GetState<MaterialAtlas.MaterialAtlasState>().Pending &&
+                !MeshRendererSettingsOverridePass.HasPendingOutputs(session.Context) &&
                 !session.Context.GetState<MeshReduction.MeshReductionState>().Pending &&
                 !session.Context.GetState<PhysBoneFilterState>().Applied &&
-                !ContactFilterPass.HasPendingRemovals(session.Context)) return;
+                !GeneratedOutputFilterPass.HasPendingRemovals(session.Context)) return;
             using var measurement = OptimizationMeasurement.Begin(session.Report, "SDK finalizer", "runtime output cleanup");
             string unsupported = ObjectOptimizationSafety.UnsupportedRuntime(avatar);
             if (unsupported == null)
@@ -123,10 +125,14 @@ namespace Noname.AvatarTools.Build
             if (unsupported == null) Apply(avatar, session, saveForTests);
             else
             {
+                if (session.Context.GetState<MaterialAtlas.MaterialAtlasState>().Pending)
+                    throw new InvalidOperationException("Final atlas packing cannot safely process generated animation inputs: " + unsupported);
                 if (session.Context.GetState<MaterialAtlas.MaterialAtlasState>().Liveness.HasSurvivingInputs)
                     throw new InvalidOperationException("Cannot validate omitted atlas inputs after SDK preprocessing: " + unsupported);
                 if (ContactFilterPass.HasPendingRemovals(session.Context))
                     throw new InvalidOperationException("Final Contact filtering cannot safely process the generated Animator: " + unsupported);
+                if (AudioOutputFilterPass.HasPendingRemovals(session.Context) || PhysBoneFilterPass.HasPendingRemovals(session.Context))
+                    throw new InvalidOperationException("Final audio/PhysBone filtering cannot safely process the generated Animator: " + unsupported);
                 session.Report.Messages.Add("Final runtime output cleanup skipped: " + unsupported);
                 MeshReduction.MeshReductionPass.ApplyFinal(session.Context, new Dictionary<object, VirtualAnimatorController>(),
                     null, saveForTests ?? session.Context.AssetSaver.SaveAsset, unsupported);
@@ -152,7 +158,7 @@ namespace Noname.AvatarTools.Build
             {
                 var finalEntries = current.Controllers.Where(e => !(e.Key is Object owner) || owner != null)
                     .ToDictionary(e => e.Key, e => e.Value);
-                ContactFilterPass.Apply(session.Context, finalEntries);
+                GeneratedOutputFilterPass.Apply(session.Context, finalEntries);
                 var policy = ParameterPolicyPass.Resolve(session.Context, finalEntries);
                 using var shapeBoundary = session.Context.GetState<OptimizationState>().Provenance.BeginBoundary();
                 void SettleOutputs() => FinalOutputOptimization.Apply(avatar, finalEntries, policy, session.Frozen ??
@@ -169,6 +175,8 @@ namespace Noname.AvatarTools.Build
                     prepareTransport ? null : () => Materials.MaterialOptimizationPass.SpecializeFinalChanges(session.Context, finalEntries, policy,
                         null, saveForTests ?? saver.SaveAsset), analysis, runtimeDependenciesOnly: !prepareTransport);
                 SettleOutputs();
+                if (!prepareTransport && MaterialAtlas.MaterialAtlasPass.ApplyFinal(session.Context, finalEntries, null,
+                    saveForTests ?? saver.SaveAsset)) SettleOutputs();
                 if (!prepareTransport && session.Context.GetState<MeshReduction.MeshReductionState>().Pending)
                 {
                     using var reduction = OptimizationMeasurement.Begin(session.Report, "SDK finalizer", "mesh reduction");

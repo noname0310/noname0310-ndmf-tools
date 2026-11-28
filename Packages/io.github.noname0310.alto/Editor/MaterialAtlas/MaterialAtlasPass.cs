@@ -16,8 +16,14 @@ namespace Noname.AvatarTools.MaterialAtlas
     internal sealed class MaterialAtlasState
     {
         internal ALTOMaterialAtlas Settings;
+        internal MaterialAtlasRecipe CapturedRecipe;
+        internal MaterialAtlasRecipe Recipe => CapturedRecipe ?? (Settings != null ? new MaterialAtlasRecipe(Settings) : null);
+        internal bool Pending, Completed;
+        internal Action<UnityEngine.Object> SaveAsset;
         internal OptimizationBuildScope Scope;
         internal readonly HashSet<ObjectReference> Targets = new();
+        internal readonly List<bool> InputSelection = new();
+        internal readonly Dictionary<ObjectReference, bool> MappedSelection = new();
         internal readonly List<AtlasRendererPlan> Plans = new();
         internal readonly AtlasInputLiveness Liveness = new();
         internal readonly Stopwatch Watch = new();
@@ -29,7 +35,7 @@ namespace Noname.AvatarTools.MaterialAtlas
         internal readonly Dictionary<ObjectReference, int> ChainedMaterialGroups = new();
         internal bool Preserved(Material material) => material != null && PreservedMaterials.Contains(ObjectRegistry.GetReference(material));
         internal int Group(Material material) => Preserved(material) ? -1 : Early?.Find(material)?.Group ??
-            (material != null && ChainedMaterialGroups.TryGetValue(ObjectRegistry.GetReference(material), out int group) ? group : MaterialAtlasPass.SelectGroup(material, Settings.MergeGroups));
+            (material != null && ChainedMaterialGroups.TryGetValue(ObjectRegistry.GetReference(material), out int group) ? group : MaterialAtlasPass.SelectGroup(material, Recipe.MergeGroups));
         internal Material Original(Material material) => Early?.Find(material)?.Source ?? material;
         internal bool Converted(Renderer renderer) => renderer.sharedMaterials.Any(m => Early?.Find(m) != null);
         internal AtlasTextureMapping Mapping(Material material, AtlasTextureMapping mapping) => Early?.Find(material) == null ? mapping : new AtlasTextureMapping
@@ -37,6 +43,33 @@ namespace Noname.AvatarTools.MaterialAtlas
             SourceProperty = mapping.DestinationProperty, DestinationProperty = mapping.DestinationProperty,
             MissingTextureColor = mapping.MissingTextureColor, Linear = mapping.Linear
         };
+    }
+
+    // The recipe outlives authoring markers and SDK callbacks that strip them.
+    // Unity object references remain build-local; mutable lists are snapshotted.
+    internal sealed class MaterialAtlasRecipe
+    {
+        internal readonly AtlasMaterialConversionTiming MaterialConversion;
+        internal readonly ExistingAtlasPolicy ExistingAtlases;
+        internal readonly RendererSelectionMode TargetSelection;
+        internal readonly UnsupportedAtlasInput UnsupportedInputs;
+        internal readonly List<MaterialAtlasGroup> MergeGroups;
+        internal MaterialAtlasRecipe(ALTOMaterialAtlas source)
+        {
+            MaterialConversion = source.MaterialConversion; ExistingAtlases = source.ExistingAtlases;
+            TargetSelection = source.TargetSelection; UnsupportedInputs = source.UnsupportedInputs;
+            MergeGroups = source.MergeGroups.Select(g => new MaterialAtlasGroup
+            {
+                Name = g.Name, MaterialSelection = g.MaterialSelection, Materials = new(g.Materials ?? new()),
+                ReferenceMaterial = g.ReferenceMaterial, AtlasSize = g.AtlasSize, PaddingPixels = g.PaddingPixels,
+                Compression = g.Compression, GenerateMipMaps = g.GenerateMipMaps,
+                TextureMappings = g.TextureMappings.Select(m => new AtlasTextureMapping
+                { SourceProperty = m.SourceProperty, DestinationProperty = m.DestinationProperty,
+                    MissingTextureColor = m.MissingTextureColor, Linear = m.Linear }).ToList(),
+                ResolutionPriorities = (g.ResolutionPriorities ?? new()).Select(p => new AtlasResolutionPriority
+                { Material = p.Material, ResolutionScale = p.ResolutionScale }).ToList()
+            }).ToList();
+        }
     }
 
     internal sealed class AtlasRendererPlan
@@ -51,6 +84,7 @@ namespace Noname.AvatarTools.MaterialAtlas
     internal static class MaterialAtlasBackend
     {
         internal static Action<BuildContext, MaterialAtlasState> ResolveExisting, Capture, Prepare, Finish;
+        internal static Action<BuildContext, MaterialAtlasState> Execute;
         internal static Func<BuildContext, Renderer, string> ValidateRenderer;
         internal static Action<BuildContext, SkinnedMeshRenderer> PreserveOriginalUv;
     }
@@ -103,16 +137,47 @@ namespace Noname.AvatarTools.MaterialAtlas
             }
             context.GetState<OptimizationBuildReport>().Initialize(context.AvatarRootObject,
                 context.GetState<OptimizationBuildEnvironment>().Target.ToString());
+            state.CapturedRecipe = new MaterialAtlasRecipe(state.Settings);
             MaterialAtlasBackend.ResolveExisting?.Invoke(context, state);
             if (!state.Deferred && state.Settings.MaterialConversion == AtlasMaterialConversionTiming.BeforeGenerators)
                 state.Early = EarlyMaterialConversion.Apply(context, state);
-            MaterialAtlasBackend.Capture(context, state);
+            state.Pending = true;
         }
 
         internal static IEnumerable<Renderer> SelectRenderers(GameObject avatar, MaterialAtlasState state) =>
             avatar.GetComponentsInChildren<Renderer>(true).Where(r => (r is MeshRenderer || r is SkinnedMeshRenderer) &&
-                state.Scope.Contains(r.transform) && (state.Settings.TargetSelection == RendererSelectionMode.AllRenderersInScope ||
-                    state.Targets.Contains(ObjectRegistry.GetReference(r))));
+                !BlendShapeOptimization.ALTOPlugin.IsEditorOnly(r.transform) && Selected(state, r));
+
+        private static bool Selected(MaterialAtlasState state, Renderer renderer)
+        {
+            var reference = ObjectRegistry.GetReference(renderer);
+            return state.MappedSelection.TryGetValue(reference, out bool selected) ? selected :
+                state.Scope.Contains(renderer.transform) && (state.Recipe.TargetSelection == RendererSelectionMode.AllRenderersInScope ||
+                    state.Targets.Contains(reference));
+        }
+
+        internal static void CaptureInputs(BuildContext context)
+        {
+            var state = context.GetState<MaterialAtlasState>();
+            if (!state.Pending || state.Settings == null) return;
+            state.Settings.BuildInputRenderers = context.AvatarRootObject.GetComponentsInChildren<Renderer>(true);
+            foreach (var renderer in state.Settings.BuildInputRenderers) state.InputSelection.Add(Selected(state, renderer));
+        }
+
+        internal static void CaptureMappedInputs(BuildContext context)
+        {
+            var state = context.GetState<MaterialAtlasState>();
+            if (!state.Pending || state.Settings == null) return;
+            var inputs = state.Settings.BuildInputRenderers;
+            if (inputs.Length != state.InputSelection.Count) throw new InvalidOperationException("Atlas renderer input mapping is incomplete.");
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                if (inputs[i] == null) continue;
+                var reference = ObjectRegistry.GetReference(inputs[i]);
+                state.MappedSelection[reference] = (!state.MappedSelection.TryGetValue(reference, out bool previous) || previous) && state.InputSelection[i];
+            }
+            UnityEngine.Object.DestroyImmediate(state.Settings);
+        }
 
         internal static void ValidateGroups(IReadOnlyList<MaterialAtlasGroup> groups)
         {
@@ -178,58 +243,111 @@ namespace Noname.AvatarTools.MaterialAtlas
         private static void PrepareInputs(BuildContext context)
         {
             var state = context.GetState<MaterialAtlasState>();
-            if (state.Settings == null) return;
+            if (state.Recipe == null) return;
+            using var lease = OptimizationSession.Acquire(context);
+            PrepareInputs(context, lease.Services.ControllerContext.Controllers
+                .Where(e => !(e.Key is UnityEngine.Object owner) || owner != null).ToDictionary(e => e.Key, e => e.Value),
+                lease.Services.ObjectPathRemapper.GetVirtualToRealPathMap());
+        }
+
+        private static void PrepareInputs(BuildContext context, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> paths)
+        {
+            var state = context.GetState<MaterialAtlasState>();
+            if (state.Recipe == null || state.Prepared) return;
             state.Watch.Start();
             var avatar = context.AvatarRootObject;
             var report = context.GetState<OptimizationBuildReport>();
-            var animationLease = Noname.AvatarTools.Build.OptimizationSession.Acquire(context);
-            var services = animationLease.Services;
+            state.Early?.DeferredConsumers.Validate(avatar, controllers.Values);
+            var policy = ParameterPolicyPass.Resolve(context, controllers);
+            if (policy.Uncertain) throw new InvalidOperationException("Material conversion requires verified parameter preservation mappings.");
+            var hazards = AtlasAnimationSafety.Find(avatar, controllers, policy.Preserved,
+                paths, state.Recipe.MergeGroups, state.Original, state.Group);
+            var renderers = SelectRenderers(avatar, state).Where(r => BuildPlatformFilters.Includes(r.transform, context)).ToArray();
+            var objects = context.GetState<ObjectOptimizationState>();
+            if (objects.Scope != null && objects.RemoveUnusedObjects)
+                renderers = state.Liveness.Select(renderers, objects,
+                    AvatarAnimationIndex.Create(avatar, controllers, paths, policy.Preserved),
+                    context.GetState<OptimizationAnalysis>().Shaders, report.Messages);
+            state.Early?.ValidateSurvivingInputs(renderers, state.Liveness.IsOmitted);
+            foreach (var renderer in renderers)
+            {
+                if (!(renderer is SkinnedMeshRenderer) && !(renderer is MeshRenderer)) continue;
+                var materials = renderer.sharedMaterials;
+                var groups = materials.Select(state.Group).ToArray();
+                if (groups.All(g => g < 0)) continue;
+                var mesh = renderer is SkinnedMeshRenderer skin ? skin.sharedMesh : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
+                string reason = mesh == null ? "no mesh" : renderer.GetComponent<Cloth>() != null ? "Cloth owns this mesh" :
+                    hazards.TryGetValue(renderer, out var hazard) ? hazard : MaterialAtlasBackend.ValidateRenderer?.Invoke(context, renderer);
+                Rect domain = default;
+                if (reason == null) reason = ValidateMesh(mesh, groups, out domain);
+                if (reason != null)
+                {
+                    var message = "Atlas retained " + AnimationUtility.CalculateTransformPath(renderer.transform, avatar.transform) + ": " + reason;
+                    if (state.Recipe.UnsupportedInputs == UnsupportedAtlasInput.Error || state.Converted(renderer) ||
+                        state.RequiredRenderers.Contains(ObjectRegistry.GetReference(renderer))) throw new InvalidOperationException(message);
+                    report.Messages.Add(message); continue;
+                }
+                state.Plans.Add(new AtlasRendererPlan { Renderer = renderer, Mesh = mesh, Materials = materials, Groups = groups, UvDomain = domain });
+            }
+            state.Early?.BakeInputs(context, state.Plans.Select(p => p.Renderer),
+                AvatarAnimationIndex.Create(avatar, controllers, paths, policy.Preserved), state.SaveAsset);
+            MaterialAtlasBackend.Prepare(context, state);
+            state.Prepared = true;
+            report.Messages.Add("Prepared texture atlas inputs for " + state.Plans.Count + " renderers; source properties other than mapped textures follow the Reference Material.");
+        }
+
+        internal static void ConvertAfterGenerators(BuildContext context)
+        {
+            var state = context.GetState<MaterialAtlasState>();
+            if (!state.Pending || state.Early != null) return;
+            state.Early = EarlyMaterialConversion.Apply(context, state);
+        }
+
+        internal static bool ApplyFinal(BuildContext context, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> paths, Action<UnityEngine.Object> save)
+        {
+            var state = context.GetState<MaterialAtlasState>();
+            if (!state.Pending) return false;
+            if (!state.Deferred && MaterialAtlasBackend.Execute == null)
+                throw new InvalidOperationException("The installed TexTransTool integration cannot execute final atlas packing.");
+            state.SaveAsset = save;
+            using var measurement = OptimizationMeasurement.Begin(context.GetState<OptimizationBuildReport>(), "final geometry", "material atlas");
             try
             {
-                var controllers = services.ControllerContext.Controllers.Where(e => !(e.Key is UnityEngine.Object owner) || owner != null)
-                    .ToDictionary(e => e.Key, e => e.Value);
-                state.Early?.DeferredConsumers.Validate(avatar, controllers.Values);
-                var policy = ParameterPolicyPass.Resolve(context, controllers);
-                if (policy.Uncertain) throw new InvalidOperationException("Material conversion requires verified parameter preservation mappings.");
-                var hazards = AtlasAnimationSafety.Find(avatar, controllers, policy.Preserved,
-                    services.ObjectPathRemapper.GetVirtualToRealPathMap(), state.Settings.MergeGroups, state.Original, state.Group);
-                var renderers = SelectRenderers(avatar, state).ToArray();
-                var objects = context.GetState<ObjectOptimizationState>();
-                if (objects.Scope != null && objects.RemoveUnusedObjects)
-                    renderers = state.Liveness.Select(renderers, objects,
-                        AvatarAnimationIndex.Create(avatar, controllers, services.ObjectPathRemapper.GetVirtualToRealPathMap(), policy.Preserved),
-                        context.GetState<OptimizationAnalysis>().Shaders, report.Messages);
-                state.Early?.ValidateSurvivingInputs(renderers, state.Liveness.IsOmitted);
-                foreach (var renderer in renderers)
-                {
-                    if (!(renderer is SkinnedMeshRenderer) && !(renderer is MeshRenderer)) continue;
-                    var materials = renderer.sharedMaterials;
-                    var groups = materials.Select(state.Group).ToArray();
-                    if (groups.All(g => g < 0)) continue;
-                    var mesh = renderer is SkinnedMeshRenderer skin ? skin.sharedMesh : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
-                    string reason = mesh == null ? "no mesh" : renderer.GetComponent<Cloth>() != null ? "Cloth owns this mesh" :
-                        hazards.TryGetValue(renderer, out var hazard) ? hazard : MaterialAtlasBackend.ValidateRenderer?.Invoke(context, renderer);
-                    Rect domain = default;
-                    if (reason == null) reason = ValidateMesh(mesh, groups, out domain);
-                    if (reason != null)
-                    {
-                        var message = "Atlas retained " + AnimationUtility.CalculateTransformPath(renderer.transform, avatar.transform) + ": " + reason;
-                        if (state.Settings.UnsupportedInputs == UnsupportedAtlasInput.Error || state.Converted(renderer) ||
-                            state.RequiredRenderers.Contains(ObjectRegistry.GetReference(renderer))) throw new InvalidOperationException(message);
-                        report.Messages.Add(message); continue;
-                    }
-                    state.Plans.Add(new AtlasRendererPlan { Renderer = renderer, Mesh = mesh, Materials = materials, Groups = groups, UvDomain = domain });
-                }
-                state.Early?.BakeInputs(context, state.Plans.Select(p => p.Renderer),
-                    AvatarAnimationIndex.Create(avatar, controllers, services.ObjectPathRemapper.GetVirtualToRealPathMap(), policy.Preserved));
-                MaterialAtlasBackend.Prepare(context, state);
-                state.Prepared = true;
-                report.Messages.Add("Prepared texture atlas inputs for " + state.Plans.Count + " renderers; source properties other than mapped textures follow the Reference Material.");
+                RegisterEarlyCopies(context);
+                MaterialAtlasBackend.Capture(context, state);
+                PrepareInputs(context, controllers, paths);
+                if (!state.Deferred) MaterialAtlasBackend.Execute(context, state);
+                MaterialAtlasBackend.Finish(context, state);
+                ValidateOmittedInputs(context, controllers, paths, ParameterPolicyPass.Resolve(context, controllers).Preserved);
+                state.Pending = false; state.Completed = true;
+                measurement?.Complete();
+                return true;
             }
             finally
             {
-                animationLease.Dispose();
+                state.Watch.Stop();
+                if (state.Settings != null) UnityEngine.Object.DestroyImmediate(state.Settings);
+                context.GetState<OptimizationAnalysis>().Invalidate(AnalysisDomain.Meshes | AnalysisDomain.Materials | AnalysisDomain.Hierarchy);
+                context.GetState<OptimizationBuildReport>().Messages.Add("Final material atlasing " +
+                    (state.Completed ? "completed" : "failed") + " in " + state.Watch.ElapsedMilliseconds + " ms.");
             }
+        }
+
+        internal static void FinishManualBuild(BuildContext context)
+        {
+            if (AvatarOutputSdkFinalizer.HasSession(context) || !context.GetState<MaterialAtlasState>().Pending) return;
+            GeneratedOutputFilterPass.Apply(context);
+            OptimizationFixedPoint.Apply(context, includeMeshes: true);
+            using var lease = OptimizationSession.Acquire(context);
+            var services = lease.Services;
+            if (!ApplyFinal(context, services.ControllerContext.Controllers, services.ObjectPathRemapper.GetVirtualToRealPathMap(), context.AssetSaver.SaveAsset)) return;
+            OptimizationFixedPoint.Apply(context, includeMeshes: true);
+            MeshReduction.MeshReductionPass.ApplyFinal(context, services.ControllerContext.Controllers,
+                services.ObjectPathRemapper.GetVirtualToRealPathMap(), context.AssetSaver.SaveAsset);
+            OptimizationFixedPoint.Apply(context, includeMeshes: true);
+            AvatarBuildAnalysis.PublishReport(context);
         }
 
         internal static string ValidateMesh(Mesh mesh, int[] groups, out Rect domain)
@@ -257,18 +375,6 @@ namespace Noname.AvatarTools.MaterialAtlas
             if (domain != new Rect(0, 0, 1, 1) && groups.Any(g => g < 0))
                 return "normalizing tiled UVs would affect unselected material slots";
             return null;
-        }
-
-        internal static void Finish(BuildContext context)
-        {
-            var state = context.GetState<MaterialAtlasState>();
-            if (state.Settings == null) return;
-            if (state.Deferred) PrepareInputs(context);
-            if (state.Prepared) MaterialAtlasBackend.Finish(context, state);
-            ValidateOmittedInputs(context);
-            state.Watch.Stop();
-            context.GetState<OptimizationBuildReport>().Messages.Add("Material atlasing including TexTransTool completed in " + state.Watch.ElapsedMilliseconds + " ms.");
-            UnityEngine.Object.DestroyImmediate(state.Settings);
         }
 
         internal static void ValidateOmittedInputs(BuildContext context)

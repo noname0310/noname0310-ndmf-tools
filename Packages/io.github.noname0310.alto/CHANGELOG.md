@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.23
+
+- Preserve authored empty animation clips when curve pruning has nothing to remove. Avoid adding duration placeholders that change Humanoid pose release and controller gesture restoration; retain placeholders when the last real track is removed.
+- Preserve recorded multiplexing wire formats when a mobile feature is frozen, removed or kept local with a different authored precision. Validate encoding compatibility only for active synchronized codec inputs; keep fallback transmission and omit inactive decoders.
+- Apply audio exclusion to generated sources as well as authored sources, including late SDK output. Remove spatializers before their required AudioSources, preserve selected replacements and shared animation users, and reject retained-reference conflicts.
+- Recheck PhysBone filtering, orphan colliders, renderer-type exclusions and additional material passes after external optimizers and SDK generators. Follow registered renderer replacements for source slot and BlendShape-region exclusions without replaying indices on relocated output layouts.
+- Include state-machine behaviour references when deciding whether automatic renderer exclusion is safe.
+- Apply captured renderer settings to late generated outputs and reuse their lighting anchor without overwriting previously baked animation defaults.
+- Pack texture atlases once against final generated outputs, before triangle reduction and mesh assembly. Preserve atlas selection boundaries through optional external merges and execute only ALTO's TTT inputs in an independent texture-processing domain.
+
 ## 0.0.22
 
 - Omit renderers proven unobservable by object dependency analysis from texture atlas inputs. Preserve toggleable, referenced and explicitly protected renderers, defer hierarchy deletion until generators finish, and revalidate omissions after later build passes.

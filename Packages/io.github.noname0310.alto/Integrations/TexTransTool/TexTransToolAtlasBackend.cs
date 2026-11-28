@@ -21,6 +21,7 @@ namespace Noname.AvatarTools.MaterialAtlas
         internal readonly List<AtlasTexture> Atlases = new();
         internal readonly List<Material> Carriers = new();
         internal readonly List<Material> Results = new();
+        internal readonly HashSet<(Material, int)> VerifiedOutputs = new();
     }
 
     [InitializeOnLoad]
@@ -58,6 +59,7 @@ namespace Noname.AvatarTools.MaterialAtlas
             MaterialAtlasBackend.Capture = Capture;
             MaterialAtlasBackend.Prepare = Prepare;
             MaterialAtlasBackend.Finish = Finish;
+            MaterialAtlasBackend.Execute = FinalAtlasExecution.Apply;
             MaterialAtlasBackend.ValidateRenderer = ValidateRenderer;
         }
 
@@ -85,14 +87,14 @@ namespace Noname.AvatarTools.MaterialAtlas
             var backend = context.GetState<TexTransAtlasState>();
             backend.Root = new GameObject("ALTO Material Atlas (Build)");
             backend.Root.transform.SetParent(context.AvatarRootTransform, false);
-            for (int i = 0; i < state.Settings.MergeGroups.Count; i++)
+            for (int i = 0; i < state.Recipe.MergeGroups.Count; i++)
             {
-                var group = state.Settings.MergeGroups[i];
+                var group = state.Recipe.MergeGroups[i];
                 var child = new GameObject("Atlas " + (i + 1)); child.transform.SetParent(backend.Root.transform, false);
                 var atlas = child.AddComponent<AtlasTexture>();
                 var carrier = new Material(shader) { name = "Atlas " + (i + 1) + " carrier" };
                 carrier.SetFloat("_AtlasChannelCount", group.TextureMappings.Count);
-                context.AssetSaver.SaveAsset(carrier);
+                (state.SaveAsset ?? context.AssetSaver.SaveAsset)(carrier);
                 atlas.AllMaterialMergeReference = carrier;
                 atlas.AtlasSetting.AtlasTextureSize = group.AtlasSize;
                 atlas.AtlasSetting.UsePrimaryMaximumTexture = true;
@@ -131,7 +133,7 @@ namespace Noname.AvatarTools.MaterialAtlas
         private static void Prepare(BuildContext context, MaterialAtlasState state)
         {
             var backend = context.GetState<TexTransAtlasState>();
-            var groups = state.Settings.MergeGroups;
+            var groups = state.Recipe.MergeGroups;
             var report = context.GetState<OptimizationBuildReport>();
             foreach (var plan in state.Plans.ToArray())
             {
@@ -142,12 +144,12 @@ namespace Noname.AvatarTools.MaterialAtlas
                             if ((reason = TexturePreparation.Unsupported(plan.Materials[slot], state.Mapping(plan.Materials[slot], mapping))) != null) break;
                 if (reason == null) continue;
                 var message = "Atlas retained " + AnimationUtility.CalculateTransformPath(plan.Renderer.transform, context.AvatarRootTransform) + ": " + reason;
-                if (state.Settings.UnsupportedInputs == UnsupportedAtlasInput.Error || state.Converted(plan.Renderer) ||
+                if (state.Recipe.UnsupportedInputs == UnsupportedAtlasInput.Error || state.Converted(plan.Renderer) ||
                     state.RequiredRenderers.Contains(ObjectRegistry.GetReference(plan.Renderer))) throw new InvalidOperationException(message);
                 report.Messages.Add(message); state.Plans.Remove(plan);
             }
             if (state.Deferred) return;
-            var textures = new TexturePreparation(context);
+            var textures = new TexturePreparation(context, state.SaveAsset);
             var inputs = new Dictionary<InputKey, Material>();
             int slots = 0;
             foreach (var plan in state.Plans)
@@ -171,7 +173,7 @@ namespace Noname.AvatarTools.MaterialAtlas
                         input.SetFloat("_AtlasChannelCount", group.TextureMappings.Count);
                         for (int c = 0; c < group.TextureMappings.Count; c++)
                             input.SetTexture(Channel(c), channels[c]);
-                        context.AssetSaver.SaveAsset(input);
+                        (state.SaveAsset ?? context.AssetSaver.SaveAsset)(input);
                         inputs.Add(key, input); backend.Atlases[groupIndex].AtlasTargetMaterials.Add(input);
                     }
                     // These are private staging materials. Registering source replacement here would
@@ -185,7 +187,7 @@ namespace Noname.AvatarTools.MaterialAtlas
                     var mesh = Object.Instantiate(current); mesh.name = current.name + " (Atlas UV domain)";
                     var domain = plan.UvDomain;
                     mesh.uv = mesh.uv.Select(uv => new Vector2((uv.x - domain.x) / domain.width, (uv.y - domain.y) / domain.height)).ToArray();
-                    ObjectRegistry.RegisterReplacedObject(current, mesh); context.AssetSaver.SaveAsset(mesh);
+                    ObjectRegistry.RegisterReplacedObject(current, mesh); (state.SaveAsset ?? context.AssetSaver.SaveAsset)(mesh);
                     if (plan.Renderer is SkinnedMeshRenderer skinned)
                     {
                         context.GetState<BlendShapeOptimization.OptimizationState>().Provenance.RecordMeshRewrite(skinned, current, mesh);
@@ -211,11 +213,12 @@ namespace Noname.AvatarTools.MaterialAtlas
                 {
                     int groupIndex = plan.Groups[slot]; if (groupIndex < 0) continue;
                     var atlased = materials[slot];
-                    if (atlased == null || atlased.shader != registeredShader || !MaterialSlotPlan.SameMaterial(atlased, backend.Carriers[groupIndex]))
+                    if (atlased == null || atlased.shader != registeredShader ||
+                        !backend.VerifiedOutputs.Contains((atlased, groupIndex)) && !MaterialSlotPlan.SameMaterial(atlased, backend.Carriers[groupIndex]))
                         throw new InvalidOperationException("TexTransTool did not produce the expected atlas for " + plan.Renderer.name + ". Check its build diagnostics.");
                     if (!remapped.TryGetValue(atlased, out var output))
                     {
-                        var group = state.Settings.MergeGroups[groupIndex];
+                        var group = state.Recipe.MergeGroups[groupIndex];
                         output = new Material(group.ReferenceMaterial) { name = group.Name + " (Atlased)" };
                         for (int c = 0; c < group.TextureMappings.Count; c++)
                         {
@@ -226,7 +229,7 @@ namespace Noname.AvatarTools.MaterialAtlas
                             output.SetTextureScale(mapping.DestinationProperty, Vector2.one);
                             output.SetTextureOffset(mapping.DestinationProperty, Vector2.zero);
                         }
-                        context.AssetSaver.SaveAsset(output);
+                        (state.SaveAsset ?? context.AssetSaver.SaveAsset)(output);
                         ObjectRegistry.RegisterReplacedObject(atlased, output);
                         remapped.Add(atlased, output); backend.Results[groupIndex] = output;
                     }
@@ -239,7 +242,7 @@ namespace Noname.AvatarTools.MaterialAtlas
             {
                 var output = backend.Results[i];
                 if (output == null) { report.Messages.Add("Atlas group " + (i + 1) + " selected no compatible material slots."); continue; }
-                var group = state.Settings.MergeGroups[i];
+                var group = state.Recipe.MergeGroups[i];
                 report.Messages.Add("Atlas group " + (i + 1) + " / " + group.Name + ": " + output.shader.name + "; " +
                     string.Join(", ", group.TextureMappings.Select(m => { var t = output.GetTexture(m.DestinationProperty); return m.DestinationProperty + "=" + t.width + "x" + t.height; })));
             }

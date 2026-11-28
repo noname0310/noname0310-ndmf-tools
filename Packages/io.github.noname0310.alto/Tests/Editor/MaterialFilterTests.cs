@@ -57,7 +57,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             plan.Apply(new BuildContext(root, null));
             Assert.That(renderer.sharedMesh, Is.SameAs(source));
             Assert.That(renderer.sharedMaterials, Is.EqualTo(new[] { materials[0], materials[2] }));
-            Assert.That(MotionAnalysis.EndTime(outputClip), Is.EqualTo(2));
+            Assert.That(MotionAnalysis.EndTime(outputClip), Is.EqualTo(clip.length));
         }
 
         [Test]
@@ -110,13 +110,14 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             var materials = renderer.sharedMaterials;
             var rule = new MaterialExclusion { Renderer = renderer, Material = materials[1] };
             var plan = MaterialSlotPlan.Create(renderer, new[] { rule });
-            var controller = VirtualSlotController(SlotClip(1, materials[0], 3));
+            var source = SlotClip(1, materials[0], 3);
+            var controller = VirtualSlotController(source);
             Assert.Throws<InvalidOperationException>(() => RewriteSlots(controller, plan, rule));
             rule.Material = null; rule.Slot = 1;
             Assert.That(RewriteSlots(controller, plan, rule), Is.EqualTo(1));
             var clip = controller.AllReachableNodes().OfType<VirtualClip>().Single();
             Assert.That(clip.GetObjectCurveBindings(), Is.Empty);
-            Assert.That(MotionAnalysis.EndTime(clip), Is.EqualTo(3));
+            Assert.That(MotionAnalysis.EndTime(clip), Is.EqualTo(source.length));
         }
 
         [Test]

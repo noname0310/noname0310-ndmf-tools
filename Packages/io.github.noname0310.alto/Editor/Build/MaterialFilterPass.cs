@@ -14,50 +14,81 @@ namespace Noname.AvatarTools.Build
     {
         internal const string SlotPrefix = "m_Materials.Array.data[";
 
+        internal static void ApplyAdditionalPasses(BuildContext context, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> paths = null)
+        {
+            var state = context.GetState<RenderingFilterState>();
+            if (state.Scope == null || !state.RemoveAdditionalMaterialPasses) return;
+            var renderers = context.AvatarRootObject.GetComponentsInChildren<Renderer>(true)
+                .Where(r => AutomaticRenderingRules.AdditionalPassCandidate(state, r)).ToArray();
+            if (renderers.Length == 0) return;
+            // These slots are derived from current topology. Never replay the
+            // authored slot indices after another pass has relocated them.
+            var rules = AutomaticRenderingRules.AdditionalMaterialRules(state, renderers);
+            var plans = renderers.Select(r => MaterialSlotPlan.Create(r, rules)).Where(p => p.HasChanges).ToDictionary(p => p.Renderer);
+            int curves = RewriteAnimations(context.AvatarRootObject, controllers, plans, rules, new HashSet<Renderer>(renderers), paths);
+            var report = context.GetState<OptimizationBuildReport>();
+            report.Initialize(context.AvatarRootObject, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
+            int slots = 0;
+            foreach (var plan in plans.Values)
+            {
+                slots += plan.SlotMap.Count(i => i < 0);
+                plan.Apply(context);
+            }
+            report.Messages.Add("Late rendering filter removed " + slots + " additional material passes and remapped or removed " + curves +
+                " material-slot animation bindings.");
+        }
+
         internal static void Apply(BuildContext context)
         {
             var state = context.GetState<RenderingFilterState>();
             if (state.Scope == null || state.Materials.Count == 0 && !state.RemoveAdditionalMaterialPasses && state.ExcludedRendererTypes == RendererFilterTypes.None) return;
-            foreach (var selection in state.SelectedRenderers)
-                if (selection.Key.Renderer == null)
-                    throw new InvalidOperationException("The renderer selected for material exclusion was removed or merged before filtering: " +
-                        selection.Value + ". Select the generated destination renderer instead.");
             var animationLease = Noname.AvatarTools.Build.OptimizationSession.Acquire(context);
             var services = animationLease.Services;
             try
             {
                 var entries = services.ControllerContext.Controllers
                     .Where(e => !(e.Key is UnityEngine.Object owner) || owner != null).ToDictionary(e => e.Key, e => e.Value);
-                var report = context.GetState<OptimizationBuildReport>();
-                report.Initialize(context.AvatarRootObject, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
-                AutomaticRenderingRules.RemoveRenderers(context.AvatarRootObject, state, entries.Values, report.Messages);
-                var renderers = context.AvatarRootObject.GetComponentsInChildren<Renderer>(true)
-                    .Where(r => state.Scope.Contains(r.transform) && !ALTOPlugin.IsEditorOnly(r.transform)).ToArray();
-                var rules = AutomaticRenderingRules.MaterialRules(state, renderers);
-                var allPlans = renderers.Select(r => MaterialSlotPlan.Create(r, rules)).ToArray();
-                var plans = allPlans.Where(p => p.HasChanges).ToDictionary(p => p.Renderer);
-                int curves = RewriteAnimations(context.AvatarRootObject, entries, plans, rules,
-                    new HashSet<Renderer>(renderers), services.ObjectPathRemapper.GetVirtualToRealPathMap());
-                foreach (var plan in plans.Values)
-                {
-                    int removedGeometry = plan.SourceMesh != null ? plan.SourceMesh.subMeshCount - plan.KeptSubMeshes.Length : 0;
-                    plan.Apply(context);
-                    report.Messages.Add("Filtered materials on " + AnimationUtility.CalculateTransformPath(plan.Renderer.transform, context.AvatarRootTransform) +
-                        ": removed " + plan.SlotMap.Count(i => i < 0) + " slots and " + removedGeometry + " submeshes.");
-                }
-                for (int i = 0; i < state.Materials.Count; i++)
-                    if (!allPlans.Any(p => p.MatchedRules.Contains(state.Materials[i])))
-                    {
-                        string message = "Material exclusion " + (i + 1) + " matched no material slots after generators ran.";
-                        report.Messages.Add(message);
-                        Debug.LogWarning("[ALTO] " + message, context.AvatarRootObject);
-                    }
-                report.Messages.Add("Material exclusions remapped or removed " + curves + " material-slot animation bindings.");
+                Apply(context, entries, services.ObjectPathRemapper.GetVirtualToRealPathMap());
             }
             finally
             {
                 animationLease.Dispose();
             }
+        }
+
+        internal static void Apply(BuildContext context, IDictionary<object, VirtualAnimatorController> entries,
+            IReadOnlyDictionary<string, string> paths)
+        {
+            var state = context.GetState<RenderingFilterState>();
+            if (state.Scope == null) return;
+            state.Replay.BeginBoundary();
+            var report = context.GetState<OptimizationBuildReport>();
+            report.Initialize(context.AvatarRootObject, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
+            AutomaticRenderingRules.RemoveRenderers(context.AvatarRootObject, state, entries.Values, report.Messages);
+            var renderers = context.AvatarRootObject.GetComponentsInChildren<Renderer>(true)
+                .Where(r => state.Scope.Contains(r.transform) && !ALTOPlugin.IsEditorOnly(r.transform)).ToArray();
+            if (!state.Replay.MaterialsApplied)
+                foreach (var rule in state.Materials)
+                    if (!ReferenceEquals(rule.Renderer, null) && !state.Replay.HasTarget(rule, renderers))
+                        throw new InvalidOperationException("The renderer selected for material exclusion has no registered output. " +
+                            "Its generator must publish the renderer replacement before filtering.");
+            var rules = renderers.SelectMany(r => state.Replay.MaterialRules(r, state.Materials)).ToList();
+            rules.AddRange(AutomaticRenderingRules.AdditionalMaterialRules(state, renderers));
+            var allPlans = renderers.Select(r => MaterialSlotPlan.Create(r, rules)).ToArray();
+            var plans = allPlans.Where(p => p.HasChanges).ToDictionary(p => p.Renderer);
+            int curves = RewriteAnimations(context.AvatarRootObject, entries, plans, rules,
+                new HashSet<Renderer>(renderers), paths);
+            foreach (var plan in plans.Values)
+            {
+                int removedGeometry = plan.SourceMesh != null ? plan.SourceMesh.subMeshCount - plan.KeptSubMeshes.Length : 0;
+                plan.Apply(context);
+                report.Messages.Add("Filtered materials on " + AnimationUtility.CalculateTransformPath(plan.Renderer.transform, context.AvatarRootTransform) +
+                    ": removed " + plan.SlotMap.Count(i => i < 0) + " slots and " + removedGeometry + " submeshes.");
+            }
+            if (!state.Replay.MaterialsApplied || plans.Count != 0 || curves != 0)
+                report.Messages.Add("Material exclusions remapped or removed " + curves + " material-slot animation bindings.");
+            state.Replay.MaterialsApplied = true;
         }
 
         internal static int RewriteAnimations(GameObject avatar, IDictionary<object, VirtualAnimatorController> controllers,

@@ -36,7 +36,8 @@ namespace Noname.AvatarTools.MaterialAtlas
 
         // Conversion must precede generators, but image generation need not. Keep
         // the original recipe until live atlas consumers and their textures settle.
-        internal void BakeInputs(BuildContext context, IEnumerable<Renderer> selected, AvatarAnimationIndex animations = null)
+        internal void BakeInputs(BuildContext context, IEnumerable<Renderer> selected, AvatarAnimationIndex animations = null,
+            Action<Object> save = null)
         {
             var renderers = selected.Where(r => r != null).ToHashSet();
             var swaps = animations?.Bindings.Where(u => u.Binding.isPPtrCurve && u.ObjectKeys != null).ToArray()
@@ -75,7 +76,7 @@ namespace Noname.AvatarTools.MaterialAtlas
                 if (bake == null) continue;
                 try
                 {
-                    if (bake.Texture != null) context.AssetSaver.SaveAsset(bake.Texture);
+                    if (bake.Texture != null) (save ?? context.AssetSaver.SaveAsset)(bake.Texture);
                     foreach (var material in destinations)
                     foreach (var mapping in input.Textures)
                     {
@@ -168,7 +169,7 @@ namespace Noname.AvatarTools.MaterialAtlas
             }
             foreach (var component in components) Visit(component);
             bool wholeAvatar = state.Scope.Root == context.AvatarRootTransform &&
-                state.Settings.TargetSelection == RendererSelectionMode.AllRenderersInScope;
+                state.Recipe.TargetSelection == RendererSelectionMode.AllRenderersInScope;
             var materialCurves = visited.OfType<AnimationClip>().SelectMany(clip =>
                 AnimationUtility.GetObjectReferenceCurveBindings(clip).Where(b => typeof(Renderer).IsAssignableFrom(b.type) &&
                     b.propertyName.StartsWith(MaterialFilterPass.SlotPrefix, StringComparison.Ordinal)).Select(binding =>
@@ -211,7 +212,7 @@ namespace Noname.AvatarTools.MaterialAtlas
                         ". Include that consumer, separate the shared asset, or choose After Generators.");
             }
             foreach (var candidate in candidates)
-                foreach (var mapping in state.Settings.MergeGroups[candidate.Value].TextureMappings)
+                foreach (var mapping in state.Recipe.MergeGroups[candidate.Value].TextureMappings)
                 {
                     var source = candidate.Key;
                     if (!source.HasTexture(mapping.SourceProperty)) continue;
@@ -384,7 +385,7 @@ namespace Noname.AvatarTools.MaterialAtlas
             {
                 foreach (var candidate in candidates)
                 {
-                    var group = state.Settings.MergeGroups[candidate.Value];
+                    var group = state.Recipe.MergeGroups[candidate.Value];
                     var source = candidate.Key;
                     var material = new Material(group.ReferenceMaterial) { name = source.name + " (Reference converted)" };
                     owned.Add(material);

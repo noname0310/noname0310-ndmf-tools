@@ -347,10 +347,13 @@ namespace Noname.AvatarTools.ParameterLayout
                 foreach (var member in multiplex.Inputs)
                 {
                     outputByName.TryGetValue(member.Name, out var logical);
-                    if (logical != null && !member.SameEncoding(logical))
-                        throw new InvalidOperationException("Multiplexed parameter encoding differs from the reference upload: " + member.Name);
                     if (logical?.networkSynced == true)
                     {
+                        // Local/frozen declarations are not codec inputs. Their
+                        // original precision can differ from the recorded wire,
+                        // which still carries the fallback value on this platform.
+                        if (!member.SameEncoding(logical))
+                            throw new InvalidOperationException("Multiplexed parameter encoding differs from the reference upload: " + member.Name);
                         if (!MultiplexEncoding.CanMultiplex(logical)) throw new InvalidOperationException("Custom interpolation conflicts with recorded multiplexing: " + member.Name + ". Rebuild the reference platform to keep this input native.");
                         if (preserve.Contains(member.Name)) throw new InvalidOperationException("Preservation conflicts with recorded multiplexing: " + member.Name);
                         if (controllers.Any(c => c.Parameters.TryGetValue(member.Name, out var p) && p.type == AnimatorControllerParameterType.Trigger))

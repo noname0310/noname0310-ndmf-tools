@@ -18,7 +18,7 @@ namespace Noname.AvatarTools.MaterialAtlas
             var renderers = avatar.GetComponentsInChildren<Renderer>(true);
             var selected = new HashSet<Renderer>(MaterialAtlasPass.SelectRenderers(avatar, state));
             var report = context.GetState<OptimizationBuildReport>();
-            if (state.Settings.ExistingAtlases == ExistingAtlasPolicy.Chain)
+            if (state.Recipe.ExistingAtlases == ExistingAtlasPolicy.Chain)
             {
                 foreach (var atlas in atlases)
                 {
@@ -40,7 +40,7 @@ namespace Noname.AvatarTools.MaterialAtlas
             {
                 var consumers = renderers.Where(r => Touches(atlas, r)).ToArray();
                 if (!consumers.Any(selected.Contains)) continue;
-                bool replace = state.Settings.ExistingAtlases == ExistingAtlasPolicy.ReplaceFullyCovered &&
+                bool replace = state.Recipe.ExistingAtlases == ExistingAtlasPolicy.ReplaceFullyCovered &&
                     (int)atlas.AtlasSetting.AtlasTargetUVChannel == 0 && consumers.All(r => selected.Contains(r) &&
                         !r.GetComponents<Component>().Any(c => c != null && c.GetType().Assembly == typeof(AtlasTexture).Assembly &&
                             c.GetType().FullName == "net.rs64.TexTransTool.TextureAtlas.AtlasExcludeTag") && r.sharedMaterials.All(m => state.Group(m) >= 0));
@@ -95,12 +95,12 @@ namespace Noname.AvatarTools.MaterialAtlas
                 if (reference == null) continue;
                 var key = ObjectRegistry.GetReference(reference);
                 if (!groups.TryGetValue(key, out var values)) groups.Add(key, values = new());
-                values.Add(MaterialAtlasPass.SelectGroup(material, state.Settings.MergeGroups));
+                values.Add(MaterialAtlasPass.SelectGroup(material, state.Recipe.MergeGroups));
                 // The reference may also survive unchanged on a renderer outside
                 // this TTT atlas. Its shared provenance cannot select another group.
                 foreach (var untouched in materials.Where(m => MaterialSlotPlan.SameMaterial(m, reference) &&
                     !atlas.AtlasTargetMaterials.Any(target => MaterialSlotPlan.SameMaterial(target, m))))
-                    values.Add(MaterialAtlasPass.SelectGroup(untouched, state.Settings.MergeGroups));
+                    values.Add(MaterialAtlasPass.SelectGroup(untouched, state.Recipe.MergeGroups));
             }
             foreach (var pair in groups)
             {

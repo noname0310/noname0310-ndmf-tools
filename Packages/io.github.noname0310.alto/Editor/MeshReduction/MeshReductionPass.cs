@@ -183,7 +183,7 @@ namespace Noname.AvatarTools.MeshReduction
                 }
                 Object.DestroyImmediate(state.Settings);
             }
-            if (AvatarOutputSdkFinalizer.HasSession(context)) return;
+            if (AvatarOutputSdkFinalizer.HasSession(context) || context.GetState<MaterialAtlas.MaterialAtlasState>().Pending) return;
             // Geometry-only mesh passes participate in this fixed point. Assembly
             // is gated by Pending, so a preserved face cannot absorb reducible cloth.
             OptimizationFixedPoint.Apply(context, includeMeshes: true);

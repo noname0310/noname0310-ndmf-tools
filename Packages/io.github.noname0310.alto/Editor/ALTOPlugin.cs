@@ -103,7 +103,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                     foreach (var filter in context.AvatarRootObject.GetComponentsInChildren<ALTOOptimizationPlatformFilter>(true))
                         UnityEngine.Object.DestroyImmediate(filter);
                 })
-                .Then.Run("Optimize avatar inputs and prepare atlases", OptimizationPipeline.BeforeAtlas);
+                .Then.Run("Optimize avatar inputs before material conversion", OptimizationPipeline.BeforeAtlas);
             InPhase(BuildPhase.Optimizing).AfterPlugin("net.rs64.tex-trans-tool")
                 .BeforePlugin("com.anatawa12.avatar-optimizer")
                 .BeforePlugin("Meshia.MeshSimplification.Ndmf.Editor.NdmfPlugin")
@@ -127,7 +127,8 @@ namespace Noname.AvatarTools.BlendShapeOptimization
                 .Then.Run("Clean up dependencies after mesh changes", OptimizationPipeline.AfterMeshes)
                 .Then.Run("Remove object optimization markers", ObjectOptimizationPass.RemoveMarkers)
                 .Then.Run("Record optimization analysis", AvatarBuildAnalysis.PublishReport);
-            InPhase(BuildPhase.PlatformFinish).Run("Finalize parameter layout", ParameterLayout.ParameterLayoutPass.Apply)
+            InPhase(BuildPhase.PlatformFinish).Run("Pack final atlas inputs for manual builds", MaterialAtlasPass.FinishManualBuild)
+                .Then.Run("Finalize parameter layout", ParameterLayout.ParameterLayoutPass.Apply)
                 .Then.Run("Fold shared immutable shader inputs", MaterialOptimizationPass.SpecializeFinal);
         }
 

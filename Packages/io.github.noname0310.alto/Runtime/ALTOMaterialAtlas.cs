@@ -59,5 +59,6 @@ namespace Noname.AvatarTools
         public List<Renderer> TargetRenderers = new();
         public List<MaterialAtlasGroup> MergeGroups = new() { new() };
         public UnsupportedAtlasInput UnsupportedInputs = UnsupportedAtlasInput.PreserveRenderer;
+        [NonSerialized] public Renderer[] BuildInputRenderers = Array.Empty<Renderer>();
     }
 }

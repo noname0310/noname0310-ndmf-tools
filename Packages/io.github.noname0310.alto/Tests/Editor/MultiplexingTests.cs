@@ -5,6 +5,7 @@ using nadena.dev.ndmf;
 using nadena.dev.ndmf.animator;
 using Noname.AvatarTools.Build;
 using Noname.AvatarTools.ParameterLayout;
+using Noname.AvatarTools.ParameterPolicy;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.Animations;
@@ -192,6 +193,75 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 "Android owners still send defaults for inputs that remote PC avatars may observe");
             Assert.That(fx.layers.Last().stateMachine.states.Any(s => s.state.name.StartsWith("Mux Prepare")), Is.EqualTo(protocol == 1),
                 "The reference protocol takes priority over the opposite mobile transmission setting");
+        }
+
+        [Test]
+        public void MultiplexingNarrowReferenceAllowsInactiveLogicalDeclarations(
+            [Values("AvatarDriven", "ExplicitPrecision", "Authored")] string origin,
+            [Values("Missing", "Local", "Frozen")] string status, [Values(1, 2)] int protocol)
+        {
+            var descriptor = LayoutDescriptor(); var original = MultiplexInputs();
+            foreach (var parameter in original) { parameter.bitWidth = 7; parameter.flippedRepresentation = true; }
+            var plan = MultiplexPlan(original); plan.Protocol = protocol;
+            var record = LayoutRecord(plan.WireDeclarations()); record.Multiplexing = plan;
+            if (origin == "AvatarDriven")
+            {
+                record.AvatarDrivenEncodings.AddRange(original.Select(ParameterLayoutEntry.Capture));
+                foreach (var member in plan.Inputs) member.AllowWiderPrecision = true;
+            }
+            if (origin == "ExplicitPrecision")
+                record.FloatPrecisionOverrides.AddRange(original.Select(p => new FloatPrecisionEncoding
+                    { Name = p.name, Type = ValueType.Float, BitWidth = 7, FlippedRepresentation = true }));
+            using var fixture = new LayoutTestStore(); fixture.Store.Commit(record);
+            string confirmed = JsonUtility.ToJson(fixture.Store.Read(LayoutId));
+            var source = Track(ScriptableObject.CreateInstance<VRCExpressionParameters>());
+            source.parameters = origin == "Authored" ? original.Select(ParameterLayoutModel.Copy).ToArray() : MultiplexInputs();
+            // Frozen/local declarations keep their authored precision; only live
+            // network inputs adopt the reference platform's encoding overrides.
+            var local = source.parameters[0]; local.networkSynced = false;
+            local.bitWidth = 8; local.flippedRepresentation = false; local.defaultValue = .375f;
+            if (status == "Missing") source.parameters = source.parameters.Skip(1).ToArray();
+            descriptor.expressionParameters = source;
+            var context = new BuildContext(root, null);
+            if (status == "Frozen") context.GetState<ParameterPolicyState>().Constants.Add(local.name,
+                new ParameterConstant { Name = local.name, Value = .75f, Type = AnimatorControllerParameterType.Float });
+            var settings = new ParameterLayoutSettings { Compression = new ParameterCompressionSettings
+                { Multiplexing = ParameterMultiplexingMode.AllSynchronizedInputs, RemoveUnused = false, Budget = 16 } };
+            ParameterLayoutPass.ApplyFinal(root, settings, ParameterLayoutPlatform.Android,
+                new OptimizationBuildReport(), value => Track(value), fixture.Store, context);
+            Assert.That(ParameterLayoutModel.Capture(descriptor.expressionParameters.parameters).Select(p => (p.Name, p.Encoding)),
+                Is.EqualTo(record.Parameters.Select(p => (p.Name, p.Encoding))), "Keep every recorded wire slot and encoding.");
+            var fx = (AnimatorController)descriptor.baseAnimationLayers.Single(l => l.type == VRCAvatarDescriptor.AnimLayerType.FX).animatorController;
+            TrackControllerAssets(fx);
+            var operations = fx.layers.Last().stateMachine.states.SelectMany(s => s.state.behaviours)
+                .OfType<VRCAvatarParameterDriver>().SelectMany(d => d.parameters).ToArray();
+            Assert.That(operations.Any(p => p.name == local.name || p.source == local.name), Is.False,
+                "No sender reads or receiver writes are emitted for inactive logical inputs.");
+            var fallback = operations.Where(p => p.name == "__AdvancedMux/Captured/" + local.name).ToArray();
+            Assert.That(fallback, Is.Not.Empty);
+            float expected = status == "Missing" ? 0 : status == "Frozen" ? .75f : .375f;
+            Assert.That(fallback.All(p => p.type == VRC.SDKBase.VRC_AvatarParameterDriver.ChangeType.Set && p.value == expected), Is.True);
+            Assert.That(local.GetBitWidthByType(), Is.EqualTo(8)); Assert.That(local.flippedRepresentation, Is.False);
+            Assert.That(JsonUtility.ToJson(fixture.Store.Read(LayoutId)), Is.EqualTo(confirmed));
+        }
+
+        [TestCase(1)] [TestCase(2)]
+        public void MultiplexingNarrowReferenceStillRejectsActiveEncodingMismatch(int protocol)
+        {
+            var descriptor = LayoutDescriptor(); var original = MultiplexInputs();
+            foreach (var parameter in original) { parameter.bitWidth = 7; parameter.flippedRepresentation = true; }
+            var plan = MultiplexPlan(original); plan.Protocol = protocol;
+            var record = LayoutRecord(plan.WireDeclarations()); record.Multiplexing = plan;
+            var source = Track(ScriptableObject.CreateInstance<VRCExpressionParameters>());
+            source.parameters = original.Select(ParameterLayoutModel.Copy).ToArray();
+            source.parameters[0].bitWidth = 8; source.parameters[0].flippedRepresentation = false;
+            descriptor.expressionParameters = source;
+            var exception = Assert.Throws<InvalidOperationException>(() => ParameterCompressionPass.Apply(new BuildContext(root, null),
+                new ParameterCompressionSettings { RemoveUnused = false, Multiplexing = ParameterMultiplexingMode.AllSynchronizedInputs },
+                record, new OptimizationBuildReport(), value => Track(value)));
+            Assert.That(exception.Message, Does.Contain("encoding differs"));
+            Assert.That(descriptor.expressionParameters, Is.SameAs(source));
+            Assert.That(descriptor.baseAnimationLayers.All(l => l.animatorController == null), Is.True);
         }
 
         [Test]

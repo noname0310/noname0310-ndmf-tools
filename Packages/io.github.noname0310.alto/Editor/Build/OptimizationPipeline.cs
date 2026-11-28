@@ -22,6 +22,7 @@ namespace Noname.AvatarTools.Build
             using var shapeBoundary = context.GetState<OptimizationState>().Provenance.BeginBoundary();
             OptimizationSession.Step(context, "BlendShape input provenance", AnalysisDomain.None, ALTOPlugin.PrepareInputs);
             OptimizationSession.Step(context, "converted material provenance", AnalysisDomain.None, MaterialAtlasPass.RegisterEarlyCopies);
+            OptimizationSession.Step(context, "generated audio exclusions", AnalysisDomain.Hierarchy | AnalysisDomain.Animation, AudioOutputFilterPass.Apply);
             OptimizationSession.Step(context, "explicit BlendShape region exclusions", AnalysisDomain.Meshes, BlendShapeExclusionPass.Apply);
             OptimizationSession.Step(context, "rendering exclusions", AnalysisDomain.Hierarchy | AnalysisDomain.Meshes | AnalysisDomain.Materials | AnalysisDomain.Animation,
                 MaterialFilterPass.Apply);
@@ -37,15 +38,14 @@ namespace Noname.AvatarTools.Build
                 OptimizationSession.Step(context, "BlendShape simplification", AnalysisDomain.Animation | AnalysisDomain.Meshes | AnalysisDomain.Hierarchy, ALTOPlugin.Apply);
             }
             OptimizationSession.Step(context, "static material texture baking", AnalysisDomain.Materials | AnalysisDomain.Animation, MaterialOptimizationPass.BakeBeforeAtlas);
-            OptimizationSession.Step(context, "atlas preparation", AnalysisDomain.Hierarchy | AnalysisDomain.Materials | AnalysisDomain.Meshes, MaterialAtlasPass.Prepare);
         });
 
         internal static void AfterAtlas(BuildContext context) => OptimizationSession.RunBoundary(context, "after atlas", () =>
         {
             using var shapeBoundary = context.GetState<OptimizationState>().Provenance.BeginBoundary();
-            OptimizationSession.Step(context, "atlas material finalization", AnalysisDomain.Hierarchy | AnalysisDomain.Materials | AnalysisDomain.Meshes, MaterialAtlasPass.Finish);
+            OptimizationSession.Step(context, "material conversion after generators", AnalysisDomain.Materials | AnalysisDomain.Animation, MaterialAtlasPass.ConvertAfterGenerators);
             OptimizationSession.Step(context, "converted BlendShape input provenance", AnalysisDomain.None, ALTOPlugin.PrepareInputs);
-            if (context.GetState<MaterialAtlasState>().Prepared)
+            if (context.GetState<MaterialAtlasState>().Pending)
             {
                 OptimizationFixedPoint.PrepareInputs(context, inspectMaterials: true);
             }
@@ -62,11 +62,14 @@ namespace Noname.AvatarTools.Build
             OptimizationSession.Step(context, "mesh merge input capture", AnalysisDomain.None, MeshOptimizationPass.Prepare);
             OptimizationSession.Step(context, "material optimization input capture", AnalysisDomain.None, MaterialOptimizationPass.Prepare);
             OptimizationSession.Step(context, "physics optimization input capture", AnalysisDomain.None, PhysBoneOptimizationPass.Prepare);
+            OptimizationSession.Step(context, "atlas selection input capture", AnalysisDomain.None, MaterialAtlasPass.CaptureInputs);
         });
 
         internal static void AfterExternalOptimizers(BuildContext context) => OptimizationSession.RunBoundary(context, "after external optimizers", () =>
         {
-            OptimizationSession.Step(context, "late Contact filtering", AnalysisDomain.ExternalInputs | AnalysisDomain.Hierarchy | AnalysisDomain.Animation, ContactFilterPass.Apply);
+            MaterialAtlasPass.CaptureMappedInputs(context);
+            OptimizationSession.Step(context, "late generated output filtering", AnalysisDomain.ExternalInputs | AnalysisDomain.Hierarchy |
+                AnalysisDomain.Animation | AnalysisDomain.Physics | AnalysisDomain.Meshes | AnalysisDomain.Materials, GeneratedOutputFilterPass.Apply);
             OptimizationSession.Step(context, "material data simplification", AnalysisDomain.Materials | AnalysisDomain.Animation, MaterialOptimizationPass.Apply);
             OptimizationSession.Step(context, "combined parameter validation", AnalysisDomain.Animation, ParameterFreezePass.Apply);
             OptimizationSession.Step(context, "final initial visibility policy", AnalysisDomain.Animation | AnalysisDomain.Hierarchy, InitialVisibilityPolicy.Apply);

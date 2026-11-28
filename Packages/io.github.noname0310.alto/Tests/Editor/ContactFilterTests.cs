@@ -216,6 +216,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
                 EditorCurveBinding.PPtrCurve("Consumer", typeof(ParameterPolicySourceFixture), "ReferencedObject");
             PolicyChild("Consumer").AddComponent<ParameterPolicySourceFixture>();
             AnimationUtility.SetObjectReferenceCurve(source, binding, new[] { new ObjectReferenceKeyframe { time = 2, value = orphaned ? (Object)root.transform : sender } });
+            float duration = source.length;
             var entries = ConstraintControllers(source); var clip = entries.Values.Single().AllReachableNodes().OfType<VirtualClip>().Single();
             var context = new BuildContext(root, null); ContactFilterPass.Capture(context);
             if (!orphaned)
@@ -227,7 +228,7 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             {
                 ContactFilterPass.Apply(context, entries);
                 Assert.That(sender == null, Is.True); Assert.That(clip.GetObjectCurveBindings(), Is.Empty);
-                Assert.That(MotionAnalysis.EndTime(clip), Is.EqualTo(2));
+                Assert.That(MotionAnalysis.EndTime(clip), Is.EqualTo(duration));
             }
             Assert.That(AnimationUtility.GetObjectReferenceCurveBindings(source), Does.Contain(binding));
         }

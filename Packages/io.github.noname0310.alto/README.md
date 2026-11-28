@@ -194,12 +194,15 @@ the current platform and do not retry or resume an SDK upload. A passing trial
 proves preprocessing completed, not that removing the feature preserves behavior
 or passes asset-bundle and upload validation.
 
-**Remove Audio Sources** explicitly removes sources present before generators
-run, along with Unity audio filters and SDK spatializers whose outputs are all
-removed. It is disabled by default. **Preserve Audio Sources** keeps selected
+**Remove Audio Sources** explicitly removes sources before generators and checks
+generated output again, including late SDK output. Unity audio filters and SDK
+spatializers are removed when all their outputs are excluded. The option is
+disabled by default. **Preserve Audio Sources** keeps selected
 sources; explicit exclusions still apply. Dependants are removed first, and a
 remaining reader or required-component conflict stops removal before mutation.
-Audio created by a later generator remains that generator's responsibility.
+The same scope and preservation rules apply to generated sources. During these
+rechecks, curves and Play Audio behaviours targeting only removed sources are discarded; shared
+curves that also drive retained sources remain.
 
 ## ALTO Rendering Filter
 
@@ -207,6 +210,14 @@ Add **Noname > ALTO Rendering Filter** inside the avatar. Its scope and platform
 selection are independent of Build Exclusions. Rules are captured before early
 exclusions and evaluated after generators. Explicit targets removed by Build
 Exclusions are skipped. Rendering Filter does not remove authoring components.
+
+Automatic renderer-type exclusions and additional-material-pass removal are
+rechecked after external optimizers and late SDK generators. Material-identity
+rules also apply to matching generated slots. Explicit slot and morph selections
+follow registered renderer copies/replacements when the captured source mesh
+interface survives. Already relocated or unrelated output indices are never
+treated as the original selection; generators that merge or reorder these
+interfaces need to supply their mapping or apply the exclusion first.
 
 **Material Exclusions** runs after generators, before texture atlasing and
 mesh optimization. Select a Renderer, a Material, a slot, or their intersection.
@@ -546,8 +557,9 @@ through reparenting and also match PhysBones created during the build. They do
 not infer ownership from arbitrary generator prefabs. Only components inside
 Scope Root can be removed.
 
-**Keep Listed** removes every other scoped PhysBone after generators run;
-an empty selection removes all scoped PhysBones. The filter keeps bone
+**Keep Listed** removes every other scoped PhysBone after generators run and
+rechecks components and orphan colliders after external optimizers and SDK
+generators; an empty selection removes all scoped PhysBones. The filter keeps bone
 Transforms and skinning references. Remaining PhysBones retain their nested
 Ignore Other PhysBones boundaries. Unsupported animated hierarchy boundaries,
 preserved parameter outputs and component-reference conflicts stop the build.
@@ -832,6 +844,10 @@ on Android. Overlapping identical assignments are accepted; conflicting values
 stop the build before renderer properties are written. Existing animation remains
 active. These explicit changes can affect lighting and shadows. Mesh merging
 still checks all remaining compatibility requirements and does not require AAO.
+The captured policy also initializes later generated renderers before final
+assembly, even after its authoring component has been removed. Automatic anchor
+selection is reused for these outputs. Already processed renderers keep later
+animation-baked values instead of being reset at each build boundary.
 
 ## ALTO Trace And Optimize Meshes
 
@@ -1330,8 +1346,11 @@ exclusions and resolution priorities. This timing changes shader-dependent
 generator behavior. **After Generators** leaves source shaders available to those
 tools, but cannot recover material references that they remove.
 
-Texture packing always runs after generators, against their final meshes and
-UVs. Materials first introduced by a generator are evaluated at that stage;
+Texture packing runs once after final generated-output cleanup, including late
+SDK preprocessing, before ALTO's triangle reduction and renderer assembly.
+Manual NDMF builds use their final platform stage. A separate TTT renderer domain
+processes only ALTO's atlas inputs; other TTT behaviours are not executed again.
+Materials first introduced by a generator are evaluated at that stage;
 conversion cannot anticipate materials created by arbitrary generator code.
 Before Generators rejects shared inputs that would also change unselected or
 out-of-scope consumers. Material animations in that mode require the whole
@@ -1781,7 +1800,7 @@ Animators. Disable individual optimizations in the Inspector:
 
 Graph rewriting runs before Avatar Optimizer and again after its layer merging.
 Material analysis runs after atlas conversion and after optimizer merging; an
-extra graph/object cleanup before AAO runs only when atlas preparation ran.
+extra graph/object cleanup before AAO runs when atlas conversion is active.
 It sees controllers generated during Transforming. Plugins which introduce new
 controllers later must order their work appropriately. The analysis does not
 assume that runtime inputs retain their initial values. Parameter declarations

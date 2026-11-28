@@ -16,6 +16,7 @@ namespace Noname.AvatarTools.Build
         internal readonly Dictionary<MaterialExclusion, string> SelectedRenderers = new();
         internal readonly List<BlendShapeMeshExclusion> BlendShapes = new();
         internal readonly Dictionary<SkinnedMeshRenderer, string> BlendShapeTargets = new();
+        internal readonly RenderingFilterReplay Replay = new();
         internal bool RemoveAdditionalMaterialPasses;
         internal RendererFilterTypes ExcludedRendererTypes;
         internal readonly HashSet<ObjectReference> PreserveAutomaticRenderers = new();
@@ -64,7 +65,9 @@ namespace Noname.AvatarTools.Build
                     if (removed.Contains(rule.Renderer)) continue;
                     state.SelectedRenderers.Add(rule, AnimationUtility.CalculateTransformPath(rule.Renderer.transform, avatar.transform));
                 }
-                state.Materials.Add(rule);
+                var captured = new MaterialExclusion { Renderer = rule.Renderer, Material = rule.Material, Slot = rule.Slot, Mode = rule.Mode };
+                state.Materials.Add(captured);
+                state.Replay.Capture(captured, rule.Renderer);
             }
             foreach (var rule in blendShapeExclusions ?? new())
             {
@@ -74,11 +77,13 @@ namespace Noname.AvatarTools.Build
                 if (removed.Contains(rule.Renderer)) continue;
                 if (!Analysis.MotionAnalysis.Finite(rule.DisplacementThreshold) || rule.DisplacementThreshold < 0 || rule.BlendShapes.Any(string.IsNullOrEmpty))
                     throw new InvalidOperationException("BlendShape exclusion requires valid names and a finite nonnegative displacement threshold.");
-                state.BlendShapes.Add(new BlendShapeMeshExclusion
+                var captured = new BlendShapeMeshExclusion
                 {
                     Renderer = rule.Renderer, DisplacementThreshold = rule.DisplacementThreshold,
                     BlendShapes = new List<string>(rule.BlendShapes)
-                });
+                };
+                state.BlendShapes.Add(captured);
+                state.Replay.Capture(captured, rule.Renderer);
                 state.BlendShapeTargets[rule.Renderer] = AnimationUtility.CalculateTransformPath(rule.Renderer.transform, avatar.transform);
             }
             if (state.Materials.Count > 0)

@@ -32,6 +32,7 @@ namespace Noname.AvatarTools.Build
         {
             var avatar = context.AvatarRootObject;
             var scope = OptimizationBuildScope.Capture(filter, avatar);
+            AudioOutputFilterPass.Capture(context, filter, scope);
             var objects = new HashSet<GameObject>((filter.ExcludedObjects ?? new()).Where(o => o != null));
             var components = new HashSet<Component>((filter.ExcludedComponents ?? new()).Where(c => c != null));
             if (filter.RemoveAudioSources)
@@ -70,18 +71,7 @@ namespace Noname.AvatarTools.Build
             if (removed.Count == 0) return;
             ValidatePreservation(context, removed);
             ValidateIncomingReferences(context, filter, removed);
-            var order = new List<Component>();
-            var remaining = new HashSet<Component>(components.Where(c =>
-                !objects.Any(o => c.transform.IsChildOf(o.transform))));
-            while (remaining.Count > 0)
-            {
-                var next = remaining.FirstOrDefault(candidate => !remaining.Any(other =>
-                    other != candidate && other.gameObject == candidate.gameObject && Requires(other, candidate)));
-                if (next == null)
-                    throw new InvalidOperationException("Excluded components form a RequireComponent cycle. Exclude their GameObject instead.");
-                remaining.Remove(next);
-                order.Add(next);
-            }
+            var order = RemovalOrder(components.Where(c => !objects.Any(o => c.transform.IsChildOf(o.transform))));
             var report = context.GetState<OptimizationBuildReport>();
             report.Initialize(avatar, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
             // Complete validation before deleting anything. Deletion order must not hide a conflict.
@@ -97,7 +87,24 @@ namespace Noname.AvatarTools.Build
                 report.Messages.Add("Excluded component: " + AnimationUtility.CalculateTransformPath(next.transform, avatar.transform) +
                     " (" + next.GetType().Name + ")");
                 Object.DestroyImmediate(next);
+                if (next != null) throw new InvalidOperationException("Unity declined removal of an excluded component.");
             }
+        }
+
+        internal static List<Component> RemovalOrder(IEnumerable<Component> components)
+        {
+            var order = new List<Component>();
+            var remaining = new HashSet<Component>(components);
+            while (remaining.Count > 0)
+            {
+                var next = remaining.FirstOrDefault(candidate => !remaining.Any(other =>
+                    other != candidate && other.gameObject == candidate.gameObject && Requires(other, candidate)));
+                if (next == null)
+                    throw new InvalidOperationException("Excluded components form a RequireComponent cycle. Exclude their GameObject instead.");
+                remaining.Remove(next);
+                order.Add(next);
+            }
+            return order;
         }
 
         private static void ValidateScope(OptimizationBuildScope scope, Transform target)
@@ -118,7 +125,7 @@ namespace Noname.AvatarTools.Build
             return required.Any(type => type.IsInstanceOfType(dependency));
         }
 
-        private static void ValidateIncomingReferences(BuildContext context, ALTOBuildExclusions filter, HashSet<Object> removed)
+        internal static void ValidateIncomingReferences(BuildContext context, ALTOBuildExclusions filter, HashSet<Object> removed)
         {
             var avatar = context.AvatarRootObject;
             var removedByObject = removed.OfType<Component>().GroupBy(c => c.gameObject).ToDictionary(g => g.Key, g => g.ToArray());

@@ -4,6 +4,8 @@ using System.Linq;
 using nadena.dev.ndmf;
 using net.rs64.TexTransTool.TextureAtlas;
 using Noname.AvatarTools.Build;
+using Noname.AvatarTools.Meshes;
+using Noname.AvatarTools.ParameterPolicy;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -256,6 +258,86 @@ namespace Noname.AvatarTools.MaterialAtlas.Tests
                 Assert.That(renderer.sharedMaterials.Select(m => m.GetInstanceID()).Distinct().Count(), Is.EqualTo(1));
             Assert.That(mesh.vertexCount, Is.EqualTo(6));
             Assert.That(red.mainTexture.width, Is.EqualTo(16)); Assert.That(blue.mainTexture.width, Is.EqualTo(16));
+        }
+
+        [TestCase(ExistingAtlasPolicy.Preserve)] [TestCase(ExistingAtlasPolicy.Chain)]
+        public void FinalAtlasPackingIncludesLaterMeshesAfterSettingsAreStrippedAndRunsOnce(ExistingAtlasPolicy mode)
+        {
+            if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null) Assert.Ignore("Requires a GPU.");
+            state.Settings.MaterialConversion = AtlasMaterialConversionTiming.AfterGenerators;
+            state.Settings.ExistingAtlases = mode;
+            var group = state.Settings.MergeGroups[0]; group.AtlasSize = 128; group.PaddingPixels = 2;
+            group.Compression = AtlasCompression.None;
+            var red = Material(); var blue = Material();
+            foreach (var pair in new[] { (red, Color.red), (blue, Color.blue) })
+            {
+                var texture = Track(new Texture2D(16, 16, TextureFormat.RGBA32, false));
+                texture.SetPixels(Enumerable.Repeat(pair.Item2, 256).ToArray()); texture.Apply(); pair.Item1.mainTexture = texture;
+            }
+            var mesh = Track(new Mesh
+            {
+                vertices = new[] { Vector3.zero, Vector3.right, Vector3.up }, triangles = new[] { 0, 1, 2 },
+                uv = new[] { new Vector2(0.1f, 0.1f), new Vector2(0.9f, 0.1f), new Vector2(0.1f, 0.9f) }
+            });
+            var first = Renderer(red); first.gameObject.AddComponent<MeshFilter>().sharedMesh = mesh;
+            first.name = "First";
+            var rendererSettings = root.AddComponent<ALTOMeshRendererSettingsOverride>();
+            rendererSettings.ApplyOnPlatforms = OptimizationPlatforms.All;
+            rendererSettings.OverrideProbeAnchor = true; rendererSettings.AnchorSelection = MeshAnchorSelection.Explicit;
+            rendererSettings.AnchorOverride = root.transform;
+            rendererSettings.OverrideShadowCasting = true;
+            rendererSettings.ShadowCasting = UnityEngine.Rendering.ShadowCastingMode.On;
+            MeshRendererSettingsOverridePass.Capture(context); MeshRendererSettingsOverridePass.Apply(context);
+            var meshSettings = root.AddComponent<ALTOTraceAndOptimizeMeshes>();
+            meshSettings.RebindStaticBones = meshSettings.RemoveUnusedMeshData = false;
+            var meshPolicy = root.AddComponent<ALTOMeshOptimizationPolicy>();
+            meshPolicy.ApplyOnPlatforms = OptimizationPlatforms.All;
+            meshPolicy.AllowCoordinateSpaceChanges = meshPolicy.AllowShaderIndexChanges = true;
+            MeshOptimizationPass.Capture(context); MeshOptimizationPass.Prepare(context);
+            MaterialAtlasPass.Capture(context); MaterialAtlasPass.CaptureInputs(context); MaterialAtlasPass.CaptureMappedInputs(context);
+            Assert.That(root.GetComponent<ALTOMaterialAtlas>() == null, Is.True);
+            Assert.That(root.GetComponentsInChildren<AtlasTexture>(true), Is.Empty, "No stale TTT work is scheduled before the final boundary.");
+            var late = Renderer(blue); late.gameObject.AddComponent<MeshFilter>().sharedMesh = mesh;
+            late.name = "Late"; late.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            var controllers = new Dictionary<object, nadena.dev.ndmf.animator.VirtualAnimatorController>();
+            GeneratedOutputFilterPass.Apply(context, controllers);
+            Assert.That(late.probeAnchor, Is.SameAs(first.probeAnchor));
+            Assert.That(late.shadowCastingMode, Is.EqualTo(first.shadowCastingMode));
+            Assert.That(MaterialAtlasPass.ApplyFinal(context, controllers, null, o => Track(o)), Is.True);
+            Assert.That(first.sharedMaterial, Is.SameAs(late.sharedMaterial));
+            foreach (var pair in new[] { (first, Color.red), (late, Color.blue) })
+            {
+                var output = pair.Item1.GetComponent<MeshFilter>().sharedMesh;
+                var uv = (output.uv[0] + output.uv[1] + output.uv[2]) / 3;
+                var sample = SampleTexture(pair.Item1.sharedMaterial.mainTexture, uv);
+                Assert.That(sample.r, Is.EqualTo(pair.Item2.r).Within(0.02));
+                Assert.That(sample.b, Is.EqualTo(pair.Item2.b).Within(0.02));
+            }
+            var finalMesh = late.GetComponent<MeshFilter>().sharedMesh;
+            Assert.That(MaterialAtlasPass.ApplyFinal(context, controllers, null, o => Track(o)), Is.False);
+            Assert.That(late.GetComponent<MeshFilter>().sharedMesh, Is.SameAs(finalMesh));
+            Assert.That(mesh.vertexCount, Is.EqualTo(3));
+            MeshOptimizationPass.ApplyFinal(context, controllers, new ResolvedParameterPolicy(), o => Track(o));
+            var merged = root.GetComponentsInChildren<Renderer>();
+            Assert.That(merged.Length, Is.EqualTo(1), "Late outputs share the atlas and renderer settings before final assembly.");
+            Assert.That(merged[0], Is.TypeOf<SkinnedMeshRenderer>());
+            Assert.That(merged[0].sharedMaterials.Length, Is.EqualTo(1));
+            Assert.That(((SkinnedMeshRenderer)merged[0]).sharedMesh.triangles.Length, Is.EqualTo(6));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void FinalAtlasSelectionIntersectsExternallyMergedRendererInputs(bool selectBoth)
+        {
+            state.Settings.MaterialConversion = AtlasMaterialConversionTiming.AfterGenerators;
+            state.Settings.TargetSelection = RendererSelectionMode.SelectedRenderers;
+            var first = Renderer(Material()); var second = Renderer(Material());
+            state.Settings.TargetRenderers.Add(first);
+            if (selectBoth) state.Settings.TargetRenderers.Add(second);
+            MaterialAtlasPass.Capture(context); MaterialAtlasPass.CaptureInputs(context);
+            state.Settings.BuildInputRenderers = state.Settings.BuildInputRenderers.Select(r => r == second ? first : r).ToArray();
+            Object.DestroyImmediate(second);
+            MaterialAtlasPass.CaptureMappedInputs(context);
+            Assert.That(MaterialAtlasPass.SelectRenderers(root, state).Contains(first), Is.EqualTo(selectBoth));
         }
 
         private Color SampleTexture(Texture texture, Vector2 uv)

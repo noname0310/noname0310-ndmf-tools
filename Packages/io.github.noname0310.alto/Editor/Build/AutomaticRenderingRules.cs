@@ -30,6 +30,13 @@ namespace Noname.AvatarTools.Build
         internal static List<MaterialExclusion> MaterialRules(RenderingFilterState state, IEnumerable<Renderer> renderers)
         {
             var rules = new List<MaterialExclusion>(state.Materials);
+            rules.AddRange(AdditionalMaterialRules(state, renderers));
+            return rules;
+        }
+
+        internal static List<MaterialExclusion> AdditionalMaterialRules(RenderingFilterState state, IEnumerable<Renderer> renderers)
+        {
+            var rules = new List<MaterialExclusion>();
             if (!state.RemoveAdditionalMaterialPasses) return rules;
             foreach (var renderer in renderers)
             {
@@ -42,6 +49,15 @@ namespace Noname.AvatarTools.Build
                     rules.Add(new MaterialExclusion { Renderer = renderer, Slot = slot });
             }
             return rules;
+        }
+
+        internal static bool AdditionalPassCandidate(RenderingFilterState state, Renderer renderer)
+        {
+            if (state.Scope == null || !state.RemoveAdditionalMaterialPasses || !state.Scope.Contains(renderer.transform) ||
+                ALTOPlugin.IsEditorOnly(renderer.transform) || Preserved(state, renderer)) return false;
+            var mesh = renderer is SkinnedMeshRenderer skin ? skin.sharedMesh :
+                renderer is MeshRenderer && renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
+            return mesh != null && mesh.subMeshCount > 0 && renderer.sharedMaterials.Length > mesh.subMeshCount;
         }
 
         internal static void RemoveRenderers(GameObject avatar, RenderingFilterState state,
@@ -74,7 +90,8 @@ namespace Noname.AvatarTools.Build
                 }
             }
             var owners = avatar.GetComponentsInChildren<Component>(true).Where(c => c != null).Cast<Object>()
-                .Concat(nodes.OfType<VirtualState>().SelectMany(s => s.Behaviours)).Distinct().ToArray();
+                .Concat(nodes.OfType<VirtualState>().SelectMany(s => s.Behaviours))
+                .Concat(nodes.OfType<VirtualStateMachine>().SelectMany(s => s.Behaviours)).Where(o => o != null).Distinct().ToArray();
             foreach (var owner in owners)
             {
                 if (owner is Transform) continue;
@@ -118,6 +135,7 @@ namespace Noname.AvatarTools.Build
                 messages.Add("Automatic renderer exclusion: " + AnimationUtility.CalculateTransformPath(component.transform, avatar.transform) +
                     " (" + component.GetType().Name + ").");
                 Object.DestroyImmediate(component);
+                if (component != null) throw new InvalidOperationException("Unity declined automatic renderer exclusion.");
             }
         }
     }

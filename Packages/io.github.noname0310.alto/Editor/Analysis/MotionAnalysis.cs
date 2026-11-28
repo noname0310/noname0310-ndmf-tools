@@ -103,8 +103,14 @@ namespace Noname.AvatarTools.Analysis
 
         internal static void RemoveCurves(VirtualClip clip, IEnumerable<EditorCurveBinding> bindings)
         {
+            var removed = bindings.Where(binding => binding.isPPtrCurve
+                ? clip.GetObjectCurve(binding) != null : clip.GetFloatCurve(binding) != null).ToArray();
+            // An authored empty motion is not equivalent to a motion with a dummy
+            // binding: Unity gives them different Humanoid layer/pose semantics.
+            // Only preserve a nonempty representation after an actual removal.
+            if (removed.Length == 0) return;
             float end = EndTime(clip);
-            foreach (var binding in bindings.ToArray())
+            foreach (var binding in removed)
                 if (binding.isPPtrCurve) clip.SetObjectCurve(binding, null);
                 else clip.SetFloatCurve(binding, null);
             PreserveDuration(clip, end);

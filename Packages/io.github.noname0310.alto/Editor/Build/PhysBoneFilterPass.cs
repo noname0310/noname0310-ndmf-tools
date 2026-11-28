@@ -89,33 +89,42 @@ namespace Noname.AvatarTools.Build
         {
             var state = context.GetState<PhysBoneFilterState>();
             if (state.Scope == null) return;
+            using var lease = OptimizationSession.Acquire(context);
+            Apply(context, lease.Services.ControllerContext.Controllers
+                .Where(e => !(e.Key is Object owner) || owner != null).ToDictionary(e => e.Key, e => e.Value),
+                lease.Services.ObjectPathRemapper.GetVirtualToRealPathMap());
+        }
+
+        private static HashSet<VRCPhysBone> SelectedForRemoval(PhysBoneFilterState state, IEnumerable<VRCPhysBone> all) =>
+            new(all.Where(pb => state.Scope.Contains(pb.transform) &&
+                (state.Mode == PhysBoneFilterMode.RemoveListed) ==
+                (state.PhysBones.Contains(ObjectRegistry.GetReference(pb)) || state.Roots.Any(r => r.Contains(pb.GetRootTransform())))));
+
+        internal static bool HasPendingRemovals(BuildContext context)
+        {
+            var state = context.GetState<PhysBoneFilterState>();
+            return state.Scope != null && SelectedForRemoval(state, context.AvatarRootObject.GetComponentsInChildren<VRCPhysBone>(true)
+                .Where(pb => BuildPlatformFilters.Includes(pb.transform, context))).Count != 0;
+        }
+
+        internal static void Apply(BuildContext context, IDictionary<object, VirtualAnimatorController> controllers,
+            IReadOnlyDictionary<string, string> paths = null)
+        {
+            var state = context.GetState<PhysBoneFilterState>();
+            if (state.Scope == null) return;
             var avatar = context.AvatarRootObject;
             var all = avatar.GetComponentsInChildren<VRCPhysBone>(true)
                 .Where(pb => BuildPlatformFilters.Includes(pb.transform, context)).ToArray();
-            var remove = new HashSet<VRCPhysBone>(all.Where(pb => state.Scope.Contains(pb.transform) &&
-                (state.Mode == PhysBoneFilterMode.RemoveListed) ==
-                (state.PhysBones.Contains(ObjectRegistry.GetReference(pb)) || state.Roots.Any(r => r.Contains(pb.GetRootTransform())))));
+            var remove = SelectedForRemoval(state, all);
             var report = context.GetState<OptimizationBuildReport>();
             report.Initialize(avatar, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
-            var animationLease = Noname.AvatarTools.Build.OptimizationSession.Acquire(context);
-            var services = animationLease.Services;
-            try
-            {
-                var controllers = services.ControllerContext.Controllers
-                    .Where(e => !(e.Key is Object owner) || owner != null).ToDictionary(e => e.Key, e => e.Value);
-                var policy = ParameterPolicyPass.Resolve(context, controllers);
-                if (remove.Count > 0 && policy.Uncertain)
-                    throw new InvalidOperationException("PhysBone removal requires a verified parameter-preservation policy. See the parameter mapping diagnostics.");
-                ValidateAnimatedHierarchy(avatar, controllers, remove, services.ObjectPathRemapper.GetVirtualToRealPathMap());
-                var colliderReferences = AnimatedColliderReferences(avatar, controllers,
-                    services.ObjectPathRemapper.GetVirtualToRealPathMap());
-                ApplyRemoval(context, state, all, remove, policy.Preserved, colliderReferences);
-                state.Applied = true;
-            }
-            finally
-            {
-                animationLease.Dispose();
-            }
+            var policy = ParameterPolicyPass.Resolve(context, controllers);
+            if (remove.Count > 0 && policy.Uncertain)
+                throw new InvalidOperationException("PhysBone removal requires a verified parameter-preservation policy. See the parameter mapping diagnostics.");
+            ValidateAnimatedHierarchy(avatar, controllers, remove, paths);
+            var colliderReferences = AnimatedColliderReferences(avatar, controllers, paths);
+            ApplyRemoval(context, state, all, remove, policy.Preserved, colliderReferences);
+            state.Applied = true;
         }
 
         internal static void ApplyRemoval(BuildContext context, PhysBoneFilterState state, VRCPhysBone[] all,

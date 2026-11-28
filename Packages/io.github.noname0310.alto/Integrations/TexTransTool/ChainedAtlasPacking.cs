@@ -23,12 +23,12 @@ namespace Noname.AvatarTools.MaterialAtlas
 
         internal static void Apply(BuildContext context, MaterialAtlasState state)
         {
-            var preparation = new TexturePreparation(context);
+            var preparation = new TexturePreparation(context, state.SaveAsset);
             var inputs = new Dictionary<TexTransToolAtlasBackend.InputKey, Input>();
             var slots = new Dictionary<(AtlasRendererPlan, int), Input>();
-            for (int groupIndex = 0; groupIndex < state.Settings.MergeGroups.Count; groupIndex++)
+            for (int groupIndex = 0; groupIndex < state.Recipe.MergeGroups.Count; groupIndex++)
             {
-                var group = state.Settings.MergeGroups[groupIndex];
+                var group = state.Recipe.MergeGroups[groupIndex];
                 var groupInputs = new List<Input>();
                 foreach (var plan in state.Plans)
                     for (int slot = 0; slot < plan.Groups.Length; slot++)
@@ -47,13 +47,13 @@ namespace Noname.AvatarTools.MaterialAtlas
                 var sizes = groupInputs.Select(i => new Vector2(i.Textures.Max(t => t.width), i.Textures.Max(t => t.height))).ToArray();
                 var regions = Pack(sizes, group.PaddingPixels, group.AtlasSize);
                 var output = new Material(group.ReferenceMaterial) { name = group.Name + " (Chained atlas)" };
-                context.AssetSaver.SaveAsset(output);
+                (state.SaveAsset ?? context.AssetSaver.SaveAsset)(output);
                 for (int channel = 0; channel < group.TextureMappings.Count; channel++)
                 {
                     var mapping = group.TextureMappings[channel];
                     var texture = Compose(groupInputs.Select(i => i.Textures[channel]).ToArray(), regions, group, mapping.Linear,
                         context.GetState<OptimizationBuildEnvironment>().Target);
-                    context.AssetSaver.SaveAsset(texture);
+                    (state.SaveAsset ?? context.AssetSaver.SaveAsset)(texture);
                     output.SetTexture(mapping.DestinationProperty, texture);
                     output.SetTextureScale(mapping.DestinationProperty, Vector2.one);
                     output.SetTextureOffset(mapping.DestinationProperty, Vector2.zero);
@@ -76,7 +76,7 @@ namespace Noname.AvatarTools.MaterialAtlas
                     if (slots.TryGetValue((plan, slot), out var input))
                     { regions[slot] = input.Region; materials[slot] = input.Output; }
                 var mesh = AtlasMeshRemap.Apply(plan.Mesh, regions, plan.UvDomain);
-                context.AssetSaver.SaveAsset(mesh); ObjectRegistry.RegisterReplacedObject(plan.Mesh, mesh);
+                (state.SaveAsset ?? context.AssetSaver.SaveAsset)(mesh); ObjectRegistry.RegisterReplacedObject(plan.Mesh, mesh);
                 if (plan.Renderer is SkinnedMeshRenderer skinned)
                 {
                     context.GetState<BlendShapeOptimization.OptimizationState>().Provenance.RecordMeshRewrite(skinned, plan.Mesh, mesh);

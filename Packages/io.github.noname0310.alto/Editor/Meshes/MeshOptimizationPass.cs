@@ -203,7 +203,8 @@ namespace Noname.AvatarTools.Meshes
             var references = AvatarDependencyGraph.Create(avatar, animations, referenceSettings, collectObjects: false,
                 shaders: context.GetState<OptimizationAnalysis>().Shaders, references: records);
             int converted = 0, weighted = 0;
-            bool pendingReduction = context.GetState<MeshReduction.MeshReductionState>().Pending;
+            bool pendingReduction = context.GetState<MeshReduction.MeshReductionState>().Pending ||
+                context.GetState<MaterialAtlas.MaterialAtlasState>().Pending;
             if (settings.MayConvertRigid && !pendingReduction)
             {
                 foreach (var renderer in avatar.GetComponentsInChildren<MeshRenderer>(true).Where(r => settings.Scope.Contains(r.transform)))
