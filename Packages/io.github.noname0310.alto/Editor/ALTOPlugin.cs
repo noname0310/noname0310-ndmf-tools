@@ -58,78 +58,79 @@ namespace Noname.AvatarTools.BlendShapeOptimization
 
         protected override void Configure()
         {
-            InPhase(BuildPhase.FirstChance).Run("Apply explicit build exclusions", BuildFilterPass.RemoveEarly);
+            InPhase(BuildPhase.FirstChance).RunReported("Apply explicit build exclusions", BuildFilterPass.RemoveEarly);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture parameter policy", context =>
+                .RunReported("Capture parameter policy", context =>
                 {
                     ParameterPolicyPass.Capture(context);
                     ParameterPolicyPass.RemoveMarkers(context);
                 });
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture optimization policy", OptimizationPolicy.Capture)
-                .Then.Run("Capture BlendShape optimization scopes", Capture);
+                .RunReported("Capture optimization policy", OptimizationPolicy.Capture)
+                .Then.RunReported("Capture BlendShape optimization scopes", Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture Animator optimization settings", AnimatorOptimizationPass.Capture);
+                .RunReported("Capture Animator optimization settings", AnimatorOptimizationPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture PhysBone filter settings", PhysBoneFilterPass.Capture);
+                .RunReported("Capture PhysBone filter settings", PhysBoneFilterPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture Contact filter settings", ContactFilterPass.Capture);
+                .RunReported("Capture Contact filter settings", ContactFilterPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture object optimization settings", ObjectOptimizationPass.Capture);
+                .RunReported("Capture object optimization settings", ObjectOptimizationPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture material optimization settings", MaterialOptimizationPass.Capture);
+                .RunReported("Capture material optimization settings", MaterialOptimizationPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture material atlas settings", MaterialAtlasPass.Capture);
+                .RunReported("Capture material atlas settings", MaterialAtlasPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture mesh reduction settings", MeshReductionPass.Capture);
+                .RunReported("Capture mesh reduction settings", MeshReductionPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture mesh optimization settings", MeshOptimizationPass.Capture);
+                .RunReported("Capture mesh optimization settings", MeshOptimizationPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture mesh renderer settings", MeshRendererSettingsOverridePass.Capture);
+                .RunReported("Capture mesh renderer settings", MeshRendererSettingsOverridePass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture PhysBone optimization settings", PhysBoneOptimizationPass.Capture);
+                .RunReported("Capture PhysBone optimization settings", PhysBoneOptimizationPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture expression optimization settings", ExpressionOptimizationPass.Capture);
+                .RunReported("Capture expression optimization settings", ExpressionOptimizationPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture parameter layout settings", ParameterLayout.ParameterLayoutPass.Capture);
+                .RunReported("Capture parameter layout settings", ParameterLayout.ParameterLayoutPass.Capture);
             InPhase(BuildPhase.Resolving).AfterPlugin("nadena.dev.modular-avatar")
-                .Run("Capture occlusion removal settings", OcclusionPass.Capture);
+                .RunReported("Capture occlusion removal settings", OcclusionPass.Capture);
             InPhase(BuildPhase.Optimizing)
                 .BeforePlugin("com.anatawa12.avatar-optimizer")
                 .BeforePlugin("net.rs64.tex-trans-tool")
                 .BeforePlugin("Meshia.MeshSimplification.Ndmf.Editor.NdmfPlugin")
-                .Run("Remove optimization platform markers", context =>
+                .RunReported("Remove optimization platform markers", context =>
                 {
                     foreach (var filter in context.AvatarRootObject.GetComponentsInChildren<ALTOOptimizationPlatformFilter>(true))
                         UnityEngine.Object.DestroyImmediate(filter);
                 })
-                .Then.Run("Optimize avatar inputs before material conversion", OptimizationPipeline.BeforeAtlas);
+                .Then.RunReported("Optimize avatar inputs before material conversion", OptimizationPipeline.BeforeAtlas);
             InPhase(BuildPhase.Optimizing).AfterPlugin("net.rs64.tex-trans-tool")
                 .BeforePlugin("com.anatawa12.avatar-optimizer")
                 .BeforePlugin("Meshia.MeshSimplification.Ndmf.Editor.NdmfPlugin")
-                .Run("Optimize converted material outputs", OptimizationPipeline.AfterAtlas);
+                .RunReported("Optimize converted material outputs", OptimizationPipeline.AfterAtlas);
             InPhase(BuildPhase.Optimizing).AfterPlugin("com.anatawa12.avatar-optimizer")
                 .AfterPlugin("Meshia.MeshSimplification.Ndmf.Editor.NdmfPlugin")
-                .Run("Optimize outputs after external optimizers", OptimizationPipeline.AfterExternalOptimizers)
-                .Then.Run("Remove BlendShape optimization markers", context =>
+                .RunReported("Optimize outputs after external optimizers", OptimizationPipeline.AfterExternalOptimizers)
+                .Then.RunReported("Remove BlendShape optimization markers", context =>
             {
                 foreach (var marker in context.AvatarRootObject.GetComponentsInChildren<BlendShapeOptimizationExclude>(true))
                     Object.DestroyImmediate(marker);
                 foreach (var component in context.AvatarRootObject.GetComponentsInChildren<ALTOTraceAndOptimizeBlendShapes>(true))
                     Object.DestroyImmediate(component);
             })
-                .Then.Run("Record provisional PhysBone resources", context => PhysBoneFilterPass.CheckBudget(context, final: false))
-                .Then.Run("Reduce surviving meshes to the triangle budget", context =>
+                .Then.RunReported("Record provisional PhysBone resources", context => PhysBoneFilterPass.CheckBudget(context, final: false))
+                .Then.RunReported("Reduce surviving meshes to the triangle budget", context =>
                     OptimizationSession.Step(context, "mesh reduction", AnalysisDomain.Meshes, MeshReductionPass.Apply))
-                .Then.Run("Merge compatible surviving meshes", context =>
+                .Then.RunReported("Merge compatible surviving meshes", context =>
                     OptimizationSession.Step(context, "mesh assembly", AnalysisDomain.Hierarchy | AnalysisDomain.Meshes |
                         AnalysisDomain.Animation | AnalysisDomain.Materials, MeshOptimizationPass.Apply))
-                .Then.Run("Clean up dependencies after mesh changes", OptimizationPipeline.AfterMeshes)
-                .Then.Run("Remove object optimization markers", ObjectOptimizationPass.RemoveMarkers)
-                .Then.Run("Record optimization analysis", AvatarBuildAnalysis.PublishReport);
-            InPhase(BuildPhase.PlatformFinish).Run("Pack final atlas inputs for manual builds", MaterialAtlasPass.FinishManualBuild)
-                .Then.Run("Finalize parameter layout", ParameterLayout.ParameterLayoutPass.Apply)
-                .Then.Run("Fold shared immutable shader inputs", MaterialOptimizationPass.SpecializeFinal);
+                .Then.RunReported("Clean up dependencies after mesh changes", OptimizationPipeline.AfterMeshes)
+                .Then.RunReported("Remove object optimization markers", ObjectOptimizationPass.RemoveMarkers)
+                .Then.RunReported("Record optimization analysis", AvatarBuildAnalysis.PublishReport);
+            InPhase(BuildPhase.PlatformFinish).RunReported("Pack final atlas inputs for manual builds", MaterialAtlasPass.FinishManualBuild)
+                .Then.RunReported("Validate final mesh triangle budget", MeshReductionPass.ValidateFinalBudget)
+                .Then.RunReported("Finalize parameter layout", ParameterLayout.ParameterLayoutPass.Apply)
+                .Then.RunReported("Fold shared immutable shader inputs", MaterialOptimizationPass.SpecializeFinal);
         }
 
         internal static bool IsEditorOnly(Transform transform)

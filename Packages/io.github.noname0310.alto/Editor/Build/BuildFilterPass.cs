@@ -20,7 +20,7 @@ namespace Noname.AvatarTools.Build
             var all = context.AvatarRootObject.GetComponentsInChildren<ALTOBuildExclusions>(true);
             var enabled = all.Where(c => OptimizationBuildScope.Applies(c, context)).ToArray();
             if (enabled.Length > 1)
-                throw new InvalidOperationException("Use one enabled ALTO Build Exclusions per avatar and platform.");
+                throw BuildDiagnostics.Validation("Use one enabled ALTO Build Exclusions per avatar and platform.");
             if (enabled.Length == 0) RenderingFilterPass.Capture(context, new HashSet<Object>());
             foreach (var filter in enabled) ApplyEarly(context, filter);
             foreach (var filter in context.AvatarRootObject.GetComponentsInChildren<ALTORenderingFilter>(true))
@@ -50,14 +50,14 @@ namespace Noname.AvatarTools.Build
             {
                 ValidateScope(scope, value.transform);
                 if (value == avatar || value.GetComponent<VRCAvatarDescriptor>() != null)
-                    throw new InvalidOperationException("ALTO Build Exclusions cannot remove an avatar root.");
+                    throw BuildDiagnostics.Validation("ALTO Build Exclusions cannot remove an avatar root.");
             }
             foreach (var component in components)
             {
                 ValidateScope(scope, component.transform);
                 if (component is Transform || component is VRCAvatarDescriptor ||
                     (component is Animator && component.gameObject == avatar))
-                    throw new InvalidOperationException("ALTO Build Exclusions cannot remove " + component.GetType().Name +
+                    throw BuildDiagnostics.Validation("ALTO Build Exclusions cannot remove " + component.GetType().Name +
                         " here. Exclude a feature's child object to remove its entire hierarchy.");
             }
             var removed = new HashSet<Object>(components);
@@ -87,7 +87,7 @@ namespace Noname.AvatarTools.Build
                 report.Messages.Add("Excluded component: " + AnimationUtility.CalculateTransformPath(next.transform, avatar.transform) +
                     " (" + next.GetType().Name + ")");
                 Object.DestroyImmediate(next);
-                if (next != null) throw new InvalidOperationException("Unity declined removal of an excluded component.");
+                if (next != null) throw BuildDiagnostics.Validation("Unity declined removal of an excluded component.");
             }
         }
 
@@ -100,7 +100,7 @@ namespace Noname.AvatarTools.Build
                 var next = remaining.FirstOrDefault(candidate => !remaining.Any(other =>
                     other != candidate && other.gameObject == candidate.gameObject && Requires(other, candidate)));
                 if (next == null)
-                    throw new InvalidOperationException("Excluded components form a RequireComponent cycle. Exclude their GameObject instead.");
+                    throw BuildDiagnostics.Validation("Excluded components form a RequireComponent cycle. Exclude their GameObject instead.");
                 remaining.Remove(next);
                 order.Add(next);
             }
@@ -110,7 +110,7 @@ namespace Noname.AvatarTools.Build
         private static void ValidateScope(OptimizationBuildScope scope, Transform target)
         {
             if (!scope.Contains(target))
-                throw new InvalidOperationException("Excluded objects and components must belong to the Build Exclusions' Scope Root: " + target.name);
+                throw BuildDiagnostics.Validation("Excluded objects and components must belong to the Build Exclusions' Scope Root: " + target.name);
         }
 
         // Type metadata is immutable until a domain reload. Object/component
@@ -136,7 +136,7 @@ namespace Noname.AvatarTools.Build
                 if (owner is ALTOPlatformOptimizationComponent policy && !OptimizationBuildScope.Applies(policy, context)) continue;
                 if (removedByObject.TryGetValue(owner.gameObject, out var dependencies))
                     foreach (var dependency in dependencies.Where(d => Requires(owner, d)))
-                        throw new InvalidOperationException(owner.GetType().Name + " requires excluded component " + dependency.GetType().Name +
+                        throw BuildDiagnostics.Validation(owner.GetType().Name + " requires excluded component " + dependency.GetType().Name +
                             ". Exclude both components or their GameObject.");
                 using var serialized = new SerializedObject(owner);
                 foreach (var property in serialized.ObjectProperties())
@@ -148,9 +148,13 @@ namespace Noname.AvatarTools.Build
                          property.propertyPath.StartsWith("FreezeParameters.Array.data[", StringComparison.Ordinal) &&
                          property.propertyPath.EndsWith("].Source", StringComparison.Ordinal))) continue;
                     if (property.objectReferenceValue != null && removed.Contains(property.objectReferenceValue))
-                        throw new InvalidOperationException("Cannot exclude a referenced object/component. " +
+                        throw BuildDiagnostics.Validation("Cannot remove a referenced object or component",
+                            "Cannot exclude a referenced object/component. " +
                             AnimationUtility.CalculateTransformPath(owner.transform, avatar.transform) + " (" + owner.GetType().Name +
-                            ")." + property.propertyPath + " still refers to " + property.objectReferenceValue.name + ".");
+                            ")." + property.propertyPath + " still refers to " + property.objectReferenceValue.name + ".",
+                            "Remove or update this reference, exclude the component that owns it, or keep the referenced object. " +
+                            "Select the objects below to inspect the reference and Build Exclusions settings.",
+                            owner, property.objectReferenceValue, filter);
                 }
             }
         }
@@ -161,7 +165,7 @@ namespace Noname.AvatarTools.Build
                 .Where(c => OptimizationBuildScope.Applies(c, context)))
             {
                 if (removed.Contains(policy))
-                    throw new InvalidOperationException("ALTO Build Exclusions cannot remove an active parameter preservation policy.");
+                    throw BuildDiagnostics.Validation("ALTO Build Exclusions cannot remove an active parameter preservation policy.");
                 var names = new HashSet<string>(policy.PreserveParameters?.Names ?? new(), StringComparer.Ordinal);
                 var prefixes = (policy.PreserveParameters?.Prefixes ?? new()).Where(p => !string.IsNullOrEmpty(p)).ToArray();
                 if (names.Count > 0 || prefixes.Length > 0)
@@ -174,7 +178,7 @@ namespace Noname.AvatarTools.Build
                             if (parameter.Owner != null && !BuildPlatformFilters.Includes(parameter.Owner.transform, context)) continue;
                             string name = ParameterPolicyPass.ResolveName(context, parameter);
                             if (names.Contains(name) || prefixes.Any(p => name.StartsWith(p, StringComparison.Ordinal)))
-                                throw new InvalidOperationException("Build exclusion removes a source of preserved parameter '" + name + "'.");
+                                throw BuildDiagnostics.Validation("Build exclusion removes a source of preserved parameter '" + name + "'.");
                         }
                 }
                 foreach (var selection in policy.PreserveParameters?.Sources ?? new())
@@ -191,7 +195,7 @@ namespace Noname.AvatarTools.Build
                             (c.gameObject == source || (selection.IncludeChildren && c.transform.IsChildOf(source.transform))));
                     else if (selection.Source is Component component) conflict |= removed.Contains(component);
                     if (conflict)
-                        throw new InvalidOperationException("Build exclusion conflicts with preserved parameter source '" +
+                        throw BuildDiagnostics.Validation("Build exclusion conflicts with preserved parameter source '" +
                             selection.Source.name + "'. Adjust the exclusion or the preservation source.");
                 }
             }

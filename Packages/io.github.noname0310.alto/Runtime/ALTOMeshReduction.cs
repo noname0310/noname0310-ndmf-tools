@@ -19,7 +19,7 @@ namespace Noname.AvatarTools
     [UnityEngine.Scripting.APIUpdating.MovedFrom(true, "Noname.AvatarTools", "Noname.AdvancedAvatarOptimizer", "AdvancedMeshReduction")]
     public sealed class ALTOMeshReduction : ALTOPlatformOptimizationComponent
     {
-        [Tooltip("Total triangle budget inside Scope Root, including preserved and unselected renderers. This is not a platform upload limit.")]
+        [Tooltip("Total triangle budget inside Scope Root, including preserved and unselected renderers. Reserves space for additional material passes that mesh merging may expand into submeshes. This is not a platform upload limit.")]
         [Min(0)] public int TriangleBudget = 40000;
         [Tooltip("Select every mesh renderer in Scope Root at build time, or only the explicitly listed renderers. Preserve Renderers still takes precedence.")]
         public RendererSelectionMode TargetSelection = RendererSelectionMode.AllRenderersInScope;

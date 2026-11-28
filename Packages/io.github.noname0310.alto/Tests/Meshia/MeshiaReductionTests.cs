@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using nadena.dev.ndmf;
+using nadena.dev.ndmf.animator;
 using Noname.AvatarTools.Build;
+using Noname.AvatarTools.Meshes;
 using NUnit.Framework;
 using Unity.Collections;
 using UnityEditor.SceneManagement;
@@ -176,6 +178,81 @@ namespace Noname.AvatarTools.MeshReduction.Tests
             var report = context.GetState<OptimizationBuildReport>().MeshReduction;
             Assert.That(report.FixedTriangles, Is.EqualTo(800)); Assert.That(report.OutputTriangles, Is.LessThanOrEqualTo(1000));
             Assert.That(face.sharedMesh, Is.SameAs(originalFace)); Assert.That(root.GetComponent<ALTOMeshReduction>(), Is.Null);
+        }
+
+        [TestCase(1, false)]
+        [TestCase(2, false)]
+        [TestCase(1, true)]
+        public void ReductionReservesRepeatedPassGeometryBeforeMerging(int extraPasses, bool preserveFace)
+        {
+            var body = Grid("Repeated-pass body"); var face = Grid("Face");
+            body.sharedMaterials = Enumerable.Repeat(body.sharedMaterial, 1 + extraPasses).ToArray();
+            var originalFace = face.sharedMesh;
+            var settings = root.AddComponent<ALTOMeshReduction>(); settings.ApplyOnPlatforms = OptimizationPlatforms.All;
+            settings.TriangleBudget = preserveFace ? 1100 : 900;
+            settings.OnBudgetUnreachable = BudgetExceededAction.Error;
+            if (preserveFace) settings.PreserveRenderers.Add(face);
+            var context = new BuildContext(root, null);
+            var optimization = context.GetState<MeshOptimizationState>();
+            optimization.Scope = new OptimizationBuildScope { Root = root.transform };
+            optimization.MergeRenderers = true;
+            using (new ObjectRegistryScope(context.ObjectRegistry))
+            {
+                MeshReductionPass.Capture(context); MeshReductionPass.Prepare(context);
+                MeshReductionPass.ApplyFinal(context, new Dictionary<object, VirtualAnimatorController>(), null, o => assets.Add(o));
+                var report = context.GetState<OptimizationBuildReport>().MeshReduction;
+                Assert.That(report.ReservedMaterialPassTriangles, Is.GreaterThan(0));
+                Assert.That(report.BudgetedTriangles, Is.LessThanOrEqualTo(settings.TriangleBudget));
+                if (preserveFace) Assert.That(face.sharedMesh, Is.SameAs(originalFace));
+                // Put the repeated passes before another source: Unity can no longer
+                // express them as surplus slots drawing only the last submesh.
+                using var assembly = SkinnedMeshAssembler.Create(new[] { body, face }, false);
+                Assert.That(MeshReductionPass.Triangles(assembly.Mesh), Is.EqualTo(report.BudgetedTriangles));
+                body.sharedMesh = Track(assembly.Mesh); assembly.Mesh = null;
+                Object.DestroyImmediate(face.gameObject);
+                MeshReductionPass.ValidateFinalBudget(context);
+                Assert.That(report.FinalOutputTriangles, Is.LessThanOrEqualTo(settings.TriangleBudget));
+                Assert.That(report.BudgetReached, Is.True);
+            }
+        }
+
+        [Test]
+        public void StandaloneReductionDoesNotReserveUnexpandedMaterialPasses()
+        {
+            var body = Grid("Unmerged body");
+            body.sharedMaterials = new[] { body.sharedMaterial, body.sharedMaterial };
+            var settings = root.AddComponent<ALTOMeshReduction>(); settings.ApplyOnPlatforms = OptimizationPlatforms.All;
+            settings.TriangleBudget = 800;
+            var context = new BuildContext(root, null);
+            using (new ObjectRegistryScope(context.ObjectRegistry))
+            {
+                MeshReductionPass.Capture(context); MeshReductionPass.Prepare(context);
+                MeshReductionPass.ApplyFinal(context, new Dictionary<object, VirtualAnimatorController>(), null, o => assets.Add(o));
+                var report = context.GetState<OptimizationBuildReport>().MeshReduction;
+                Assert.That(report.ReservedMaterialPassTriangles, Is.Zero);
+                Assert.That(report.OutputTriangles, Is.EqualTo(800));
+            }
+        }
+
+        [Test]
+        public void FinalBudgetFollowsGeometryMergedIntoADestinationOutsideItsScope()
+        {
+            var scoped = Grid("Scoped body"); var outside = Grid("Outside face");
+            var context = new BuildContext(root, null);
+            var state = context.GetState<MeshReductionState>();
+            state.Scope = new OptimizationBuildScope { Root = scoped.transform };
+            state.Completed = true; state.OnUnreachable = BudgetExceededAction.Error;
+            context.GetState<OptimizationBuildReport>().MeshReduction = new MeshReductionReport { Budget = 900, OutputTriangles = 800 };
+            using (new ObjectRegistryScope(context.ObjectRegistry))
+            {
+                MeshReductionPass.RecordAssembly(context, new[] { scoped, outside }, outside);
+                using var assembly = SkinnedMeshAssembler.Create(new[] { outside, scoped }, false);
+                outside.sharedMesh = Track(assembly.Mesh); assembly.Mesh = null;
+                Object.DestroyImmediate(scoped.gameObject);
+                var error = Assert.Throws<InvalidOperationException>(() => MeshReductionPass.ValidateFinalBudget(context));
+                Assert.That(error.Message, Does.Contain("1600"));
+                Assert.That(context.GetState<OptimizationBuildReport>().MeshReduction.FinalOutputTriangles, Is.EqualTo(1600));
+            }
         }
 
         [Test]

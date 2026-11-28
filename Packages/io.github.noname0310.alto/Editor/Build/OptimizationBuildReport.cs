@@ -32,8 +32,7 @@ namespace Noname.AvatarTools.Build
                 else continue;
                 counts.MaterialSlots += renderer.sharedMaterials.Length;
                 if (mesh == null) continue;
-                for (int i = 0; i < mesh.subMeshCount; i++)
-                    if (mesh.GetTopology(i) == MeshTopology.Triangles) counts.Triangles += mesh.GetIndexCount(i) / 3;
+                counts.Triangles += MeshReduction.MeshReductionPass.Triangles(mesh);
             }
             counts.PhysBones = avatar.GetComponentsInChildren<VRCPhysBone>(true).Length;
             counts.PhysBoneColliders = avatar.GetComponentsInChildren<VRCPhysBoneCollider>(true).Length;

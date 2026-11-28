@@ -38,17 +38,17 @@ namespace Noname.AvatarTools.Build
         {
             var root = component.ScopeRoot != null ? component.ScopeRoot : component.transform;
             if (component.FindDescriptor()?.gameObject != avatar || !root.IsChildOf(avatar.transform))
-                throw new InvalidOperationException(component.GetType().Name + " requires a scope inside its own avatar.");
+                throw BuildDiagnostics.Validation(component.GetType().Name + " requires a scope inside its own avatar.");
             for (var current = root; current != avatar.transform; current = current.parent)
                 if (current.GetComponent<VRCAvatarDescriptor>() != null)
-                    throw new InvalidOperationException("Scope Root cannot belong to a nested avatar.");
+                    throw BuildDiagnostics.Validation("Scope Root cannot belong to a nested avatar.");
             var result = new OptimizationBuildScope { Root = root };
             foreach (var child in root.GetComponentsInChildren<Transform>(true))
             {
                 if (ALTOPlugin.IsEditorOnly(child)) continue;
                 var descriptor = child.GetComponent<VRCAvatarDescriptor>();
                 if (descriptor != null && descriptor.gameObject != avatar)
-                    throw new InvalidOperationException("Optimization scopes cannot contain another avatar.");
+                    throw BuildDiagnostics.Validation("Optimization scopes cannot contain another avatar.");
                 result.OriginalTransforms.Add(child);
             }
             return result;

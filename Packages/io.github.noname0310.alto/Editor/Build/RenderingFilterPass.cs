@@ -33,7 +33,7 @@ namespace Noname.AvatarTools.Build
                 .Where(c => c is ALTORenderingFilter || c is ALTOBuildFilter)
                 .Where(c => OptimizationBuildScope.Applies(c, context) && !removed.Contains(c)).ToArray();
             if (filters.Length > 1)
-                throw new InvalidOperationException("Use one enabled ALTO Rendering Filter per avatar and platform. A legacy Build Filter also provides rendering rules.");
+                throw BuildDiagnostics.Validation("Use one enabled ALTO Rendering Filter per avatar and platform. A legacy Build Filter also provides rendering rules.");
             if (filters.Length == 0) return;
             var source = filters[0];
             var current = source as ALTORenderingFilter;
@@ -47,7 +47,7 @@ namespace Noname.AvatarTools.Build
             var state = context.GetState<RenderingFilterState>();
             state.Scope = scope;
             if ((excludedRendererTypes & ~(RendererFilterTypes.ParticleSystems | RendererFilterTypes.Lines | RendererFilterTypes.Trails)) != 0)
-                throw new InvalidOperationException("Choose valid renderer exclusion types.");
+                throw BuildDiagnostics.Validation("Choose valid renderer exclusion types.");
             state.RemoveAdditionalMaterialPasses = removeAdditionalMaterialPasses;
             state.ExcludedRendererTypes = excludedRendererTypes;
             foreach (var renderer in (preserveAutomaticRenderers ?? new()).Where(r => r != null))
@@ -58,7 +58,7 @@ namespace Noname.AvatarTools.Build
             foreach (var rule in materialExclusions ?? new())
             {
                 if (rule == null || (rule.Renderer == null && rule.Material == null && rule.Slot == -1)) continue;
-                if (rule.Slot < -1) throw new InvalidOperationException("Material exclusion Slot must be -1 or a nonnegative index.");
+                if (rule.Slot < -1) throw BuildDiagnostics.Validation("Material exclusion Slot must be -1 or a nonnegative index.");
                 if (rule.Renderer != null)
                 {
                     ValidateScope(scope, rule.Renderer.transform);
@@ -72,11 +72,11 @@ namespace Noname.AvatarTools.Build
             foreach (var rule in blendShapeExclusions ?? new())
             {
                 if (rule == null || rule.BlendShapes == null || rule.BlendShapes.Count == 0) continue;
-                if (rule.Renderer == null) throw new InvalidOperationException("BlendShape exclusion requires a Skinned Mesh Renderer.");
+                if (rule.Renderer == null) throw BuildDiagnostics.Validation("BlendShape exclusion requires a Skinned Mesh Renderer.");
                 ValidateScope(scope, rule.Renderer.transform);
                 if (removed.Contains(rule.Renderer)) continue;
                 if (!Analysis.MotionAnalysis.Finite(rule.DisplacementThreshold) || rule.DisplacementThreshold < 0 || rule.BlendShapes.Any(string.IsNullOrEmpty))
-                    throw new InvalidOperationException("BlendShape exclusion requires valid names and a finite nonnegative displacement threshold.");
+                    throw BuildDiagnostics.Validation("BlendShape exclusion requires valid names and a finite nonnegative displacement threshold.");
                 var captured = new BlendShapeMeshExclusion
                 {
                     Renderer = rule.Renderer, DisplacementThreshold = rule.DisplacementThreshold,
@@ -93,7 +93,7 @@ namespace Noname.AvatarTools.Build
         private static void ValidateScope(OptimizationBuildScope scope, Transform target)
         {
             if (!scope.Contains(target))
-                throw new InvalidOperationException("Rendering filter targets must belong to its Scope Root: " + target.name);
+                throw BuildDiagnostics.Validation("Rendering filter targets must belong to its Scope Root: " + target.name);
         }
     }
 }

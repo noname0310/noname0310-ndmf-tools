@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.24
+
+- Show ALTO build failures in the NDMF Console with the cause, corrective guidance and relevant object links. Include errors and resource-budget warnings from ALTO's late SDK callbacks.
+- Reserve triangle budget for additional material passes that mesh assembly can expand into explicit submeshes, and validate the actual count after assembly. Include non-reducible quad meshes in the budget.
+
 ## 0.0.23
 
 - Preserve authored empty animation clips when curve pruning has nothing to remove. Avoid adding duration placeholders that change Humanoid pose release and controller gesture restoration; retain placeholders when the last real track is removed.

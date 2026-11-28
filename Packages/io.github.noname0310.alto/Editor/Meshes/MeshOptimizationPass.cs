@@ -336,6 +336,7 @@ namespace Noname.AvatarTools.Meshes
                         continue;
                     }
                     string firstVertexInput = vertexIds?.VertexOrder[0].name;
+                    MeshReduction.MeshReductionPass.RecordAssembly(context, group.Select(c => (Renderer)c.Renderer), destination);
                     Merge(group, pathFor(destination.transform), settings.MergeSlots,
                         save, settings.RemoveUnusedData, skinning, settings.ExpandBounds, reorderSlots, vertexIds, saveOther, materialAnimations, shapeProvenance,
                         context.GetState<OptimizationPolicy>());

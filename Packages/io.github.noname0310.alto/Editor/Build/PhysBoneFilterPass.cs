@@ -48,7 +48,7 @@ namespace Noname.AvatarTools.Build
         {
             var all = context.AvatarRootObject.GetComponentsInChildren<ALTOPhysBoneFilter>(true);
             var enabled = all.Where(c => OptimizationBuildScope.Applies(c, context)).ToArray();
-            if (enabled.Length > 1) throw new InvalidOperationException("Use one enabled ALTO PhysBone Filter per avatar and platform.");
+            if (enabled.Length > 1) throw BuildDiagnostics.Validation("Use one enabled ALTO PhysBone Filter per avatar and platform.");
             var state = context.GetState<PhysBoneFilterState>();
             foreach (var component in enabled)
             {
@@ -57,20 +57,20 @@ namespace Noname.AvatarTools.Build
                 state.Budget = component.Budget;
                 foreach (var pb in (component.PhysBones ?? new()).Where(pb => pb != null))
                 {
-                    if (!state.Scope.Contains(pb.transform)) throw new InvalidOperationException("Selected PhysBones must be inside Scope Root: " + pb.name);
+                    if (!state.Scope.Contains(pb.transform)) throw BuildDiagnostics.Validation("Selected PhysBones must be inside Scope Root: " + pb.name);
                     state.PhysBones.Add(ObjectRegistry.GetReference(pb));
                 }
                 foreach (var collider in (component.PreserveColliders ?? new()).Where(c => c != null))
                 {
                     if (!collider.transform.IsChildOf(context.AvatarRootTransform))
-                        throw new InvalidOperationException("Preserved colliders must belong to this avatar.");
+                        throw BuildDiagnostics.Validation("Preserved colliders must belong to this avatar.");
                     state.Colliders.Add(ObjectRegistry.GetReference(collider));
                 }
                 foreach (var selected in component.BoneRoots ?? new())
                 {
                     if (selected?.Root == null) continue;
                     if (!selected.Root.IsChildOf(context.AvatarRootTransform))
-                        throw new InvalidOperationException("Selected Bone Roots must belong to this avatar.");
+                        throw BuildDiagnostics.Validation("Selected Bone Roots must belong to this avatar.");
                     var captured = new CapturedPhysBoneRoot { Root = selected.Root, Children = selected.IncludeChildren };
                     foreach (var bone in selected.IncludeChildren ? selected.Root.GetComponentsInChildren<Transform>(true) : new[] { selected.Root })
                         captured.OriginalBones.Add(ObjectRegistry.GetReference(bone));
@@ -120,7 +120,7 @@ namespace Noname.AvatarTools.Build
             report.Initialize(avatar, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
             var policy = ParameterPolicyPass.Resolve(context, controllers);
             if (remove.Count > 0 && policy.Uncertain)
-                throw new InvalidOperationException("PhysBone removal requires a verified parameter-preservation policy. See the parameter mapping diagnostics.");
+                throw BuildDiagnostics.Validation("PhysBone removal requires a verified parameter-preservation policy. See the parameter mapping diagnostics.");
             ValidateAnimatedHierarchy(avatar, controllers, remove, paths);
             var colliderReferences = AnimatedColliderReferences(avatar, controllers, paths);
             ApplyRemoval(context, state, all, remove, policy.Preserved, colliderReferences);
@@ -134,9 +134,9 @@ namespace Noname.AvatarTools.Build
             foreach (var pb in remove)
             {
                 if (pb.GetRootTransform() == null || !pb.GetRootTransform().IsChildOf(context.AvatarRootTransform))
-                    throw new InvalidOperationException("Cannot filter a PhysBone targeting outside this avatar: " + pb.name);
+                    throw BuildDiagnostics.Validation("Cannot filter a PhysBone targeting outside this avatar: " + pb.name);
                 if (!string.IsNullOrEmpty(pb.parameter) && ParameterSuffixes.Any(s => preserved.Contains(pb.parameter + s)))
-                    throw new InvalidOperationException("PhysBone removal conflicts with preserved parameter source '" + pb.parameter + "' on " + pb.name + ".");
+                    throw BuildDiagnostics.Validation("PhysBone removal conflicts with preserved parameter source '" + pb.parameter + "' on " + pb.name + ".");
             }
 
             var usedColliders = new HashSet<ObjectReference>(state.Colliders);
@@ -152,12 +152,12 @@ namespace Noname.AvatarTools.Build
                 if (owner == null || owner is Transform || (owner is VRCPhysBone pb && remove.Contains(pb)) ||
                     !BuildPlatformFilters.Includes(owner.transform, context)) continue;
                 if (byObject.TryGetValue(owner.gameObject, out var dependencies) && dependencies.Any(pb => BuildFilterPass.Requires(owner, pb)))
-                    throw new InvalidOperationException(owner.GetType().Name + " requires a selected PhysBone. Exclude the feature's object instead.");
+                    throw BuildDiagnostics.Validation(owner.GetType().Name + " requires a selected PhysBone. Exclude the feature's object instead.");
                 using var serialized = new SerializedObject(owner);
                 foreach (var property in serialized.ObjectProperties())
                 {
                     if (property.objectReferenceValue is VRCPhysBone selected && remove.Contains(selected))
-                        throw new InvalidOperationException("Cannot remove a PhysBone referenced by " + owner.name + " (" + owner.GetType().Name +
+                        throw BuildDiagnostics.Validation("Cannot remove a PhysBone referenced by " + owner.name + " (" + owner.GetType().Name +
                             ")." + property.propertyPath + ". Remove or reconfigure the consumer first.");
                     if (property.objectReferenceValue is VRCPhysBoneColliderBase collider)
                         usedColliders.Add(ObjectRegistry.GetReference(collider));
@@ -208,7 +208,7 @@ namespace Noname.AvatarTools.Build
                 {
                     foreach (var binding in clip.GetObjectCurveBindings())
                         if (clip.GetObjectCurve(binding).Any(k => k.value is VRCPhysBone pb && removed.Contains(pb)))
-                            throw new InvalidOperationException("An animation refers to a selected PhysBone as an object value: " + clip.Name);
+                            throw BuildDiagnostics.Validation("An animation refers to a selected PhysBone as an object value: " + clip.Name);
                     foreach (var binding in clip.GetFloatCurveBindings().Concat(clip.GetObjectCurveBindings()))
                     {
                         if (!typeof(VRCPhysBoneBase).IsAssignableFrom(binding.type) ||
@@ -217,7 +217,7 @@ namespace Noname.AvatarTools.Build
                         foreach (var target in AnimationUsage.Resolve(avatar.transform, root, binding.path, paths))
                             foreach (var pb in target.GetComponents<VRCPhysBone>())
                                 if (removed.Contains(pb) || removed.Any(other => other.GetRootTransform().IsChildOf(pb.GetRootTransform())))
-                                    throw new InvalidOperationException("PhysBone filtering cannot preserve an animated hierarchy boundary: " +
+                                    throw BuildDiagnostics.Validation("PhysBone filtering cannot preserve an animated hierarchy boundary: " +
                                         binding.path + " / " + binding.propertyName);
                     }
                 }
@@ -260,9 +260,10 @@ namespace Noname.AvatarTools.Build
             var exceeded = counts.Exceeded(state.Budget).ToArray();
             if (exceeded.Length == 0) return;
             string message = "PhysBone budget exceeded: " + string.Join("; ", exceeded);
-            if (state.Budget.OnExceeded == BudgetExceededAction.Error) throw new InvalidOperationException(message);
+            if (state.Budget.OnExceeded == BudgetExceededAction.Error) throw BuildDiagnostics.Validation(message);
             report.Messages.Add(message);
-            Debug.LogWarning("[ALTO] " + message, context.AvatarRootObject);
+            BuildDiagnostics.Warning(context, "PhysBone budget exceeded", message,
+                "Keep fewer PhysBones or colliders, or adjust the configured resource budget.", context.AvatarRootObject);
         }
     }
 }

@@ -47,25 +47,25 @@ namespace Noname.AvatarTools.Build
         {
             var all = context.AvatarRootObject.GetComponentsInChildren<ALTOContactFilter>(true);
             var enabled = all.Where(c => OptimizationBuildScope.Applies(c, context)).ToArray();
-            if (enabled.Length > 1) throw new InvalidOperationException("Use one enabled ALTO Contact Filter per avatar and platform.");
+            if (enabled.Length > 1) throw BuildDiagnostics.Validation("Use one enabled ALTO Contact Filter per avatar and platform.");
             var state = context.GetState<ContactFilterState>();
             foreach (var component in enabled)
             {
                 if (!Enum.IsDefined(typeof(ContactFilterMode), component.FilterMode))
-                    throw new InvalidOperationException("Choose a valid Contact Filter mode.");
+                    throw BuildDiagnostics.Validation("Choose a valid Contact Filter mode.");
                 state.Scope = OptimizationBuildScope.Capture(component, context.AvatarRootObject);
                 state.Mode = component.FilterMode;
                 foreach (var contact in (component.Senders ?? new()).Cast<Component>().Concat(component.Receivers ?? new()).Where(c => c != null))
                 {
                     if (!state.Scope.Contains(contact.transform))
-                        throw new InvalidOperationException("Selected Contacts must be inside Scope Root: " + contact.name);
+                        throw BuildDiagnostics.Validation("Selected Contacts must be inside Scope Root: " + contact.name);
                     state.Contacts.Add(ObjectRegistry.GetReference(contact));
                 }
                 foreach (var selection in component.ObjectRoots ?? new())
                 {
                     if (selection?.Root == null) continue;
                     if (!state.Scope.Contains(selection.Root))
-                        throw new InvalidOperationException("Selected Contact Object Roots must be inside Scope Root: " + selection.Root.name);
+                        throw BuildDiagnostics.Validation("Selected Contact Object Roots must be inside Scope Root: " + selection.Root.name);
                     var captured = new CapturedContactObjectRoot { Root = selection.Root, Children = selection.IncludeChildren };
                     foreach (var transform in selection.IncludeChildren ? selection.Root.GetComponentsInChildren<Transform>(true) : new[] { selection.Root })
                         captured.Originals.Add(ObjectRegistry.GetReference(transform));
@@ -106,7 +106,7 @@ namespace Noname.AvatarTools.Build
             if (remove.Count == 0) return;
             var policy = ParameterPolicyPass.Resolve(context, controllers);
             if (policy.Uncertain)
-                throw new InvalidOperationException("Contact removal requires a verified parameter-preservation policy. See the parameter mapping diagnostics.");
+                throw BuildDiagnostics.Validation("Contact removal requires a verified parameter-preservation policy. See the parameter mapping diagnostics.");
             ApplyRemoval(context, remove, policy.Preserved, controllers, paths);
         }
 
@@ -118,22 +118,22 @@ namespace Noname.AvatarTools.Build
             foreach (var contact in remove)
             {
                 if (!(contact is VRCContactSender || contact is VRCContactReceiver) || !state.Scope.Contains(contact.transform))
-                    throw new InvalidOperationException("Contact removal requires scoped SDK Contact components.");
+                    throw BuildDiagnostics.Validation("Contact removal requires scoped SDK Contact components.");
                 if (contact is VRCContactReceiver receiver)
                 {
                     var conflict = ContactOutputs.Parameters(receiver).FirstOrDefault(preserved.Contains);
-                    if (conflict != null) throw new InvalidOperationException("Contact removal conflicts with preserved parameter '" + conflict + "' on " + receiver.name + ".");
+                    if (conflict != null) throw BuildDiagnostics.Validation("Contact removal conflicts with preserved parameter '" + conflict + "' on " + receiver.name + ".");
                 }
             }
             foreach (var owner in avatar.GetComponentsInChildren<Component>(true))
             {
                 if (owner == null || owner is Transform || remove.Contains(owner) || !BuildPlatformFilters.Includes(owner.transform, context)) continue;
                 if (owner.GetComponents<Component>().Any(c => remove.Contains(c) && BuildFilterPass.Requires(owner, c)))
-                    throw new InvalidOperationException(owner.GetType().Name + " requires a selected Contact. Exclude or reconfigure the consumer first.");
+                    throw BuildDiagnostics.Validation(owner.GetType().Name + " requires a selected Contact. Exclude or reconfigure the consumer first.");
                 using var serialized = new SerializedObject(owner);
                 foreach (var property in serialized.ObjectProperties())
                     if (property.objectReferenceValue is Component selected && remove.Contains(selected))
-                        throw new InvalidOperationException("Cannot remove a Contact referenced by " + owner.name + " (" + owner.GetType().Name +
+                        throw BuildDiagnostics.Validation("Cannot remove a Contact referenced by " + owner.name + " (" + owner.GetType().Name +
                             ")." + property.propertyPath + ". Remove or reconfigure the consumer first.");
             }
 
@@ -144,11 +144,11 @@ namespace Noname.AvatarTools.Build
                 .Where(c => c.Use.Complete && c.Targets.Length > 0 && c.Targets.All(t => t is Component component && remove.Contains(component))).ToArray();
             foreach (var candidate in candidates)
                 if (candidate.Use.Immutable)
-                    throw new InvalidOperationException("Cannot rewrite an immutable animation targeting a selected Contact: " + candidate.Use.Clip.Name);
+                    throw BuildDiagnostics.Validation("Cannot rewrite an immutable animation targeting a selected Contact: " + candidate.Use.Clip.Name);
             var orphaned = new HashSet<AvatarAnimationIndex.BindingUse>(candidates.Select(c => c.Use));
             foreach (var use in index.Bindings.Where(u => !orphaned.Contains(u)))
                 if ((use.ObjectKeys ?? Array.Empty<ObjectReferenceKeyframe>()).Any(k => k.value is Component c && remove.Contains(c)))
-                    throw new InvalidOperationException("An animation refers to a selected Contact as an object value: " + use.Clip.Name);
+                    throw BuildDiagnostics.Validation("An animation refers to a selected Contact as an object value: " + use.Clip.Name);
 
             var report = context.GetState<OptimizationBuildReport>();
             report.Initialize(avatar, context.GetState<OptimizationBuildEnvironment>().Target.ToString());
@@ -157,7 +157,7 @@ namespace Noname.AvatarTools.Build
             {
                 string description = AnimationUtility.CalculateTransformPath(contact.transform, context.AvatarRootTransform) + " / " + contact.GetType().Name;
                 state.DestroyObject(contact);
-                if (contact != null) throw new InvalidOperationException("Contact removal was declined: " + description);
+                if (contact != null) throw BuildDiagnostics.Validation("Contact removal was declined: " + description);
                 report.Messages.Add("Excluded Contact: " + description);
             }
             int curves = 0;

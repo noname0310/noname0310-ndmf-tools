@@ -63,6 +63,20 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
         }
 
         [Test]
+        public void FixedQuadMeshesStillConsumeTheSdkTriangleBudget()
+        {
+            var quad = new Mesh();
+            try
+            {
+                quad.vertices = new[] { Vector3.zero, Vector3.right, Vector3.one, Vector3.up };
+                quad.SetIndices(new[] { 0, 1, 2, 3 }, MeshTopology.Quads, 0);
+                Assert.That(MeshReductionPass.Triangles(quad), Is.EqualTo(2));
+                Assert.That(MeshReductionPass.BudgetCost(quad, 2), Is.EqualTo(6));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(quad); }
+        }
+
+        [Test]
         public void DescriptorPreservationIsAnEditableInitialSelection()
         {
             var descriptor = root.AddComponent<VRCAvatarDescriptor>();

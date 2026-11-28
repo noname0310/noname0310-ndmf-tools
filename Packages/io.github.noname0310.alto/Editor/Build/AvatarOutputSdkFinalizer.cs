@@ -137,6 +137,7 @@ namespace Noname.AvatarTools.Build
                 MeshReduction.MeshReductionPass.ApplyFinal(session.Context, new Dictionary<object, VirtualAnimatorController>(),
                     null, saveForTests ?? session.Context.AssetSaver.SaveAsset, unsupported);
             }
+            MeshReduction.MeshReductionPass.ValidateFinalBudget(session.Context);
             PhysBoneFilterPass.CheckBudget(session.Context);
             AvatarBuildAnalysis.PublishReport(avatar, session.Report);
             measurement?.Complete();
@@ -215,8 +216,8 @@ namespace Noname.AvatarTools.Build
         public int callbackOrder => int.MaxValue - 200;
         public bool OnPreprocessAvatar(GameObject avatarGameObject)
         {
-            try { ParameterLayout.ParameterLayoutSdkSession.Prepare(avatarGameObject); return true; }
-            catch (Exception exception) { Debug.LogException(exception, avatarGameObject); return false; }
+            return BuildDiagnostics.RunSdk(avatarGameObject, "Prepare parameter transport after NDMF",
+                () => ParameterLayout.ParameterLayoutSdkSession.Prepare(avatarGameObject));
         }
     }
 
@@ -229,12 +230,14 @@ namespace Noname.AvatarTools.Build
         {
             try
             {
-                ParameterFreezeSdkFinalizer.Complete(avatarGameObject);
-                AvatarOutputSdkFinalizer.Complete(avatarGameObject);
-                ParameterLayout.ParameterLayoutSdkSession.Complete(avatarGameObject);
-                return true;
+                return BuildDiagnostics.RunSdk(avatarGameObject, "Finalize parameters after NDMF",
+                           () => ParameterFreezeSdkFinalizer.Complete(avatarGameObject)) &&
+                       BuildDiagnostics.RunSdk(avatarGameObject, "Optimize final SDK outputs",
+                           () => AvatarOutputSdkFinalizer.Complete(avatarGameObject)) &&
+                       BuildDiagnostics.RunSdk(avatarGameObject, "Finalize parameter layout after NDMF",
+                           () => ParameterLayout.ParameterLayoutSdkSession.Complete(avatarGameObject));
             }
-            catch (Exception exception) { Debug.LogException(exception, avatarGameObject); return false; }
+            finally { BuildDiagnostics.End(avatarGameObject); }
         }
     }
 }

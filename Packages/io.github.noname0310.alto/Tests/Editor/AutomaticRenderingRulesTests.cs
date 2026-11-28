@@ -38,7 +38,11 @@ namespace Noname.AvatarTools.BlendShapeOptimization.Tests
             filter.MaterialExclusions.Add(explicitRule);
             var context = new BuildContext(root, null); BuildFilterPass.RemoveEarly(context);
             var rules = AutomaticRenderingRules.MaterialRules(context.GetState<RenderingFilterState>(), new[] { renderer });
-            Assert.That(rules, Is.EqualTo(new[] { explicitRule }));
+            Assert.That(rules, Has.Count.EqualTo(1));
+            Assert.That(rules[0].Renderer, Is.SameAs(explicitRule.Renderer));
+            Assert.That(rules[0].Material, Is.SameAs(explicitRule.Material));
+            Assert.That(rules[0].Slot, Is.EqualTo(explicitRule.Slot));
+            Assert.That(rules[0].Mode, Is.EqualTo(explicitRule.Mode));
             Assert.That(MaterialSlotPlan.Create(renderer, rules).SlotMap, Is.EqualTo(new[] { 0, 1, -1 }));
         }
 

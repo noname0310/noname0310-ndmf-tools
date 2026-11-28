@@ -29,7 +29,7 @@ namespace Noname.AvatarTools.Build
                     foreach (var previous in state.scopes)
                         if (previous.Scope.Root == scope.Root && (previous.AllowInitial != component.AllowInitialValueChanges ||
                             previous.Rounding != component.AllowedNumericalDifferences || previous.ShaderFolding != component.AllowShaderConstantFolding))
-                            throw new InvalidOperationException("Optimization Policies with the same scope must agree.");
+                            throw BuildDiagnostics.Validation("Optimization Policies with the same scope must agree.");
                     state.scopes.Add((scope, depth, component.AllowInitialValueChanges, component.AllowedNumericalDifferences, component.AllowShaderConstantFolding));
                     state.scopeRoots[scope.Root] = (component.AllowInitialValueChanges, component.AllowedNumericalDifferences, component.AllowShaderConstantFolding);
                     state.strictFeatures |= NumericalOptimization.All & ~component.AllowedNumericalDifferences;
